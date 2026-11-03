@@ -1,9 +1,11 @@
 module index_slice_source
   use iso_fortran_env, only: int64
-  use astr_precision, only: real_kind
-  use commvar, only: use_gpu,numq,num_species,num_modequ,lcomb,lavg
-  use insitu_run_config, only: catalog_product
+  use astr_precision, only: real_kind,real_bytes
+  use commvar, only: use_gpu,numq,num_species,num_modequ,lcomb,lavg,lreadgrid,turbmode
+  use bc, only: bctype
+  use insitu_run_config, only: catalog_product,catalog_wall_mean
   use insitu_session, only: slice_velocity_statistics_info,slice_velocity_statistics_value
+  use insitu_selected_runtime, only: selected_runtime_info,selected_runtime_value,selected_runtime_cartesian
   implicit none
   private
   public :: slice_source_info,slice_source_value_cpu,slice_source_on_gpu
@@ -27,8 +29,43 @@ contains
       endif
 #endif
     endif
+    if(any(definition%fields>=28).or.definition%view%kind=='wall_profile') then
+      if(numq/=5.or.lcomb.or..not.selected_runtime_cartesian().or.real_bytes/=8) then
+        message='new thermal/wall diagnostics currently require FP64 nonreacting Cartesian states';return
+      endif
+    endif
+    if(any(definition%fields>=35)) then
+      if(definition%source/='instantaneous') then
+        message='lambda2/lambda_ci use the instantaneous physical velocity gradient';return
+      endif
+    endif
+    if(any(definition%fields>=31.and.definition%fields<=34).or.definition%view%kind=='wall_profile') then
+      if(definition%source/='instantaneous'.and.definition%view%kind/='wall_profile'.and. &
+        .not.catalog_wall_mean(definition)) then
+        message='wall transport means require accumulating instantaneous wall quantities';return
+      endif
+      if(numq/=5.or.lcomb.or..not.selected_runtime_cartesian().or.trim(turbmode)/='none') then
+        message='new molecular wall transport requires a nonreacting Cartesian perfect-gas state';return
+      endif
+      if(any(definition%fields>=31.and.definition%fields<=33).or.definition%view%kind=='wall_profile'.or. &
+        catalog_wall_mean(definition)) then
+        if(.not.selected_runtime_cartesian(bottom_wall=.true.)) then
+          message='complete wall transport currently requires the lower wall inward normal to point along +y';return
+        endif
+        if(.not.(definition%view%kind=='wall_profile'.or. &
+          (definition%view%kind=='slice'.and.definition%view%sampling=='grid_index')).or. &
+           definition%axis/=2.or.definition%index/=0.or..not.any(bctype(3)==[41,42,411,421])) then
+          message='complete wall transport selects the physical lower Cartesian wall at global j=0';return
+        endif
+      endif
+    endif
     if(definition%source=='instantaneous') then
       ok=.true.;ready=.true.;return
+    endif
+    if(definition%statistics_source=='selected-time') then
+      call selected_runtime_info(definition,source,ready,ok,window,measure,count,message)
+      if(ok.and.definition%fluctuation) source=source+2
+      return
     endif
     fields=definition%fields
     wants_favre=definition%source=='favre'
@@ -51,7 +88,7 @@ contains
       if(wants_favre.and.any(fields==1.or.fields==27)) then
         message='velocity-time does not accumulate Favre density';return
       endif
-      if(any(fields>=5.and.fields<=12)) then
+      if(any(fields>=5.and.fields<=12).or.any(fields>=28)) then
         message='velocity-time contains density and velocity, not pressure/temperature/species';return
       endif
       source=merge(2,1,wants_favre);ready=covered;ok=.true.;return
@@ -61,7 +98,7 @@ contains
       do i=1,size(fields)
         if(fields(i)>=7.and.fields(i)<=12.or. &
           (wants_favre.and.(fields(i)==1.or.fields(i)==5.or.fields(i)==27)).or. &
-          (.not.wants_favre.and.fields(i)==6)) then
+          (.not.wants_favre.and.(fields(i)==6.or.fields(i)>=28))) then
           message='solver-samples does not accumulate the requested mean field';return
         endif
       enddo
@@ -126,12 +163,27 @@ contains
   end subroutine
 
   real(real_kind) function slice_source_value_cpu(i,j,k,field,source) result(value)
-    use commarray, only: rho,vel,prs,tmp
+    use commarray, only: rho,vel,prs,tmp,q
+    use commvar, only: const2,const6
+    use insitu_sample_moments, only: decode_sample_primitives
+    use ieee_arithmetic, only: ieee_value,ieee_quiet_nan
 #ifdef ASTR_AIR5_CHEMISTRY
     use commarray, only: tve,spc
 #endif
     use statistic, only: nsamples,rom,u1m,u2m,u3m,pm,tm,u1rem,u2rem,u3rem
     integer,intent(in) :: i,j,k,field,source
+    real(real_kind) :: current(1),density,local_q(5)
+    logical :: ok
+    if(source==7.or.source==8) then
+      local_q=q(i,j,k,1:5)
+      call decode_sample_primitives(local_q,1,[field],const2,const6,current,density,ok)
+      value=ieee_value(0.e0_real_kind,ieee_quiet_nan)
+      if(ok) value=current(1)-selected_runtime_value(i,j,k,field,source==8)
+      return
+    endif
+    if(source==5.or.source==6) then
+      value=selected_runtime_value(i,j,k,field,source==6);return
+    endif
     if(source==1.or.source==2) then
       value=slice_velocity_statistics_value(i,j,k,field,source==2);return
     endif

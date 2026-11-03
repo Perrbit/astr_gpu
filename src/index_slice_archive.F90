@@ -10,7 +10,14 @@ module index_slice_archive
     runtime_catalog_due,runtime_catalog_success,runtime_catalog_wait,runtime_catalog_disable,runtime_catalog_reject, &
     runtime_active,runtime_waiting
   use index_slice_source, only: slice_source_info
-  use insitu_run_config, only: catalog_product
+  use insitu_selected_runtime, only: observe_selected_runtime,selected_runtime_sampling_info, &
+    selected_runtime_profile,selected_profile_result,refresh_selected_runtime,selected_runtime_workspace, &
+    selected_runtime_wall_references,selected_runtime_wall_grid,selected_runtime_wall_scale,selected_runtime_cartesian
+  use insitu_selected_statistics, only: selected_statistics_group,node_key
+  use insitu_spatial_statistics, only: canonical_node_intervals
+  use insitu_sample_moments, only: push_sample_moments
+  use index_slice_stencil, only: slice_stencil_start
+  use insitu_run_config, only: catalog_product,catalog_wall_mean
   use index_slice_provider, only: prepare_index_slice
   use output_fields, only: write_grid_xml,catalog_quantity_units
   use checkpoint_state_io, only: checkpoint_state_identity
@@ -125,6 +132,7 @@ contains
     dirty=changed.or.len(update_message)>0
     control_changed=changed
     if(rank==0.and.len(update_message)>0) print '(a)','ASTR_CATALOG '//update_message
+    call observe_selected_runtime(identity%step,identity%time,changed,sample_selected_wall_group)
     n=runtime_catalog_count()
     if(n>size(segments)) then
       allocate(expanded(n));expanded(:size(segments))=segments
@@ -134,7 +142,8 @@ contains
       call runtime_catalog_state(p,state)
       if(state%status/=runtime_active.and.state%status/=runtime_waiting) cycle
       if(state%definition%view%channel/='data') cycle
-      if(state%definition%view%kind/='slice'.and.state%definition%view%kind/='probe') cycle
+      if(state%definition%view%kind/='slice'.and.state%definition%view%kind/='probe'.and. &
+         state%definition%view%kind/='station_profile'.and.state%definition%view%kind/='wall_profile') cycle
       call slice_source_info(state%definition,source,ready,ok,window,measure,count,message)
       if(.not.ok) then
         call runtime_catalog_reject(p,trim(message));dirty=.true.;cycle
@@ -144,6 +153,20 @@ contains
       if((old_status==runtime_waiting).eqv.ready) dirty=.true.
       if(.not.ready) cycle
       if(.not.runtime_catalog_due(p,identity%step,real(identity%time,real64))) cycle
+      if(state%definition%view%kind=='station_profile'.or.state%definition%view%kind=='wall_profile') then
+        if(state%definition%view%kind=='wall_profile') then
+          call write_wall_profile(p,state,identity,ok,message)
+        else
+          call write_station_profile(p,state,identity,ok,message)
+        endif
+        if(ok) then
+          call runtime_catalog_success(p,identity%step,real(identity%time,real64))
+        else
+          call runtime_catalog_disable(p,identity%step,real(identity%time,real64),trim(message))
+          if(rank==0) print '(a)','ASTR_STATION_PROFILE_DISABLED '//state%definition%id//': '//trim(message)
+        endif
+        dirty=.true.;cycle
+      endif
       reused=.false.
       if(cached.and.source==cached_source) then
         reused=state%definition%axis==cached_definition%axis.and.state%definition%index==cached_definition%index.and. &
@@ -186,6 +209,7 @@ contains
       endif
       dirty=.true.
     enddo
+    call refresh_selected_runtime()
     if(dirty) then
       if(.not.status_root_ready) then
         status=0
@@ -232,6 +256,10 @@ contains
     write(version,'("version",i12.12)') state%version
     root=archive_root//'/'//state%definition%id//'/'//trim(version)
     if(state%definition%view%kind=='probe') root=status_root//'/monitor_products/'//state%definition%id//'/'//trim(version)
+    if(state%definition%view%kind=='station_profile') &
+      root=status_root//'/profile_products/'//state%definition%id//'/'//trim(version)
+    if(state%definition%view%kind=='wall_profile') &
+      root=status_root//'/wall_profile_products/'//state%definition%id//'/'//trim(version)
     if(state%definition%view%kind=='wall_curve') root=status_root//'/wall_products/'//state%definition%id//'/'//trim(version)
     if(state%definition%view%channel=='image') root=status_root//'/render_products/'//state%definition%id//'/'//trim(version)
     if(state%definition%view%channel=='geometry') root=status_root//'/geometry_products/'//state%definition%id//'/'//trim(version)
@@ -266,6 +294,675 @@ contains
       endif
     endif
     ok=.true.
+  end subroutine
+
+  subroutine sample_selected_wall_group(group,weights,previous,ok)
+    use commvar, only: use_gpu,lihomo,ljhomo,lkhomo,im,jm,km
+    use parallel, only: ig0,jg0,kg0
+#ifdef _CUDA
+    use cudafor, only: c_devptr
+    use index_slice_gpu, only: index_slice_device_view,release_index_slice_gpu
+    use insitu_sample_moments_gpu, only: push_scattered_moments_gpu
+#endif
+    type(selected_statistics_group),intent(inout) :: group
+    real(real_kind),intent(in) :: weights(2)
+    logical,intent(in) :: previous
+    logical,intent(out) :: ok
+    type(catalog_product) :: selection
+    real(real_kind),allocatable :: values(:,:),xyz(:,:)
+    real(real_kind) :: seconds,window(2),measure,fields(5)
+    integer(int64) :: nn,capacity,extra_host,extra_device,workspace,download,exchange,count,key,peak_workspace,total_down,total_exchange
+    integer,allocatable :: positions(:)
+    integer :: n,nf,nraw,d,lo(3),hi(3),first(3),extent(3),origin(3),intervals(3),rank,ranks,err,p,source, &
+      cells(3),owned_upper(3),xranges(2,2),zranges(2,2),nx,nz,xi,zi,m,maximum_rows,g,node(3),sampled
+    logical :: ready,periodic(3),node_ok,gradient_needed
+    character(512) :: message
+    character(16) :: transport
+#ifdef _CUDA
+    type(c_devptr) :: data_pointer
+#endif
+    n=size(group%keys);nf=group%nfields
+    selection%source='instantaneous';selection%statistics_source=''
+    selection%axis=2;selection%index=0;selection%ranges=int(group%bounds,int64)
+    allocate(selection%fields(nf+1));selection%fields=[1,group%field_ids(:nf)]
+    call slice_source_info(selection,source,ready,ok,window,measure,count,message)
+    if(.not.ok) return
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,err);call mpi_ok(err)
+    call MPI_Comm_size(MPI_COMM_WORLD,ranks,err);call mpi_ok(err)
+    periodic=[lihomo,ljhomo,lkhomo];origin=[ig0,jg0,kg0];intervals=[ia,ja,ka];cells=[im,jm,km]
+    owned_upper=origin+cells-1
+    where(origin+cells==intervals.and..not.periodic) owned_upper=owned_upper+1
+    ! Split periodic aliases without sampling the unrequested gaps between them.
+    call canonical_node_intervals(group%bounds(1,1),group%bounds(2,1),ia,periodic(1),xranges,nx)
+    call canonical_node_intervals(group%bounds(1,3),group%bounds(2,3),ka,periodic(3),zranges,nz)
+    nraw=1;nn=0;maximum_rows=0
+    gradient_needed=any(group%field_ids>=31.and.group%field_ids<=33)
+    if(any(group%field_ids==31.or.group%field_ids==32)) nraw=nraw+3
+    do zi=1,nz
+    do xi=1,nx
+      lo=max(origin,[xranges(1,xi),0,zranges(1,zi)])
+      hi=min(owned_upper,[xranges(2,xi),0,zranges(2,zi)])
+      if(any(hi<lo)) cycle
+      maximum_rows=max(maximum_rows,product(hi-lo+1))
+      if(gradient_needed) then
+        do d=1,3
+          lo(d)=slice_stencil_start(lo(d),intervals(d),periodic(d))
+          hi(d)=slice_stencil_start(hi(d),intervals(d),periodic(d))+6
+        enddo
+      endif
+      nn=max(nn,product(int(hi-lo+1,int64)))
+    enddo
+    enddo
+    call MPI_Allreduce(nn,capacity,1,MPI_INTEGER8,MPI_MAX,MPI_COMM_WORLD,err);call mpi_ok(err)
+    extra_host=(8*capacity+12_int64*ranks+maximum_rows)*storage_size(0)/8
+    extra_device=0;transport='host'
+    if(use_gpu) then
+      transport='device-aware'
+      extra_device=((nn+2*capacity)*nraw+int(maximum_rows,int64)*(nf+1)+49)*real_bytes+ &
+        (8*capacity+68)*storage_size(0)/8
+#ifdef _CUDA
+      if(.not.associated(group%device%external_positions)) extra_device=extra_device+int(max(1,n),int64)*storage_size(0)/8
+#endif
+    else
+      extra_host=extra_host+((nn+2*capacity)*nraw+int(maximum_rows,int64)*(nf+4))*real_bytes
+    endif
+    call selected_runtime_workspace(extra_host,extra_device,ok)
+    if(.not.ok) return
+    sampled=0;peak_workspace=0;total_down=0;total_exchange=0
+    do zi=1,nz
+    do xi=1,nx
+      selection%ranges(:,1)=xranges(:,xi);selection%ranges(:,3)=zranges(:,zi)
+      call prepare_index_slice(selection,0,0_int64,values,xyz,first,extent,ok,message,workspace,download,exchange,seconds, &
+        retain_device=use_gpu,transport=transport,unique_periodic_nodes=.true.,retain_device_geometry=.false.)
+      peak_workspace=max(peak_workspace,workspace);total_down=total_down+download;total_exchange=total_exchange+exchange
+      if(.not.ok) exit
+      m=product(extent);allocate(positions(m));g=1
+      do p=1,m
+        node=first-origin+[mod(p-1,extent(1)),mod((p-1)/extent(1),extent(2)),(p-1)/(extent(1)*extent(2))]
+        key=node_key(node,cells)
+        do while(g<=n)
+          if(group%keys(g)>=key) exit
+          g=g+1
+        enddo
+        if(g>n) then
+          ok=.false.;exit
+        endif
+        if(group%keys(g)/=key) then
+          ok=.false.;exit
+        endif
+        positions(p)=g
+      enddo
+      call agree_wall(ok)
+      if(ok) then
+#ifdef _CUDA
+        if(use_gpu) then
+          call index_slice_device_view(data_pointer)
+          call push_scattered_moments_gpu(group%device,data_pointer,positions,nf,weights,previous,ok)
+          if(m>0) total_down=total_down+storage_size(0)/8
+        else
+#endif
+          do p=1,m
+            fields(:nf)=values(p,2:)
+            call push_sample_moments(group%states(positions(p),:),fields(:nf),values(p,1),weights,previous,[0,0,0],node_ok)
+            ok=ok.and.node_ok
+          enddo
+#ifdef _CUDA
+        endif
+#endif
+      endif
+      deallocate(positions)
+      call agree_wall(ok)
+      if(.not.ok) exit
+      sampled=sampled+m
+#ifdef _CUDA
+      if(use_gpu) call release_index_slice_gpu()
+#endif
+    enddo
+      if(.not.ok) exit
+    enddo
+#ifdef _CUDA
+    if(use_gpu) call release_index_slice_gpu()
+#endif
+    ok=ok.and.sampled==n;call agree_wall(ok)
+    write(*,'(a,i0,a,i0,a,i0,a,i0,a,i0)') 'ASTR_WALL_SAMPLE rank=',rank,' source_nodes=',n, &
+      ' private_workspace_bytes=',peak_workspace,' scalar_status_d2h_bytes=',total_down,' private_exchange_bytes=',total_exchange
+    if(.not.ok) print '(a)','ASTR_WALL_SAMPLE_FAILED '//trim(message)
+  contains
+    subroutine agree_wall(valid)
+      logical,intent(inout) :: valid
+      integer :: local_bad,global_bad
+      local_bad=merge(0,1,valid)
+      call MPI_Allreduce(local_bad,global_bad,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,err);call mpi_ok(err)
+      valid=global_bad==0
+    end subroutine
+  end subroutine
+
+  subroutine write_wall_profile(index,state,identity,ok,message)
+    use insitu_run_config, only: catalog_field_names
+    use insitu_boundary_layer, only: wall_reference,wall_reference_result,resolve_recovery_temperature,wall_distance_plus
+    integer,intent(in) :: index
+    type(runtime_product_state),intent(in) :: state
+    type(checkpoint_state_identity),intent(in) :: identity
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
+    type(selected_profile_result) :: profile
+    type(wall_reference_result),allocatable :: reference_values(:)
+    real(real_kind),allocatable :: grid_distances(:,:)
+    logical,allocatable :: grid_available(:,:)
+    character(:),allocatable :: header,target,temporary,system,unit
+    character(64) :: frame
+    character(32) :: columns(22),time_unit,cp_unit,reference_mode
+    integer :: rank,err,status,closed,unit_number,i,c,nf,slots(5),mode,normalization_status,ncolumns
+    logical :: normalized,recovery_ready,row_ok,grid_ok
+    real(real_kind) :: fixed(6),recovery,shear(3),distance_plus
+    integer(int64) :: retained_bytes
+    real(8) :: started,reference_started,product_started
+    product_started=insitu_clock()
+    call selected_runtime_profile(state%definition,profile,ok,message)
+    if(.not.ok) return
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,err);call mpi_ok(err)
+    normalized=state%definition%wall_reference%flags(1)==1
+    mode=state%definition%wall_reference%flags(2);recovery_ready=.false.;recovery=0
+    nf=profile%nfields;normalization_status=0
+    if(normalized) then
+      reference_started=insitu_clock()
+      slots=[findloc(profile%fields(:nf),6,dim=1),findloc(profile%fields(:nf),31,dim=1), &
+        findloc(profile%fields(:nf),32,dim=1),findloc(profile%fields(:nf),33,dim=1), &
+        findloc(profile%fields(:nf),34,dim=1)]
+      if(any(slots==0)) then
+        ok=.false.;message='wall reference dependencies were not accumulated together';return
+      endif
+      retained_bytes=int(size(profile%coordinate),int64)* &
+        ((27+2*nf)*real_bytes+storage_size(wall_reference_result())/8)
+      call selected_runtime_wall_grid(state%definition,retained_bytes,grid_distances,grid_available,ok,message)
+      if(.not.ok) return
+      call selected_runtime_wall_references(fixed)
+      if(mode>0) call resolve_recovery_temperature(mode,real(state%definition%wall_reference%value,real_kind), &
+        fixed(3),fixed(5),fixed(6),recovery,recovery_ready)
+      if(rank==0) then
+        allocate(reference_values(size(profile%coordinate)),stat=normalization_status)
+        if(normalization_status==0) then
+          do i=1,size(profile%coordinate)
+            shear=[profile%mean_r(slots(2),i),0.e0_real_kind,profile%mean_r(slots(3),i)]
+            if(recovery_ready) then
+              call wall_reference(shear,profile%density(i),profile%mean_r(slots(5),i), &
+                profile%mean_r(slots(1),i),profile%mean_r(slots(4),i),fixed(1),fixed(2),reference_values(i),row_ok, &
+                cp_inf=fixed(4),recovery_temperature=recovery)
+            else
+              call wall_reference(shear,profile%density(i),profile%mean_r(slots(5),i), &
+                profile%mean_r(slots(1),i),profile%mean_r(slots(4),i),fixed(1),fixed(2),reference_values(i),row_ok)
+            endif
+            if(.not.row_ok) then
+              normalization_status=1;exit
+            endif
+          enddo
+        endif
+      endif
+      call MPI_Bcast(normalization_status,1,MPI_INTEGER,0,MPI_COMM_WORLD,err);call mpi_ok(err)
+      if(normalization_status/=0) then
+        ok=.false.;message='cannot evaluate the one-dimensional wall reference table';return
+      endif
+      call report_insitu_timing('wall_reference_evaluate',reference_started,int(identity%step))
+    endif
+    call begin_product_segment(index,state,ok,message)
+    if(.not.ok) return
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,err);call mpi_ok(err)
+    header='global_i,x,rho_time_mean'
+    do c=1,nf
+      header=header//','//trim(catalog_field_names(profile%fields(c)))
+    enddo
+    if(normalized) then
+      header=header//',wall_scale_available,cf_available,cq_available,u_tau,nu_wall,viscous_length,Cf,Cq_inf'
+      if(mode>0) header=header//',stanton_available,St_stat'
+      header=header//',y_first_plus,dx_minus_plus,dx_plus_plus,dz_min_plus,dz_max_plus'
+    endif
+    write(frame,'("frame.step",i12.12,".csv")') identity%step
+    target=segments(index)%path//'/'//trim(frame);temporary=target//'.tmp'
+    started=insitu_clock();status=0;closed=0
+    if(rank==0) then
+      open(newunit=unit_number,file=temporary,status='new',action='write',iostat=status)
+      if(status==0) then
+        system='dimensionless';unit='1'
+        if(.not.nondimen) then
+          system='si';unit='m'
+        endif
+        write(unit_number,'(a)',iostat=status) &
+          '# phase=completed_step; source=reynolds; statistics_source=selected-time; spatial_sampling='// &
+          trim(state%definition%view%sampling)
+        if(status==0) write(unit_number,'(a,i0,a,es24.16)',iostat=status) '# step=',identity%step,'; time=',identity%time
+        if(status==0) write(unit_number,'(a,es24.16,a,a)',iostat=status) '# wall_y=',profile%fixed_coordinate, &
+          '; coordinate_unit=',unit
+        if(status==0) write(unit_number,'(a,2(i0,1x),a,2(es24.16,1x))',iostat=status) &
+          '# global_k=',state%definition%ranges(:,3),'; native_span=',profile%span
+        if(status==0) write(unit_number,'(a,es24.16)',iostat=status) '# spatial_measure=',profile%measure(1)
+        if(status==0) write(unit_number,'(a,2(es24.16,1x),a,2(es24.16,1x),a,es24.16,a,i0)',iostat=status) &
+          '# requested_window=',profile%window,'; actual_sample_range=',profile%actual_window, &
+          '; covered_duration=',profile%duration,'; sampling_segments=',profile%segments
+        if(status==0) write(unit_number,'(a)',iostat=status) &
+          '# stress is the complete molecular tangential stress; heat is Fourier conduction positive into solid'
+        if(status==0) write(unit_number,'(a)',iostat=status) &
+          '# instantaneous material times gradient is accumulated before averaging; no product of primitive means'
+        if(normalized) then
+          time_unit='solver-dimensionless';cp_unit='solver-dimensionless'
+          if(.not.nondimen) then
+            time_unit='s';cp_unit='J kg^-1 K^-1'
+          endif
+          if(status==0) write(unit_number,'(a)',iostat=status) '# time_unit='//trim(time_unit)//'; cp_inf_unit='//trim(cp_unit)
+          if(nondimen) then
+            if(status==0) write(unit_number,'(a)',iostat=status) &
+              '# u_tau_unit=solver-dimensionless; nu_wall_unit=solver-dimensionless; viscous_length_unit=solver-dimensionless'
+          else
+            if(status==0) write(unit_number,'(a)',iostat=status) &
+              '# u_tau_unit=m s^-1; nu_wall_unit=m^2 s^-1; viscous_length_unit=m'
+          endif
+          if(status==0) write(unit_number,'(a)',iostat=status) '# Cf_unit=1; Cq_inf_unit=1; St_stat_unit=1'
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# grid columns are physical lengths divided by the same statistical viscous_length; all have unit 1'
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# y_first_plus uses the first off-wall node; dx_minus/plus use adjacent cells in decreasing/increasing index'
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# dz_min/max use cells contained in the selected span; a wall_line uses cells incident on its selected node'
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# periodic seams use real terminal cell lengths; absent nonperiodic neighbors and unavailable scales leave blank cells'
+          if(status==0) write(unit_number,'(a,6(a,es25.16e3))',iostat=status) '# fixed_primary_free_stream', &
+            '; rho_inf=',fixed(1),'; U_inf=',fixed(2),'; T_inf=',fixed(3),'; cp_inf=',fixed(4), &
+            '; gamma=',fixed(5),'; Mach_inf=',fixed(6)
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# U_inf is fixed speed; Cf is signed global-x shear; wall scales use the magnitude of mean shear vector'
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# normalized values unavailable in floating point are empty CSV fields, with the corresponding flag equal to zero'
+          if(mode==0) then
+            if(status==0) write(unit_number,'(a)',iostat=status) '# Stanton number not requested: no recovery reference supplied'
+          else
+            reference_mode='temperature'
+            if(mode==2) reference_mode='factor'
+            if(status==0) write(unit_number,'(a,a,a,es25.16e3)',iostat=status) '# recovery_mode=',trim(reference_mode), &
+              '; recovery_input=',state%definition%wall_reference%value
+            if(recovery_ready) then
+              if(status==0) write(unit_number,'(a,es25.16e3)',iostat=status) '# recovery_temperature=',recovery
+            else
+              if(status==0) write(unit_number,'(a)',iostat=status) '# recovery_reference_available=0; St_stat unavailable'
+            endif
+            if(status==0) write(unit_number,'(a)',iostat=status) &
+              '# St_stat=mean(q_into_wall)/(rho_inf*U_inf*cp_inf*(Tr-mean(Tw))); not mean(St_instantaneous)'
+          endif
+          if(nondimen.and.status==0) write(unit_number,'(a)',iostat=status) &
+            '# effective_mu=mu_phys/(rho_ref*U_ref*L_ref), including 1/Re; cp_inf=1/((gamma-1)*Mach_inf^2)'
+        endif
+        if(status==0) write(unit_number,'(a)',iostat=status) &
+          '# rho_time_mean_unit='//catalog_quantity_units(1,system)
+        do c=1,nf
+          if(status==0) write(unit_number,'(a)',iostat=status) '# '//trim(catalog_field_names(profile%fields(c)))// &
+            '_unit='//catalog_quantity_units(profile%fields(c),system)
+        enddo
+        if(status==0) write(unit_number,'(a)',iostat=status) header
+        do i=1,size(profile%coordinate)
+          if(normalized) then
+            call number(profile%coordinate(i),.true.,columns(1));call number(profile%density(i),.true.,columns(2))
+            do c=1,nf
+              call number(profile%mean_r(c,i),.true.,columns(2+c))
+            enddo
+            ncolumns=2+nf
+            columns(ncolumns+1)=merge('1','0',reference_values(i)%scale_available)
+            columns(ncolumns+2)=merge('1','0',reference_values(i)%cf_available)
+            columns(ncolumns+3)=merge('1','0',reference_values(i)%cq_available)
+            call number(reference_values(i)%u_tau,reference_values(i)%scale_available,columns(ncolumns+4))
+            call number(reference_values(i)%nu,reference_values(i)%scale_available,columns(ncolumns+5))
+            call number(reference_values(i)%length,reference_values(i)%scale_available,columns(ncolumns+6))
+            call number(reference_values(i)%cf,reference_values(i)%cf_available,columns(ncolumns+7))
+            call number(reference_values(i)%cq,reference_values(i)%cq_available,columns(ncolumns+8))
+            ncolumns=ncolumns+8
+            if(mode>0) then
+              columns(ncolumns+1)=merge('1','0',reference_values(i)%stanton_available)
+              call number(reference_values(i)%stanton,reference_values(i)%stanton_available,columns(ncolumns+2))
+              ncolumns=ncolumns+2
+            endif
+            do c=1,5
+              distance_plus=0;grid_ok=.false.
+              if(reference_values(i)%scale_available.and.grid_available(c,i)) &
+                call wall_distance_plus(grid_distances(c,i),reference_values(i)%length,distance_plus,grid_ok)
+              call number(distance_plus,grid_ok,columns(ncolumns+c))
+            enddo
+            ncolumns=ncolumns+5
+            if(status==0) write(unit_number,'(i0,*(a))',iostat=status) int(state%definition%ranges(1,1))+i-1, &
+              (','//trim(adjustl(columns(c))),c=1,ncolumns)
+          else
+            if(status==0) write(unit_number,'(i0,*(a,es25.16e3))',iostat=status) &
+              int(state%definition%ranges(1,1))+i-1,',',profile%coordinate(i),',',profile%density(i), &
+              (',',profile%mean_r(c,i),c=1,nf)
+          endif
+        enddo
+        close(unit_number,iostat=closed)
+        if(status==0.and.closed==0) status=rename_file(temporary//c_null_char,target//c_null_char)
+      endif
+    endif
+    call MPI_Bcast(status,1,MPI_INTEGER,0,MPI_COMM_WORLD,err);call mpi_ok(err)
+    call MPI_Bcast(closed,1,MPI_INTEGER,0,MPI_COMM_WORLD,err);call mpi_ok(err)
+    ok=status==0.and.closed==0;message='wall profile CSV write/close/publication failed'
+    if(ok) message=''
+    call report_insitu_timing('wall_profile_csv',started,int(identity%step))
+    call report_insitu_timing('wall_profile_publish_total',product_started,int(identity%step))
+  contains
+    subroutine number(value,available,text)
+      real(real_kind),intent(in) :: value
+      logical,intent(in) :: available
+      character(*),intent(out) :: text
+      text=''
+      if(available) write(text,'(es25.16e3)') value
+    end subroutine
+  end subroutine
+
+  subroutine write_station_profile(index,state,identity,ok,message)
+    use insitu_run_config, only: catalog_field_names
+    use insitu_boundary_layer, only: wall_reference_result,wall_scaled_quantity,boundary_layer_edge, &
+      boundary_layer_thickness,thickness_result,nonreacting_wall_material,thickness_reynolds
+    use commvar, only: tempconst,tempconst1,reynolds,prandtl,const5,cp
+    use bc, only: bctype
+    integer,intent(in) :: index
+    type(runtime_product_state),intent(in) :: state
+    type(checkpoint_state_identity),intent(in) :: identity
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
+    type(selected_profile_result) :: profile
+    type(wall_reference_result) :: wall
+    type(thickness_result) :: layer
+    character(:),allocatable :: header,target,temporary,system,unit,means_unit
+    character(512) :: units_message
+    character(512) :: layer_message
+    character(64) :: frame
+    character(2),parameter :: pairs(6)=['xx','xy','yy','xz','yz','zz']
+    real(real_kind) :: row(22)
+    real(real_kind) :: rho_wall,wall_y
+    real(real_kind) :: edge(4),edge_mu,unused_conductivity,layer_re(2)
+    real(real_kind),allocatable :: cumulative_d(:),cumulative_t(:)
+    character(32) :: raw_columns(22),unit_columns(20)
+    character(32) :: layer_columns(3)
+    integer :: rank,err,status,closed,unit_number,j,m,n,nf,c,unit_count
+    integer(int64) :: retained
+    logical :: units_requested,units_ready,reference_ok
+    logical :: layer_requested,layer_ready,edge_ready,mu_ready,layer_re_ready(2)
+    real(8) :: started
+    call selected_runtime_profile(state%definition,profile,ok,message)
+    if(.not.ok) return
+    units_requested=.false.;units_ready=.false.;units_message='';rho_wall=0;wall_y=0
+    if(allocated(state%definition%wall_units)) units_requested=len(state%definition%wall_units)>0
+    if(units_requested) then
+      retained=int(size(profile%coordinate),int64)*(27+2*profile%nfields)*real_bytes
+      call selected_runtime_wall_scale(state%definition,retained,wall,rho_wall,wall_y,reference_ok,units_message)
+      units_ready=reference_ok.and.wall%scale_available
+    endif
+    layer_requested=state%definition%thickness%flags(1)==1
+    if(layer_requested) then
+      started=insitu_clock()
+      call prepare_thickness()
+      call report_insitu_timing('station_thickness_diagnostic',started,int(identity%step))
+      if(.not.ok) return
+    endif
+    call begin_product_segment(index,state,ok,message)
+    if(.not.ok) return
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,err);call mpi_ok(err)
+    nf=profile%nfields
+    header='global_j,y,rho_time_mean'
+    do m=1,nf
+      header=header//','//trim(catalog_field_names(profile%fields(m)))
+    enddo
+    if(profile%covariance) then
+      header=header//',rms_velocity_x,rms_velocity_y,rms_velocity_z'
+      do m=1,6
+        header=header//',covariance_'//pairs(m)
+      enddo
+      do m=1,6
+        header=header//',rho_covariance_f_'//pairs(m)
+      enddo
+    endif
+    if(units_requested) then
+      header=header//',wall_scale_available,y_plus'
+      do m=1,nf
+        if(profile%fields(m)>=2.and.profile%fields(m)<=4) &
+          header=header//','//trim(catalog_field_names(profile%fields(m)))//'_plus'
+      enddo
+      if(profile%covariance) then
+        header=header//',rms_velocity_x_plus,rms_velocity_y_plus,rms_velocity_z_plus'
+        do m=1,6
+          header=header//',covariance_'//pairs(m)//'_plus'
+        enddo
+        do m=1,6
+          header=header//',rho_covariance_f_'//pairs(m)//'_plus'
+        enddo
+      endif
+    endif
+    if(layer_requested) header=header//',thickness_integrals_available,cumulative_displacement,cumulative_momentum'
+    write(frame,'("frame.step",i12.12,".csv")') identity%step
+    target=segments(index)%path//'/'//trim(frame);temporary=target//'.tmp'
+    started=insitu_clock();status=0;closed=0
+    if(rank==0) then
+      open(newunit=unit_number,file=temporary,status='new',action='write',iostat=status)
+      if(status==0) then
+        system='dimensionless';unit='1'
+        if(.not.nondimen) then
+          system='si';unit='m'
+        endif
+        write(unit_number,'(a)',iostat=status) '# phase=completed_step; source='//state%definition%source// &
+          '; statistics_source=selected-time; spatial_sampling='//trim(state%definition%view%sampling)
+        if(status==0) write(unit_number,'(a,i0,a,es24.16)',iostat=status) '# step=',identity%step,'; time=',identity%time
+        if(status==0) write(unit_number,'(a,i0,a,es24.16,a,a)',iostat=status) '# global_i=',state%definition%index, &
+          '; x=',profile%fixed_coordinate,'; coordinate_unit=',unit
+        if(status==0) write(unit_number,'(a,2(i0,1x),a,2(es24.16,1x))',iostat=status) &
+          '# global_k=',state%definition%ranges(:,3),'; native_span=',profile%span
+        if(status==0) write(unit_number,'(a,es24.16)',iostat=status) '# spatial_measure=',profile%measure(1)
+        if(status==0) write(unit_number,'(a,2(es24.16,1x),a,2(es24.16,1x),a,es24.16,a,i0)',iostat=status) &
+          '# requested_window=',profile%window,'; actual_sample_range=',profile%actual_window, &
+          '; covered_duration=',profile%duration,'; sampling_segments=',profile%segments
+        if(status==0) write(unit_number,'(a)',iostat=status) '# rho_time_mean is the ordinary time mean of density, not Favre density'
+        if(status==0) write(unit_number,'(a)',iostat=status) &
+          '# covariance is the spatial average of local temporal covariance; spatial variation of local means is not added'
+        if(status==0) write(unit_number,'(a)',iostat=status) &
+          '# rho_covariance_f is the spatial average of mean_time(rho*u_double_prime_i*u_double_prime_j); no minus sign'
+        if(layer_requested) call write_thickness_metadata()
+        if(units_requested) then
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# wall_units_reference='//state%definition%wall_units//'; matching positive-weight sampling identity required'
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# wall units use statistical mean wall vector/rho/mu, not an average of instantaneous normalizations'
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# y_plus=(y-y_wall)/viscous_length; velocity and RMS plus divide by u_tau; covariance plus divides by u_tau^2'
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# rho_covariance_f_plus divides by rho_wall*u_tau^2; all plus columns have unit 1 and retain the covariance sign'
+          if(units_ready) then
+            if(status==0) write(unit_number,'(a,4(a,es25.16e3))',iostat=status) '# statistical_wall_reference', &
+              '; rho_wall=',rho_wall,'; y_wall=',wall_y,'; u_tau=',wall%u_tau,'; viscous_length=',wall%length
+          else
+            if(status==0) write(unit_number,'(a)',iostat=status) '# wall_units_unavailable='//trim(units_message)
+          endif
+          if(status==0) write(unit_number,'(a)',iostat=status) &
+            '# unavailable normalized quantities are empty cells; raw statistics are retained without replacement'
+        endif
+        means_unit=catalog_quantity_units(1,system)
+        if(status==0) write(unit_number,'(a)',iostat=status) '# rho_time_mean_unit='//trim(means_unit)
+        do m=1,nf
+          means_unit=catalog_quantity_units(profile%fields(m),system)
+          if(status==0) write(unit_number,'(a)',iostat=status) '# '//trim(catalog_field_names(profile%fields(m)))// &
+            '_unit='//trim(means_unit)
+        enddo
+        if(profile%covariance) then
+          if(nondimen) then
+            if(status==0) write(unit_number,'(a)',iostat=status) '# rms_unit=1; covariance_unit=1; rho_covariance_f_unit=1'
+          else
+            if(status==0) write(unit_number,'(a)',iostat=status) '# rms_unit=m/s; covariance_unit=m^2/s^2; rho_covariance_f_unit=Pa'
+          endif
+        endif
+        if(status==0) write(unit_number,'(a)',iostat=status) header
+        do j=1,size(profile%coordinate)
+          row=0;row(1)=profile%coordinate(j);row(2)=profile%density(j);n=2+nf
+          if(state%definition%source=='favre') then
+            row(3:n)=profile%mean_f(:,j)
+          else
+            row(3:n)=profile%mean_r(:,j)
+          endif
+          if(profile%covariance) then
+            if(state%definition%source=='favre') then
+              row(n+1:n+3)=profile%rms_f(:,j);row(n+4:n+9)=profile%covariance_f(:,j)
+            else
+              row(n+1:n+3)=profile%rms_r(:,j);row(n+4:n+9)=profile%covariance_r(:,j)
+            endif
+            row(n+10:n+15)=profile%density_stress(:,j);n=n+15
+          endif
+          if(units_requested.or.layer_requested) then
+            do c=1,n
+              write(raw_columns(c),'(es25.16e3)') row(c)
+            enddo
+            unit_columns='';unit_count=0
+            if(units_requested) then
+            unit_count=1;unit_columns(1)=merge('1','0',units_ready)
+            call append_unit(profile%coordinate(j)-wall_y,[wall%length])
+            do m=1,nf
+              if(profile%fields(m)<2.or.profile%fields(m)>4) cycle
+              call append_unit(row(2+m),[wall%u_tau])
+            enddo
+            if(profile%covariance) then
+              do m=1,3
+                call append_unit(row(2+nf+m),[wall%u_tau])
+              enddo
+              do m=1,6
+                call append_unit(row(5+nf+m),[wall%u_tau,wall%u_tau])
+              enddo
+              do m=1,6
+                call append_unit(row(11+nf+m),[rho_wall,wall%u_tau,wall%u_tau])
+              enddo
+            endif
+            endif
+            layer_columns=''
+            if(layer_requested) then
+              layer_columns(1)=merge('1','0',layer_ready)
+              if(layer_ready) then
+                write(layer_columns(2),'(es25.16e3)') cumulative_d(j)
+                write(layer_columns(3),'(es25.16e3)') cumulative_t(j)
+              endif
+            endif
+            if(status==0) write(unit_number,'(i0,*(a))',iostat=status) int(state%definition%ranges(1,2))+j-1, &
+              (','//trim(adjustl(raw_columns(c))),c=1,n),(','//trim(adjustl(unit_columns(c))),c=1,unit_count), &
+              (','//trim(adjustl(layer_columns(c))),c=1,merge(3,0,layer_requested))
+          else
+            if(status==0) write(unit_number,'(i0,*(a,es25.16e3))',iostat=status) &
+              int(state%definition%ranges(1,2))+j-1,(',',row(c),c=1,n)
+          endif
+        enddo
+        close(unit_number,iostat=closed)
+        if(status==0.and.closed==0) status=rename_file(temporary//c_null_char,target//c_null_char)
+      endif
+    endif
+    call MPI_Bcast(status,1,MPI_INTEGER,0,MPI_COMM_WORLD,err);call mpi_ok(err)
+    call MPI_Bcast(closed,1,MPI_INTEGER,0,MPI_COMM_WORLD,err);call mpi_ok(err)
+    ok=status==0.and.closed==0;message='station profile CSV write/close/publication failed'
+    if(ok) message=''
+    call report_insitu_timing('station_profile_csv',started,int(identity%step))
+  contains
+    subroutine prepare_thickness()
+      integer :: band(2),slots(3),ny,allocation_status
+      layer=thickness_result();edge=0;edge_mu=0;layer_re=0
+      layer_ready=.false.;edge_ready=.false.;mu_ready=.false.;layer_re_ready=.false.
+      layer_message='thickness needs an axis-aligned bottom wall with inward +y'
+      ny=size(profile%coordinate)
+      ! Retained profile plus cumulative, quadrature and edge-weight workspaces.
+      call selected_runtime_workspace(int(35+2*profile%nfields,int64)*ny*real_bytes,0_int64,ok)
+      message='thickness profile workspace exceeds configured resources'
+      if(.not.ok) return
+      allocate(cumulative_d(ny),cumulative_t(ny),stat=allocation_status)
+      ok=allocation_status==0
+      call MPI_Allreduce(MPI_IN_PLACE,ok,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,err);call mpi_ok(err)
+      message='thickness cumulative profile allocation failed'
+      if(.not.ok) return
+      cumulative_d=0;cumulative_t=0
+      if(.not.any(bctype(3)==[41,42,411,421]).or..not.selected_runtime_cartesian(.true.)) return
+      slots=[findloc(profile%fields(:profile%nfields),2,dim=1),findloc(profile%fields(:profile%nfields),6,dim=1), &
+        findloc(profile%fields(:profile%nfields),5,dim=1)]
+      if(any(slots==0)) then
+        layer_message='thickness history lacks velocity_x, temperature or pressure';return
+      endif
+      band=int(state%definition%thickness%edge_band-state%definition%ranges(1,2))+1
+      call boundary_layer_edge(profile%coordinate,profile%density,profile%mean_f(slots(1),:), &
+        profile%mean_r(slots(2),:),profile%mean_r(slots(3),:),band,edge,edge_ready)
+      layer_message='external reference needs finite positive rho/U/T/p on an increasing explicit band'
+      if(.not.edge_ready) return
+      call nonreacting_wall_material(edge(3),nondimen,tempconst,tempconst1,reynolds,prandtl,const5,cp, &
+        .false.,edge_mu,unused_conductivity,mu_ready)
+      if(state%definition%thickness%flags(2)==1) then
+        call boundary_layer_thickness(profile%coordinate,profile%density,profile%mean_f(slots(1),:),edge(1),edge(2), &
+          band,layer,cumulative_d,cumulative_t,layer_ready, &
+          real(state%definition%thickness%explicit_upper,real_kind))
+      else
+        call boundary_layer_thickness(profile%coordinate,profile%density,profile%mean_f(slots(1),:),edge(1),edge(2), &
+          band,layer,cumulative_d,cumulative_t,layer_ready)
+      endif
+      layer_message='thickness integral requires finite positive density and strictly increasing physical y'
+      if(layer_ready) layer_message=''
+      if(mu_ready.and.layer%delta_available) call thickness_reynolds(edge(1),edge(2),layer%momentum99,edge_mu, &
+        layer_re(1),layer_re_ready(1))
+      if(mu_ready.and.layer%explicit_available) call thickness_reynolds(edge(1),edge(2),layer%momentum_explicit,edge_mu, &
+        layer_re(2),layer_re_ready(2))
+    end subroutine
+
+    subroutine write_thickness_metadata()
+      if(status==0) write(unit_number,'(a,2(i0,1x))',iostat=status) '# thickness_edge_global_j=', &
+        state%definition%thickness%edge_band
+      if(status==0) write(unit_number,'(a)',iostat=status) &
+        '# thickness_edge_estimator=physical-y trapezoid length means rho/p/T; density-length weighted Favre U'
+      if(status==0) write(unit_number,'(a)',iostat=status) &
+        '# thickness_velocity=local temporal Favre mean with declared span processing; edge p/T are Reynolds means'
+      if(status==0) write(unit_number,'(a)',iostat=status) &
+        '# thickness_integration=piecewise-linear integrands, trapezoid and partial final interval; no extrapolation'
+      if(status==0) write(unit_number,'(a)',iostat=status) &
+        '# thickness_lengths_unit='//unit//'; H and Re_theta are dimensionless; cumulative origins are the wall'
+      if(status==0) write(unit_number,'(a,6(i0,1x))',iostat=status) '# thickness_available=', &
+        merge(1,0,edge_ready),merge(1,0,layer_ready),merge(1,0,layer%delta_available), &
+        merge(1,0,layer%explicit_available),merge(1,0,layer_re_ready(1)),merge(1,0,layer_re_ready(2))
+      if(status==0) write(unit_number,'(a)',iostat=status) &
+        '# thickness_available_order=edge,cumulative,delta99,explicit_upper,Re_theta99,Re_theta_explicit'
+      if(len_trim(layer_message)>0.and.status==0) write(unit_number,'(a)',iostat=status) &
+        '# thickness_unavailable='//trim(layer_message)
+      if(edge_ready) then
+        call layer_scalar('rho_edge',edge(1));call layer_scalar('U_edge',edge(2))
+        call layer_scalar('T_edge',edge(3));call layer_scalar('p_edge',edge(4))
+      endif
+      if(mu_ready) then
+        call layer_scalar('mu_edge',edge_mu)
+        if(status==0) write(unit_number,'(a)',iostat=status) &
+          '# thickness_mu_edge_definition=case viscosity at Reynolds mean edge temperature; not mean instantaneous viscosity'
+      endif
+      if(status==0) write(unit_number,'(a,i0)',iostat=status) '# thickness_threshold_components=',layer%threshold_components
+      if(layer%delta_available) then
+        call layer_scalar('delta99',layer%delta99);call layer_scalar('displacement99',layer%displacement99)
+        call layer_scalar('momentum99',layer%momentum99)
+        if(layer%shape99_available) call layer_scalar('H99',layer%shape99)
+      endif
+      if(layer%explicit_available) then
+        call layer_scalar('explicit_upper',layer%upper);call layer_scalar('displacement_explicit',layer%displacement_explicit)
+        call layer_scalar('momentum_explicit',layer%momentum_explicit)
+        if(layer%shape_explicit_available) call layer_scalar('H_explicit',layer%shape_explicit)
+      endif
+      if(state%definition%thickness%flags(2)==1.and..not.layer%explicit_available.and.status==0) &
+        write(unit_number,'(a)',iostat=status) '# thickness_explicit_unavailable=upper outside measured y range or invalid integrand'
+      if(.not.layer%delta_available.and.status==0) write(unit_number,'(a)',iostat=status) &
+        '# thickness_delta99_unavailable=no crossing connected to the entire declared edge band'
+      if(layer_re_ready(1)) call layer_scalar('Re_theta99',layer_re(1))
+      if(layer_re_ready(2)) call layer_scalar('Re_theta_explicit',layer_re(2))
+    end subroutine
+
+    subroutine layer_scalar(name,value)
+      character(*),intent(in) :: name
+      real(real_kind),intent(in) :: value
+      if(status==0) write(unit_number,'(a,es25.16e3)',iostat=status) '# thickness_'//name//'=',value
+    end subroutine
+
+    subroutine append_unit(quantity,denominators)
+      real(real_kind),intent(in) :: quantity,denominators(:)
+      real(real_kind) :: value
+      logical :: valid
+      unit_count=unit_count+1
+      if(.not.units_ready) return
+      call wall_scaled_quantity(quantity,denominators,value,valid)
+      if(valid) write(unit_columns(unit_count),'(es25.16e3)') value
+    end subroutine
   end subroutine
 
   subroutine write_probe(index,state,identity,values,xyz,window,measure,count,ok,message)
@@ -324,6 +1021,7 @@ contains
           if(state%definition%source/='instantaneous') then
             provider='velocity-time'
             if(count>0) provider='solver-samples'
+            if(state%definition%statistics_source=='selected-time') provider='selected-time'
           endif
           if(status==0) write(unit,'(a)',iostat=status) '# statistics_provider='//provider
           references=real([roinf,uinf,vinf,winf,pinf,tinf,ref_den,ref_vel,ref_tem,ref_len,ref_tim,ref_miu],real64)
@@ -380,9 +1078,11 @@ contains
     type(saved_frame),allocatable :: frames(:)
     character(:),allocatable :: names,units,temporary,target,provenance,system,provider
     character(64) :: frame
-    character(256) :: description
+    character(512) :: description
     integer :: status,i,n,axes(2),dimensions(2),offset(2),local_extent(2),bounds(2,3),d
     real(real64) :: clock(3),references(12)
+    real(real_kind) :: requested(2)
+    integer(int64) :: sampling_segments
     real(8) :: phase_started
     call begin_product_segment(index,state,ok,message)
     if(.not.ok) return
@@ -412,8 +1112,16 @@ contains
       write(description,'(a,2(es24.16,1x),a,i0,a)') 'sample_time_range=',window,'; samples=',count, &
         '; weight=equal_sample_count; sampling_phase=existing_pre_step_RK1'
     else
-      provider='velocity-time'
-      write(description,'(a,2(es24.16,1x),a,es24.16)') 'requested_window=',window,'; covered_duration=',measure
+      if(provider=='selected-time') then
+        call selected_runtime_sampling_info(state%definition%id,requested,sampling_segments)
+        write(description,'(a,2(es24.16,1x),a,2(es24.16,1x),a,es24.16,a,i0)') &
+          'requested_window=',requested,'; actual_sample_range=',window,'; covered_duration=',measure, &
+          '; sampling_segments=',sampling_segments
+        description=trim(description)//'; phase=completed_step; gaps_excluded=true'
+      else
+        provider='velocity-time'
+        write(description,'(a,2(es24.16,1x),a,es24.16)') 'requested_window=',window,'; covered_duration=',measure
+      endif
       if(state%definition%source=='favre') then
         description=trim(description)//'; weight=density_time_integral'
       else
@@ -422,6 +1130,10 @@ contains
     endif
     provenance='source='//state%definition%source//'; statistics_source='//provider//'; '//trim(description)// &
       '; values='//system//'; diagnostics=explicit6-seven-node; periodic-stencil-endpoint=node0'
+    if(state%definition%fluctuation) provenance=provenance// &
+      '; quantity=instantaneous_minus_local_accumulated_mean; current_phase=completed_step'
+    if(catalog_wall_mean(state%definition)) provenance=provenance// &
+      '; wall_transport=mean_of_instantaneous_complete_viscous_tensor_and_Fourier_flux; spatial_reduction=none'
     clock=real([identity%time,identity%dt_used,identity%dt_next],real64)
     references=real([roinf,uinf,vinf,winf,pinf,tinf,ref_den,ref_vel,ref_tem,ref_len,ref_tim,ref_miu],real64)
     phase_started=insitu_clock()

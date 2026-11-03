@@ -580,15 +580,21 @@ std::string runtime_descriptor(const astr_insitu::RuntimeProductView* view,bool 
     if(view->statistics_provider) {
       auto& statistics=data["statistics"];
       const bool wall=view->labels[0]=="wall_curve";
-      const bool samples=!wall && view->statistics_provider>2;
-      statistics["provider"]=wall?"wall-time":(samples?"solver-samples":"velocity-time");
-      auto& window=statistics[samples?"sample_time_range":"requested_window"];
+      const bool selected=!wall && view->statistics_provider>=5;
+      const bool samples=!wall && view->statistics_provider>2 && !selected;
+      statistics["provider"]=wall?"wall-time":(selected?"selected-time":(samples?"solver-samples":"velocity-time"));
+      auto& window=statistics[selected?"actual_sample_range":(samples?"sample_time_range":"requested_window")];
       window.append(view->statistics[0]);window.append(view->statistics[1]);
       if(samples) statistics["sample_count"]=Json::Int64(view->samples);
       else statistics["covered_duration"]=view->statistics[2];
       if(wall) statistics["accumulated_endpoints"]=Json::Int64(view->samples);
       statistics["weight"]=samples?"equal_sample_count":(view->source=="favre"?"density_time_integral":"time_integral");
       statistics["sampling_phase"]=samples?"existing_pre_step_RK1":"completed_step_clipped_time";
+      if(selected) {
+        statistics["quantity"]=view->statistics_provider>=7?"instantaneous_minus_local_accumulated_mean":"local_accumulated_mean";
+        statistics["mean_reference"]=view->source;
+        statistics["gaps_excluded"]=true;
+      }
     }
   }
   Json::StreamWriterBuilder writer;writer["indentation"]="";

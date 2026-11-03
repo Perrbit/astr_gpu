@@ -13,6 +13,7 @@ module checkpoint_state_io
   public :: checkpoint_halo_refresh
   public :: checkpoint_state_header
   public :: checkpoint_crashfix_state,checkpoint_crashfix_words
+  public :: checkpoint_rank_words
 
   abstract interface
     subroutine checkpoint_halo_refresh(buffer,cells,halo,budget,comm)
@@ -32,6 +33,87 @@ module checkpoint_state_io
     real(real_kind) :: time=0, dt_used=0, dt_next=0
   end type
 contains
+  subroutine checkpoint_rank_words(path,writing,global_shape,identity,words,budget,comm)
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    integer,intent(in) :: global_shape(3),comm
+    type(checkpoint_state_identity),intent(inout) :: identity
+    integer(int64),allocatable,intent(inout) :: words(:)
+    integer(int64),intent(in) :: budget
+    integer(int64) :: header(13),agreed(13),nwords,offset,total
+    integer(int64),allocatable :: counts(:)
+    integer(hid_t) :: file,access,xfer,dset,space,mem,native
+    integer(hsize_t) :: dims(1),mdims(1),start(1),selection(1)
+    integer :: rank,np,err,mpi_i64,bytes
+    call MPI_Comm_rank(comm,rank,err)
+    call MPI_Comm_size(comm,np,err)
+    call MPI_Type_match_size(MPI_TYPECLASS_INTEGER,8,mpi_i64,err)
+    call require(err==MPI_SUCCESS,comm,'rank payload integer type')
+    header=[magic,schema,1_int64,int(global_shape,int64),1_int64,int(np,int64),identity%step, &
+      real_to_word(identity%time),real_to_word(identity%dt_used),real_to_word(identity%dt_next),12_int64]
+    agreed=header
+    call MPI_Bcast(agreed,13,mpi_i64,0,comm,err)
+    call require(err==MPI_SUCCESS.and.all(header==agreed),comm,'rank payload identity agreement')
+    call require(int(np,int64)*8<=budget,comm,'rank payload partition budget')
+    allocate(counts(np),stat=err)
+    call require(err==0,comm,'rank payload partition allocation')
+    if(writing) then
+      call require(allocated(words),comm,'missing rank payload')
+      nwords=size(words,kind=int64)
+      call MPI_Allgather(nwords,1,mpi_i64,counts,1,mpi_i64,comm,err)
+      call require(err==MPI_SUCCESS,comm,'rank payload partition gather')
+    endif
+    call h5open_f(err)
+    call require(err==0,comm,'rank payload HDF5 initialize')
+    call h5pcreate_f(H5P_FILE_ACCESS_F,access,err)
+    call require(err==0,comm,'rank payload file property')
+    call h5pset_fapl_mpio_f(access,comm,MPI_INFO_NULL,err)
+    call require(err==0,comm,'rank payload parallel file property')
+    if(writing) then
+      call h5fcreate_f(path,H5F_ACC_EXCL_F,file,err,access_prp=access)
+    else
+      call h5fopen_f(path,H5F_ACC_RDONLY_F,file,err,access_prp=access)
+    endif
+    call require(err==0,comm,'open rank payload file')
+    call h5pclose_f(access,err)
+    call require(err==0,comm,'close rank payload file property')
+    call h5pcreate_f(H5P_DATASET_XFER_F,xfer,err)
+    call require(err==0,comm,'rank payload transfer property')
+    call h5pset_dxpl_mpio_f(xfer,H5FD_MPIO_COLLECTIVE_F,err)
+    call require(err==0,comm,'rank payload collective transfer')
+    call integers(file,'identity',header,writing,xfer,comm,rank)
+    call state_precision(file,header,writing,xfer,comm,rank,bytes)
+    call require(all(header==agreed).and.bytes==real_bytes,comm,'rank payload clock/shape/precision mismatch')
+    call integers(file,'rank_word_counts',counts,writing,xfer,comm,rank)
+    call require(all(counts>0).and.all(counts<=huge(1)),comm,'rank payload counts')
+    nwords=counts(rank+1);total=sum(counts);offset=sum(counts(:rank))
+    call require(nwords<=(budget-int(np,int64)*8)/8,comm,'rank payload buffer budget')
+    if(writing) then
+      call require(size(words,kind=int64)==nwords,comm,'rank payload size')
+    else
+      allocate(words(int(nwords)),stat=err)
+      call require(err==0,comm,'rank payload read allocation')
+    endif
+    dims=total;mdims=nwords;start=offset;selection=nwords
+    call dataset(file,'rank_words',dims,H5T_STD_I64LE,writing,comm,dset,space)
+    call h5screate_simple_f(1,mdims,mem,err)
+    call require(err==0,comm,'rank payload memory space')
+    call h5sselect_hyperslab_f(space,H5S_SELECT_SET_F,start,selection,err)
+    call require(err==0,comm,'rank payload file selection')
+    native=h5kind_to_type(int64,H5_INTEGER_KIND)
+    if(writing) then
+      call h5dwrite_f(dset,native,words,mdims,err,mem_space_id=mem,file_space_id=space,xfer_prp=xfer)
+    else
+      call h5dread_f(dset,native,words,mdims,err,mem_space_id=mem,file_space_id=space,xfer_prp=xfer)
+    endif
+    call require(err==0,comm,'rank payload transfer')
+    call close_dataset(dset,space,mem,comm)
+    call h5pclose_f(xfer,err)
+    call require(err==0,comm,'close rank payload transfer property')
+    call h5fclose_f(file,err)
+    call require(err==0,comm,'close rank payload file')
+  end subroutine checkpoint_rank_words
+
   subroutine checkpoint_crashfix_words(path,writing,mode,active,nodes,budget,comm,words,restored_exact,allow_inexact)
     character(*),intent(in) :: path
     logical,intent(in) :: writing,mode,restored_exact

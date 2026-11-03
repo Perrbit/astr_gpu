@@ -44,9 +44,14 @@ class RuntimeProducts:
         if settings[24] > 0.:
             item['actor'].GetProperty().SetLineWidth(settings[24])
         index_surface = labels[3] == 'grid_index'
-        bounds = (namespace['global_device_bounds'](piece, allow_planar=True) if index_surface
+        glyph=labels[4]=='wall_shear_vector'
+        wall=labels[4] in ('wall_shear_vector','wall_shear_lines')
+        bounds = (namespace['global_device_bounds'](piece, allow_planar=True,
+                    count_name='wall_source_nodes',bounds_prefix='wall_source_bound',minimum_dimensions=0) if wall else
+                  namespace['global_device_bounds'](piece, allow_planar=True) if index_surface
                   else list(settings[6:12]))
         padding = .01 * max(bounds[2*d+1] - bounds[2*d] for d in range(3))
+        if glyph:padding=max(padding,json.loads(context['definition'])['extraction']['length'])
         clip = list(bounds)
         for d in range(3):
             if clip[2*d] == clip[2*d+1]:
@@ -69,6 +74,11 @@ class RuntimeProducts:
         legend = pv.GetScalarBar(lut, view)
         legend.Visibility = 1
         legend.Title = (context['source'] + ' ' if context['source'] != 'instantaneous' else '') + labels[4]
+        if wall:
+            legend.Title = '|mean wall shear|' if context['source']=='reynolds' else '|wall shear|'
+        if json.loads(context['definition']).get('fluctuation', False):
+            symbol = {'velocity_x':'u', 'velocity_y':'v', 'velocity_z':'w', 'pressure':'p', 'temperature':'T'}[labels[4]]
+            legend.Title = symbol + ("''" if context['source']=='favre' else "'") + ' (' + context['source'].title() + ')'
         legend.ComponentTitle = ''
         legend.WindowLocation = 'Upper Right Corner'
         legend.ScalarBarLength, legend.ScalarBarThickness = .45, 16
@@ -138,10 +148,30 @@ class RuntimeProducts:
                     except OSError as exc:
                         print('ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED '+str(exc),flush=True)
             item = namespace['render_objects'][name]
+            if context['labels'][4] in ('wall_shear_vector','wall_shear_lines'):
+                item['geometry_empty'] = namespace['global_device_bounds'](piece,allow_planar=True,
+                    allow_empty=True,minimum_dimensions=0) is None
             if context['labels'][3] != 'grid_index':
                 bounds = namespace['global_device_bounds'](piece, allow_planar=True, allow_empty=True)
                 item['physical_bounds'] = bounds
                 item['geometry_empty'] = bounds is None
+            from render_coordinates import update_coordinates, fixed_physical_axis
+            coordinate_bounds = item['physical_bounds']
+            if coordinate_bounds is None:
+                coordinate_bounds = item['display_bounds']
+            fixed_axis = None
+            if context['labels'][0] == 'slice':
+                definition = json.loads(context['definition'])
+                fixed_axis = fixed_physical_axis(definition['sampling'], context['reals'][3:6], coordinate_bounds)
+            glyph=context['labels'][4]=='wall_shear_vector'
+            dispatch.collective_call(namespace['controller'], lambda:
+                update_coordinates(item, self.native, context['definition'], coordinate_bounds,
+                                   fixed_axis=fixed_axis, empty=item['geometry_empty'],manage_clipping=not glyph))
+            if glyph:
+                model=item['coordinate_annotation'];clip=list(model['display_bounds'])
+                padding=json.loads(context['definition'])['extraction']['length']*max(model['display_scale'])*1.5
+                for d in range(3):clip[2*d]-=padding;clip[2*d+1]+=padding
+                item['view'].GetClientSideObject().SetMaxClipBounds(clip)
             # A retry can create a new output segment without changing the view definition.
             item['directory'] = Path(context['directory'])
             result = namespace['render_product'].__wrapped__(name, item, step, time, points, cells)
@@ -161,6 +191,7 @@ class RuntimeProducts:
                           transfer_scope='selected image fields; explicit compatible geometry/quantity readback and private MPI staging are counted separately',
                           physical_bounds=item['physical_bounds'],
                           geometry_empty=item['geometry_empty'],
+                          coordinates=item['coordinate_annotation'],
                           actual_range_scope='local product points; empty ranks have no range',
                           camera=dict(position=list(item['view'].CameraPosition),
                                       focal_point=list(item['view'].CameraFocalPoint),
@@ -170,6 +201,26 @@ class RuntimeProducts:
                 record['transfer_scope']='explicit host processing: selected source-field download; private MPI staging and formal statistics are counted separately; CPU-generated geometry has no geometry device download'
             if 'statistics' in context:
                 record['statistics']=context['statistics']
+            if context['labels'][4]=='wall_shear_vector':
+                extraction=record['definition']['extraction']
+                record['wall_glyph']=dict(count=int(namespace['metadata'](piece,'wall_glyph_count')),
+                    length=extraction['length'],stride=extraction['stride'],length_units='native coordinates',
+                    amplitude='fixed length; color is norm of the displayed vector',
+                    zero_vectors='omitted without a threshold',index_anchor=[0,0],periodic_endpoint='unique node zero',
+                    arrowhead='display-compensated; shaft direction and native length are unchanged')
+                record['wall_glyph']['metadata_d2h_bytes']=int(namespace['metadata'](piece,'wall_glyph_metadata_d2h_bytes'))
+            if context['labels'][4]=='wall_shear_lines':
+                keys=('integration_performed','seed_count','particles','control_read_bytes','input_metadata_d2h_bytes',
+                      'terminal_length','terminal_steps','terminal_zero','terminal_stage_zero',
+                      'terminal_accuracy','terminal_physical_exit','terminal_region_exit')
+                record['wall_trace']={key:namespace['metadata'](piece,'wall_trace_'+key) for key in keys}
+                record['wall_trace'].update(parameter='physical arc length',field='bilinearly interpolated wall shear',
+                    geometry_d2h_bytes=0,termination_scope='global particles; replicated controls',
+                    traffic_scope='local bytes for this integration; zero for a reused view')
+                record['wall_trace']['final_particles']=[{
+                    key:namespace['metadata'](piece,f'wall_trace_final{i}_'+key)
+                    for key in ('x','y','z','length','steps','status','direction')}
+                    for i in range(int(record['wall_trace']['particles']))]
             if context['labels'][0] == 'streamlines' and context['processing_backend']!='host':
                 record['validation_geometry_readback_requested']=bool(
                     namespace['os'].environ.get('ASTR_INSITU_TEST_RUNTIME_LINE_PREFIX'))

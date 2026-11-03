@@ -2,6 +2,8 @@
 #include "insitu_compact_mesh.h"
 #include "insitu_product_dispatch.h"
 #include "insitu_allocation_budget.h"
+#include "insitu_catalog_json.h"
+#include "insitu_wall_vectors.h"
 #include <viskores/cont/Initialize.h>
 #include <viskores/cont/CellSetExplicit.h>
 #include <viskores/filter/contour/ClipWithField.h>
@@ -449,8 +451,13 @@ struct RuntimeIndexKey {
   Real factor;
   bool magnitude;
   std::vector<int> fields;
+  bool glyph=false;
+  std::array<int,2> glyph_stride{};
+  std::array<Real,2> glyph_scale{Real(1.),Real(1.)};
+  Real glyph_length=Real(0.);
   bool operator<(const RuntimeIndexKey& other) const {
-    return std::tie(a,b,c,factor,magnitude,fields)<std::tie(other.a,other.b,other.c,other.factor,other.magnitude,other.fields);
+    return std::tie(a,b,c,factor,magnitude,fields,glyph,glyph_stride,glyph_scale,glyph_length)<
+      std::tie(other.a,other.b,other.c,other.factor,other.magnitude,other.fields,other.glyph,other.glyph_stride,other.glyph_scale,other.glyph_length);
   }
 };
 struct RuntimeIndexGroup {
@@ -485,6 +492,49 @@ RuntimeIndexKey scalar_selection(const astr_insitu::RuntimeProductView& context,
   else if(fields!=1) throw std::logic_error("A scalar surface must identify one source component");
   return key;
 }
+
+struct WallGlyphSelection : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,WholeArrayIn,WholeArrayIn,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3,_4);
+  viskores::Id nodes;int width,first_i,first_k,last_i,last_k,si,sk,a,b;Real length,sx,sz;
+  VISKORES_CONT WallGlyphSelection(viskores::Id n,int w,const int* first,const int* upper,const RuntimeIndexKey& key)
+    :nodes(n),width(w),first_i(first[0]),first_k(first[2]),last_i(upper[0]),last_k(upper[2]),
+      si(key.glyph_stride[0]),sk(key.glyph_stride[1]),a(key.a),b(key.b),length(key.glyph_length),sx(key.glyph_scale[0]),sz(key.glyph_scale[1]) {}
+  template<class X,class V>
+  VISKORES_EXEC void operator()(viskores::Id node,const X& xyz,const V& values,viskores::Id& selected) const {
+    const int i=first_i+int(node%width),k=first_k+int(node/width);
+    selected=0;
+    if(i>last_i || k>last_k || i%si || k%sk) return;
+    astr_insitu::NativeVector points[6];Real magnitude;
+    const auto state=astr_insitu::wall_arrow(xyz.Get(node),values.Get(node+nodes*a),values.Get(node+nodes*b),length,points,magnitude,sx,sz);
+    selected=state==astr_insitu::WallArrowStatus::valid?1:(state==astr_insitu::WallArrowStatus::zero?0:2);
+  }
+};
+struct PackWallGlyph : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,WholeArrayIn,WholeArrayIn,WholeArrayIn,FieldOut,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3,_4,_5,_6);
+  viskores::Id nodes;int a,b;Real length,sx,sz;
+  VISKORES_CONT PackWallGlyph(viskores::Id n,const RuntimeIndexKey& key):nodes(n),a(key.a),b(key.b),length(key.glyph_length),
+    sx(key.glyph_scale[0]),sz(key.glyph_scale[1]) {}
+  template<class S,class X,class V>
+  VISKORES_EXEC void operator()(viskores::Id vertex,const S& seeds,const X& xyz,const V& values,
+      astr_insitu::NativeVector& point,Real& scalar) const {
+    const auto node=seeds.Get(vertex/6);astr_insitu::NativeVector points[6];
+    astr_insitu::wall_arrow(xyz.Get(node),values.Get(node+nodes*a),values.Get(node+nodes*b),length,points,scalar,sx,sz);
+    point=points[vertex%6];
+  }
+};
+struct WallGlyphBounds : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3);
+  viskores::Id last;
+  VISKORES_CONT explicit WallGlyphBounds(viskores::Id n):last(n-1) {}
+  template<class X>
+  VISKORES_EXEC void operator()(viskores::Id index,const X& xyz,Real& value) const {
+    const int d=int(index/2);const Real a=xyz.Get(0)[d],b=xyz.Get(last)[d];
+    value=index%2?viskores::Max(a,b):viskores::Min(a,b);
+  }
+};
 
 struct RuntimeSurfaceEntry {
   viskores::cont::DataSet data;
@@ -610,7 +660,7 @@ viskores::cont::DataSet astr_insitu::clip_runtime_device_mesh(viskores::cont::Da
 
 namespace {
 
-viskores::cont::DataSet runtime_q_surface(const astr_insitu::RuntimeProductView& context,
+viskores::cont::DataSet runtime_scalar_surface(const astr_insitu::RuntimeProductView& context,
     const int* ids,int fields,const int* extent,Real* coordinates,Real* values) {
   const viskores::Id nodes=viskores::Id(extent[0])*extent[1]*extent[2];
   auto grid=viskores::cont::DataSetBuilderUniform().Create(viskores::Id3(extent[0],extent[1],extent[2]));
@@ -618,15 +668,16 @@ viskores::cont::DataSet runtime_q_surface(const astr_insitu::RuntimeProductView&
     reinterpret_cast<astr_insitu::NativeVector*>(coordinates),nodes));
   viskores::filter::FieldSelection selected;
   selected.AddField("_astr_physical_xyz");
-  bool q=false;
+  const int criterion=context.labels[0]=="lambda2_surface"?35:(context.labels[0]=="lambda_ci_surface"?36:22);
+  bool present=false;
   for(int f=0;f<fields;++f) {
     const auto name="raw"+std::to_string(ids[f]);
     grid.AddPointField(name,astr_insitu::borrow_cuda_array(values+nodes*f,nodes));selected.AddField(name);
-    q=q || ids[f]==22;
+    present=present || ids[f]==criterion;
   }
-  if(!q) throw std::logic_error("Runtime Q surface is missing its native Q field");
+  if(!present) throw std::logic_error("Runtime surface is missing its native criterion field");
   viskores::filter::contour::ContourFlyingEdges contour;
-  contour.SetActiveField("raw22");contour.SetIsoValue(context.reals[25]);
+  contour.SetActiveField("raw"+std::to_string(criterion));contour.SetIsoValue(context.reals[25]);
   contour.SetGenerateNormals(false);contour.SetFieldsToPass(selected);
   const auto result=contour.Execute(grid);astr_insitu::synchronize_device_stage("RuntimeFlyingEdges");
   if(!result.GetCellSet().GetNumberOfCells()) return {};
@@ -757,6 +808,88 @@ astr_insitu::DeviceMesh astr_insitu::build_runtime_index_mesh(const RuntimeProdu
     return mesh;
 }
 
+astr_insitu::DeviceMesh astr_insitu::build_runtime_wall_glyph_mesh(const RuntimeProductView& context,int step,Real time,
+    const int* field_ids,int fields,int width,int height,Real* coordinates,Real* values,const int* first,const int* upper) {
+  static bool initialized=false;
+  if(!initialized) {
+    int argc=1;char program[]="astr-wall-glyphs";char* args[]={program,nullptr};char** argv=args;
+    viskores::cont::Initialize(argc,argv);initialized=true;
+  }
+  int stride[2]{};double length=0.;char error[256]{};
+  if(!astr_catalog_wall_glyph(context.definition.data(),context.definition.size(),stride,&length,error,sizeof(error)))
+    throw std::invalid_argument(error);
+  RuntimeIndexKey key{};key.a=key.b=-1;key.glyph=true;key.glyph_stride={stride[0],stride[1]};key.glyph_length=Real(length);
+  int coordinate_flags[2]{};double coordinate_values[7]{};
+  if(!astr_catalog_display_coordinates(context.definition.data(),context.definition.size(),coordinate_flags,coordinate_values,error,sizeof(error)))
+    throw std::invalid_argument(error);
+  key.glyph_scale={Real(coordinate_values[4]),Real(coordinate_values[6])};
+  for(int c=0;c<fields;++c) {if(field_ids[c]==31) key.a=c;if(field_ids[c]==32) key.b=c;}
+  if(key.a<0 || key.b<0 || stride[0]<=0 || stride[1]<=0)
+    throw std::invalid_argument("Wall glyphs require two complete shear components and explicit geometry");
+  const auto device=viskores::cont::DeviceAdapterTagCuda{};
+  viskores::cont::GetRuntimeDeviceTracker().ForceDevice(device);
+  if(viskores::cont::cuda::internal::CudaAllocator::UsingManagedMemory())
+    viskores::cont::cuda::internal::CudaAllocator::ForceManagedMemoryOff();
+  const viskores::Id nodes=viskores::Id(width)*height;
+  std::array<Real,6> source_bounds{};
+  if(nodes) {
+    auto xyz=borrow_cuda_array(reinterpret_cast<NativeVector*>(coordinates),nodes);
+    viskores::cont::ArrayHandle<Real> bounds;viskores::cont::Invoker invoke(device);
+    invoke(WallGlyphBounds(nodes),viskores::cont::ArrayHandleIndex(6),xyz,bounds);
+    synchronize_device_stage("WallGlyphSourceBounds");require_device_only(bounds);
+    viskores::cont::Token token;const auto portal=bounds.PrepareForInput(device,token);
+    if(cudaMemcpy(source_bounds.data(),portal.GetIteratorBegin(),sizeof(source_bounds),cudaMemcpyDeviceToHost)!=cudaSuccess)
+      throw std::runtime_error("Wall glyph scalar bounds readback failed");
+  }
+  std::shared_ptr<DeviceGeometryOwner> owner;
+  if(index_group.active) {
+    const auto found=index_group.owners.find(key);
+    if(found!=index_group.owners.end()) {owner=found->second;++index_group.owner_reuse;}
+  }
+  if(!owner) {
+    viskores::cont::DataSet data;
+    if(nodes) {
+      auto xyz=borrow_cuda_array(reinterpret_cast<NativeVector*>(coordinates),nodes);
+      auto input=borrow_cuda_array(values,nodes*fields);
+      viskores::cont::Invoker invoke(device);
+      viskores::cont::ArrayHandle<viskores::Id> status,seeds,indices;
+      invoke(WallGlyphSelection(nodes,width,first,upper,key),viskores::cont::ArrayHandleIndex(nodes),xyz,input,status);
+      synchronize_device_stage("SelectWallGlyphs");require_device_only(status);
+      if(viskores::cont::Algorithm::Reduce(device,status,viskores::Id(0),MaximumSurfaceStatus{})==2)
+        throw std::runtime_error("Nonfinite or unrepresentable selected wall shear glyph");
+      viskores::cont::Algorithm::CopyIf(device,viskores::cont::ArrayHandleIndex(nodes),status,seeds);
+      synchronize_device_stage("CompactWallGlyphSeeds");require_device_only(seeds);
+      const auto vertices=6*seeds.GetNumberOfValues();
+      if(vertices) {
+        viskores::cont::ArrayHandle<NativeVector> points;
+        viskores::cont::ArrayHandle<Real> scalar;
+        invoke(PackWallGlyph(nodes,key),viskores::cont::ArrayHandleIndex(vertices),seeds,xyz,input,points,scalar);
+        synchronize_device_stage("PackWallGlyphs");require_device_only(points);require_device_only(scalar);
+        viskores::cont::Algorithm::Copy(device,viskores::cont::ArrayHandleIndex(vertices),indices);
+        synchronize_device_stage("PackWallGlyphConnectivity");require_device_only(indices);
+        viskores::cont::CellSetSingleType<> cells;cells.Fill(vertices,viskores::CELL_SHAPE_LINE,2,indices);
+        data.SetCellSet(cells);data.AddCoordinateSystem(viskores::cont::CoordinateSystem("coords",points));
+        data.AddPointField("quantity",scalar);
+      }
+    }
+    owner=std::make_shared<DeviceGeometryOwner>(data,step,time,2,"quantity");
+    if(index_group.active) {index_group.owners.emplace(key,owner);++index_group.scalar_builds;}
+  }
+  auto colors=owner->color_display(device_display_palette(context.labels[6]),false,Real(context.reals[22]),Real(context.reals[23]));
+  const auto& view=owner->get();DeviceMesh mesh;
+  mesh.name="runtime_product";mesh.actor_key=context.id;mesh.owner=owner;
+  mesh.draw.positions=reinterpret_cast<const float*>(view.display_coordinates);
+  mesh.draw.colors=reinterpret_cast<const unsigned char*>(colors);mesh.draw.indices=view.display_connectivity;
+  mesh.draw.points=view.points;mesh.draw.cells=view.cells;mesh.draw.arity=2;mesh.draw.device=view.device;
+  std::copy(view.bounds,view.bounds+6,mesh.draw.bounds);
+  mesh.controls["wall_glyph_count"]=double(view.cells/3);mesh.controls["wall_glyph_length"]=length;
+  mesh.controls["wall_source_nodes"]=double(nodes);
+  for(int d=0;d<6;++d) mesh.controls["wall_source_bound"+std::to_string(d)]=source_bounds[d];
+  mesh.controls["wall_glyph_metadata_d2h_bytes"]=nodes?double(sizeof(source_bounds)):0.;
+  mesh.controls["actual_min"]=view.speed_range[0];mesh.controls["actual_max"]=view.speed_range[1];
+  return mesh;
+}
+
 astr_insitu::DeviceMesh astr_insitu::build_runtime_physical_mesh(const RuntimeProductView& context,int step,Real time,
     const int* field_ids,int fields,const int* global,const int* extent,const int* offset,
     Real* coordinates,Real* values,const Real* references,std::int64_t budget,std::int64_t retained,int selected_field) {
@@ -772,9 +905,11 @@ astr_insitu::DeviceMesh astr_insitu::build_runtime_physical_mesh(const RuntimePr
   const auto key=scalar_selection(context,field_ids,fields,references,selected_field);
   std::vector<int> partition;
   for(const auto* group:{global,extent,offset}) partition.insert(partition.end(),group,group+3);
-  const bool q_surface=context.labels[0]=="q_surface";
+  const bool q_surface=context.labels[0]=="q_surface" || context.labels[0]=="lambda2_surface" ||
+    context.labels[0]=="lambda_ci_surface";
+  const int criterion=q_surface?(context.labels[0]=="lambda2_surface"?35:(context.labels[0]=="lambda_ci_surface"?36:22)):0;
   std::array<double,14> selection{};std::copy_n(context.reals.begin(),12,selection.begin());
-  selection[12]=q_surface?context.reals[25]:0.;selection[13]=q_surface?1.:0.;
+  selection[12]=q_surface?context.reals[25]:0.;selection[13]=double(criterion);
   if(physical_group.active && physical_group.frozen && (physical_group.coordinates!=coordinates ||
       physical_group.values!=values || physical_group.fields!=std::vector<int>(field_ids,field_ids+fields) ||
       physical_group.partition!=partition))
@@ -785,7 +920,7 @@ astr_insitu::DeviceMesh astr_insitu::build_runtime_physical_mesh(const RuntimePr
     viskores::cont::DataSet data;
     const viskores::Id nodes=viskores::Id(extent[0])*extent[1]*extent[2];
     if(budget<=0 || retained<0 || retained>budget) throw std::runtime_error("Runtime surface input budget exceeded");
-    if(nodes && q_surface) data=runtime_q_surface(context,field_ids,fields,extent,coordinates,values);
+    if(nodes && q_surface) data=runtime_scalar_surface(context,field_ids,fields,extent,coordinates,values);
     else if(nodes) {
       const structured_geometry::Partition piece(viskores::Id3(global[0],global[1],global[2]),
         viskores::Id3(extent[0]-1,extent[1]-1,extent[2]-1),viskores::Id3(offset[0],offset[1],offset[2]));
@@ -912,7 +1047,8 @@ extern "C" int astr_insitu_render_index_product(const char* pipeline,const char*
     int fcomm,int step,Real time,const char* id,const char* source,const char* definition,const char* directory,
     std::int64_t version,const char* labels,const int* words,const double* settings,
     const int* field_ids,int fields,int width,int height,Real* coordinates,Real* values,const Real* references,
-    int provider,const Real* statistics,std::int64_t samples,int selected_field,std::int64_t host_budget)
+    int provider,const Real* statistics,std::int64_t samples,int selected_field,std::int64_t host_budget,
+    const int* first,const int* unique_upper)
 {
   const auto comm=MPI_Comm_f2c(fcomm);
   const double started=astr_insitu::runtime_product_clock();
@@ -927,7 +1063,9 @@ extern "C" int astr_insitu_render_index_product(const char* pipeline,const char*
     context.statistics_provider=provider;context.samples=samples;
     std::copy_n(statistics,3,context.statistics.begin());
     astr_insitu::prepare_runtime_product_allocations(context,fcomm,step);
-    mesh=astr_insitu::build_runtime_index_mesh(context,step,time,field_ids,fields,width,height,coordinates,values,references,selected_field);
+    if(context.labels[4]=="wall_shear_vector")
+      mesh=astr_insitu::build_runtime_wall_glyph_mesh(context,step,time,field_ids,fields,width,height,coordinates,values,first,unique_upper);
+    else mesh=astr_insitu::build_runtime_index_mesh(context,step,time,field_ids,fields,width,height,coordinates,values,references,selected_field);
     const auto owner=std::static_pointer_cast<astr_insitu::DeviceGeometryOwner>(mesh.owner);
     if(!index_group.active && std::string(pipeline?pipeline:"")!="compatible") owner->retain_display_only();
     int rank=0;MPI_Comm_rank(comm,&rank);

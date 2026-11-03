@@ -202,3 +202,253 @@ int astr_catalog_json_boolean(const void *value) {
     if (!yyjson_is_bool(value)) return -1;
     return yyjson_get_bool(value) ? 1 : 0;
 }
+
+int astr_catalog_display_coordinates(const char *text, size_t length, int flags[2],
+                                     double values[7], char *message, size_t capacity) {
+    flags[0] = 1; flags[1] = 0;
+    for (int i = 0; i < 7; ++i) values[i] = i < 3 ? 0. : 1.;
+    yyjson_doc *doc = astr_catalog_json_read(text, length, message, capacity);
+    if (!doc) return 0;
+    const yyjson_val *display = yyjson_obj_get(yyjson_doc_get_root(doc), "display");
+    const yyjson_val *coordinates = yyjson_obj_get(display, "coordinates");
+    const char *error = NULL;
+    if (coordinates) {
+        if (!yyjson_is_obj(coordinates)) error = "display.coordinates must be an object";
+        yyjson_obj_iter iter = yyjson_obj_iter_with(coordinates);
+        yyjson_val *key;
+        while (!error && (key = yyjson_obj_iter_next(&iter))) {
+            const char *name = yyjson_get_str(key);
+            if (strcmp(name,"visible") && strcmp(name,"origin") && strcmp(name,"reference_length") &&
+                strcmp(name,"display_scale")) error = "unknown display.coordinates parameter";
+        }
+        const yyjson_val *visible = yyjson_obj_get(coordinates, "visible");
+        if (!error && visible) {
+            if (!yyjson_is_bool(visible)) error = "coordinate visibility must be a boolean";
+            else flags[0] = yyjson_get_bool(visible);
+        }
+        const yyjson_val *reference = yyjson_obj_get(coordinates, "reference_length");
+        if (!error && reference) {
+            if (!astr_catalog_json_real(reference, values+3) || values[3]<=0.)
+                error = "coordinate reference_length must be positive and finite";
+            else flags[1] = 1;
+        }
+        const yyjson_val *origin = yyjson_obj_get(coordinates, "origin");
+        if (!error && origin && !reference) error = "coordinate origin requires reference_length";
+        const char *names[2] = {"origin", "display_scale"};
+        for (int field=0; field<2 && !error; ++field) {
+            const yyjson_val *array = yyjson_obj_get(coordinates,names[field]);
+            if (!array) continue;
+            if (!yyjson_is_arr(array) || yyjson_arr_size(array)!=3) {
+                error = "coordinate origin and display_scale require three numbers"; break;
+            }
+            for (int d=0; d<3; ++d) {
+                double *value = values+(field?4:0)+d;
+                if (!astr_catalog_json_real(yyjson_arr_get(array,d),value) || (field && *value<=0.)) {
+                    error = "coordinate vectors must be finite; display_scale must be positive"; break;
+                }
+            }
+        }
+    }
+    yyjson_doc_free(doc);
+    if (error) { snprintf(message,capacity,"%s",error); return 0; }
+    if (capacity) message[0]='\0';
+    return 1;
+}
+
+int astr_catalog_wall_reference(const char *text, size_t length, int flags[2],
+                                double *value, char *message, size_t capacity) {
+    flags[0]=0; flags[1]=0; *value=0.;
+    yyjson_doc *doc=astr_catalog_json_read(text,length,message,capacity);
+    if (!doc) return 0;
+    const yyjson_val *root=yyjson_doc_get_root(doc);
+    const yyjson_val *reference=yyjson_obj_get(root,"wall_reference");
+    const char *error=NULL;
+    if (reference) {
+        const char *kind=yyjson_get_str(yyjson_obj_get(root,"kind"));
+        if (!kind || strcmp(kind,"wall_profile")) error="wall_reference requires a wall_profile";
+        if (!yyjson_is_obj(reference)) error="wall_reference must be an object";
+        if (!error) {
+            yyjson_obj_iter iter=yyjson_obj_iter_with(reference);
+            yyjson_val *key;
+            while ((key=yyjson_obj_iter_next(&iter))) {
+                const char *name=yyjson_get_str(key);
+                if (strcmp(name,"recovery_temperature") && strcmp(name,"recovery_factor")) {
+                    error="unknown wall_reference parameter"; break;
+                }
+            }
+        }
+        const yyjson_val *temperature=yyjson_obj_get(reference,"recovery_temperature");
+        const yyjson_val *factor=yyjson_obj_get(reference,"recovery_factor");
+        if (!error && temperature && factor) error="recovery_temperature and recovery_factor are mutually exclusive";
+        if (!error && temperature) {
+            if (!astr_catalog_json_real(temperature,value) || *value<=0.)
+                error="recovery_temperature must be positive and finite in native temperature units";
+            else flags[1]=1;
+        }
+        if (!error && factor) {
+            if (!astr_catalog_json_real(factor,value) || *value<0.)
+                error="recovery_factor must be nonnegative and finite";
+            else flags[1]=2;
+        }
+        if (!error) flags[0]=1;
+    }
+    yyjson_doc_free(doc);
+    if (error) { snprintf(message,capacity,"%s",error); return 0; }
+    if (capacity) message[0]='\0';
+    return 1;
+}
+
+int astr_catalog_thickness(const char *text, size_t length, int flags[2],
+                           int64_t band[2], double *upper, char *message, size_t capacity) {
+    flags[0]=flags[1]=0; band[0]=band[1]=0; *upper=0.;
+    yyjson_doc *doc=astr_catalog_json_read(text,length,message,capacity);
+    if (!doc) return 0;
+    const yyjson_val *root=yyjson_doc_get_root(doc);
+    const yyjson_val *options=yyjson_obj_get(root,"thickness");
+    const char *error=NULL;
+    if (options) {
+        const char *kind=yyjson_get_str(yyjson_obj_get(root,"kind"));
+        const char *source=yyjson_get_str(yyjson_obj_get(root,"source"));
+        if (!kind || strcmp(kind,"station_profile") || !source || strcmp(source,"favre"))
+            error="thickness requires a Favre station_profile";
+        else if (!yyjson_is_obj(options)) error="thickness must be an object";
+        if (!error) {
+            yyjson_obj_iter iter=yyjson_obj_iter_with(options);
+            yyjson_val *key;
+            while ((key=yyjson_obj_iter_next(&iter))) {
+                const char *name=yyjson_get_str(key);
+                if (strcmp(name,"edge_band") && strcmp(name,"explicit_upper")) {
+                    error="unknown thickness parameter"; break;
+                }
+            }
+        }
+        const yyjson_val *range=yyjson_obj_get(options,"edge_band");
+        if (!error && (!yyjson_is_arr(range) || yyjson_arr_size(range)!=2 ||
+            !astr_catalog_json_integer(yyjson_arr_get(range,0),band) ||
+            !astr_catalog_json_integer(yyjson_arr_get(range,1),band+1) || band[0]<1 || band[1]<band[0]))
+            error="edge_band requires ordered global j indices strictly above the wall at j=0";
+        const yyjson_val *limit=yyjson_obj_get(options,"explicit_upper");
+        if (!error && limit) {
+            if (!astr_catalog_json_real(limit,upper)) error="explicit_upper must be a finite native y coordinate";
+            else flags[1]=1;
+        }
+        if (!error) flags[0]=1;
+    }
+    yyjson_doc_free(doc);
+    if (error) { snprintf(message,capacity,"%s",error); return 0; }
+    if (capacity) message[0]='\0';
+    return 1;
+}
+
+int astr_catalog_fluctuation(const char *text, size_t length, int *flag,
+                             char *message, size_t capacity) {
+    *flag=0;
+    yyjson_doc *doc=astr_catalog_json_read(text,length,message,capacity);
+    if (!doc) return 0;
+    const yyjson_val *value=yyjson_obj_get(yyjson_doc_get_root(doc),"fluctuation");
+    const char *error=NULL;
+    if (value) {
+        if (!yyjson_is_bool(value)) error="fluctuation must be a boolean";
+        else *flag=yyjson_get_bool(value);
+    }
+    yyjson_doc_free(doc);
+    if (error) { snprintf(message,capacity,"%s",error); return 0; }
+    if (capacity) message[0]='\0';
+    return 1;
+}
+
+int astr_catalog_wall_glyph(const char *text, size_t length, int stride[2], double *native_length,
+                             char *message, size_t capacity) {
+    stride[0]=stride[1]=0; *native_length=0.;
+    yyjson_doc *doc=astr_catalog_json_read(text,length,message,capacity);
+    if (!doc) return 0;
+    const yyjson_val *root=yyjson_doc_get_root(doc);
+    const char *field=yyjson_get_str(yyjson_obj_get(root,"field"));
+    const char *error=NULL;
+    if (field && !strcmp(field,"wall_shear_vector")) {
+        const yyjson_val *options=yyjson_obj_get(root,"extraction");
+        if (!yyjson_is_obj(options)) error="wall_shear_vector requires extraction with stride and length";
+        else {
+            yyjson_obj_iter iter=yyjson_obj_iter_with(options);yyjson_val *key;
+            while ((key=yyjson_obj_iter_next(&iter))) {
+                const char *name=yyjson_get_str(key);
+                if (strcmp(name,"stride") && strcmp(name,"length")) {error="unknown wall glyph parameter";break;}
+            }
+        }
+        const yyjson_val *steps=yyjson_obj_get(options,"stride");
+        int64_t values[2]={0,0};
+        if (!error && (!yyjson_is_arr(steps) || yyjson_arr_size(steps)!=2 ||
+            !astr_catalog_json_integer(yyjson_arr_get(steps,0),values) ||
+            !astr_catalog_json_integer(yyjson_arr_get(steps,1),values+1) ||
+            values[0]<1 || values[0]>INT_MAX || values[1]<1 || values[1]>INT_MAX))
+            error="wall glyph stride requires two positive representable i/k index intervals";
+        if (!error && (!astr_catalog_json_real(yyjson_obj_get(options,"length"),native_length) || *native_length<=0.))
+            error="wall glyph length must be positive and finite in native coordinate units";
+        if (!error) {stride[0]=(int)values[0];stride[1]=(int)values[1];}
+    }
+    yyjson_doc_free(doc);
+    if (error) {snprintf(message,capacity,"%s",error);return 0;}
+    if (capacity) message[0]='\0';
+    return 1;
+}
+
+int astr_catalog_wall_trace_seeds(const char *text, size_t length, int64_t *indices,
+                                size_t index_capacity, int64_t *count, char *message, size_t capacity) {
+    *count=0;
+    yyjson_doc *doc=astr_catalog_json_read(text,length,message,capacity);
+    if (!doc) return 0;
+    const yyjson_val *root=yyjson_doc_get_root(doc);
+    const char *field=yyjson_get_str(yyjson_obj_get(root,"field"));
+    const char *error=NULL;
+    if (field && !strcmp(field,"wall_shear_lines")) {
+        const yyjson_val *seeds=yyjson_obj_get(yyjson_obj_get(root,"extraction"),"seeds");
+        const size_t n=yyjson_arr_size(seeds);
+        if (!yyjson_is_arr(seeds) || !n || n>(size_t)INT_MAX/4)
+            error="wall shear lines require a nonempty representable list of global [i,k] seeds";
+        if (!error && indices && index_capacity<2*n) error="wall seed buffer is smaller than its declared list";
+        for (size_t i=0;!error && i<n;++i) {
+            const yyjson_val *seed=yyjson_arr_get(seeds,i);
+            int64_t values[2];
+            if (!yyjson_is_arr(seed) || yyjson_arr_size(seed)!=2 ||
+                !astr_catalog_json_integer(yyjson_arr_get(seed,0),values) ||
+                !astr_catalog_json_integer(yyjson_arr_get(seed,1),values+1) ||
+                values[0]<0 || values[1]<0 || values[0]>INT_MAX || values[1]>INT_MAX)
+                error="wall seeds must be nonnegative representable global [i,k] integer pairs";
+            if (!error && indices) {indices[2*i]=values[0];indices[2*i+1]=values[1];}
+        }
+        if (!error) *count=(int64_t)n;
+    }
+    yyjson_doc_free(doc);
+    if (error) {snprintf(message,capacity,"%s",error);return 0;}
+    if (capacity) message[0]='\0';
+    return 1;
+}
+
+int astr_catalog_wall_units(const char *text, size_t length, char *target,
+                           size_t target_capacity, char *message, size_t capacity) {
+    if (target_capacity) target[0]='\0';
+    yyjson_doc *doc=astr_catalog_json_read(text,length,message,capacity);
+    if (!doc) return 0;
+    const yyjson_val *root=yyjson_doc_get_root(doc);
+    const yyjson_val *reference=yyjson_obj_get(root,"wall_units");
+    const char *error=NULL;
+    if (reference) {
+        const char *kind=yyjson_get_str(yyjson_obj_get(root,"kind"));
+        const char *name=yyjson_get_str(reference);
+        if (!kind || strcmp(kind,"station_profile")) error="wall_units requires a station_profile";
+        else if (!name || !name[0] || strlen(name)!=yyjson_get_len(reference))
+            error="wall_units must name a nonempty wall_profile product ID";
+        else {
+            for (size_t i=0; i<strlen(name); ++i) {
+                const unsigned char c=(unsigned char)name[i];
+                if (c<32 || c==127) { error="wall_units product ID must not contain control characters"; break; }
+            }
+            if (!error && strlen(name)>=target_capacity) error="wall_units destination is too small";
+            if (!error) memcpy(target,name,strlen(name)+1);
+        }
+    }
+    yyjson_doc_free(doc);
+    if (error) { snprintf(message,capacity,"%s",error); return 0; }
+    if (capacity) message[0]='\0';
+    return 1;
+}

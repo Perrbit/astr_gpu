@@ -1,8 +1,11 @@
 module insitu_catalog
+  use ieee_arithmetic, only: ieee_is_finite
   use mpi
   use iso_fortran_env, only: int64,real64
   use iso_c_binding, only: c_ptr,c_int,c_int64_t,c_double,c_size_t,c_char,c_null_char,c_associated,c_f_pointer
-  use insitu_run_config, only: catalog_product,catalog_field_id,catalog_field_names,pack_catalog_render,unpack_catalog_render
+  use insitu_run_config, only: catalog_product,catalog_field_id,catalog_field_names,pack_catalog_render,unpack_catalog_render, &
+    read_catalog_wall_reference,read_catalog_wall_units,read_catalog_thickness, &
+    read_catalog_coordinates,read_catalog_fluctuation,catalog_wall_mean,read_catalog_wall_glyph,read_catalog_wall_seeds
   use insitu_product_schedule, only: runtime_catalog_apply,runtime_catalog_count,runtime_catalog_state, &
     runtime_product_state,runtime_catalog_state_file,runtime_active,runtime_bad_config,runtime_waiting, &
     runtime_resource_disabled,runtime_absent
@@ -380,7 +383,7 @@ contains
   subroutine broadcast_catalog_product(entry,rank,comm)
     type(catalog_product),intent(inout) :: entry
     integer,intent(in) :: rank,comm
-    integer :: header(4),err
+    integer :: header(4),err,nseeds
     integer(int64) :: words(10)
     real(real64) :: periods(2)
     character(32) :: labels(11)
@@ -406,11 +409,27 @@ contains
     endif
     call MPI_Bcast(entry%fields,header(4),MPI_INTEGER,0,comm,err)
     call require_catalog_mpi(err,comm)
+    call MPI_Bcast(entry%fluctuation,1,MPI_LOGICAL,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    call MPI_Bcast(entry%glyph_stride,2,MPI_INTEGER,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    call MPI_Bcast(entry%glyph_length,1,MPI_DOUBLE_PRECISION,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    if(rank==0) then
+      if(.not.allocated(entry%wall_seeds)) allocate(entry%wall_seeds(2,0))
+      nseeds=size(entry%wall_seeds,2)
+    endif
+    call MPI_Bcast(nseeds,1,MPI_INTEGER,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    if(rank/=0) allocate(entry%wall_seeds(2,nseeds))
+    call MPI_Bcast(entry%wall_seeds,2*nseeds,MPI_INTEGER8,0,comm,err)
+    call require_catalog_mpi(err,comm)
     call broadcast_catalog_text(entry%id,rank,comm)
     call broadcast_catalog_text(entry%source,rank,comm)
     call broadcast_catalog_text(entry%statistics_source,rank,comm)
     call broadcast_catalog_text(entry%record,rank,comm)
     call broadcast_catalog_text(entry%error,rank,comm)
+    call broadcast_catalog_text(entry%wall_units,rank,comm)
     call broadcast_catalog_names(entry%event_ids,rank,comm)
     call broadcast_catalog_names(entry%window_ids,rank,comm)
     if(rank==0) call pack_catalog_render(entry%view,labels,view_words,view_reals)
@@ -421,6 +440,20 @@ contains
     call MPI_Bcast(view_reals,size(view_reals),MPI_DOUBLE_PRECISION,0,comm,err)
     call require_catalog_mpi(err,comm)
     if(rank/=0) call unpack_catalog_render(entry%view,labels,view_words,view_reals)
+    call MPI_Bcast(entry%view%coordinate_flags,2,MPI_INTEGER,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    call MPI_Bcast(entry%view%coordinate_values,7,MPI_DOUBLE_PRECISION,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    call MPI_Bcast(entry%wall_reference%flags,2,MPI_INTEGER,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    call MPI_Bcast(entry%wall_reference%value,1,MPI_DOUBLE_PRECISION,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    call MPI_Bcast(entry%thickness%flags,2,MPI_INTEGER,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    call MPI_Bcast(entry%thickness%edge_band,2,MPI_INTEGER8,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    call MPI_Bcast(entry%thickness%explicit_upper,1,MPI_DOUBLE_PRECISION,0,comm,err)
+    call require_catalog_mpi(err,comm)
   end subroutine
 
   subroutine catalog_watch_counts(reads,checks)
@@ -650,14 +683,47 @@ contains
     type(c_ptr),intent(in) :: sampling
     type(catalog_product),intent(inout) :: entry
     character(:),allocatable,intent(out) :: error
-    integer(int64) :: nodes(3)
+    integer(int64) :: nodes(3),endpoints(2)
+    type(c_ptr) :: ranges
+    character(1),parameter :: axes(3)=['i','j','k']
     real(real64) :: scale
     character(:),allocatable :: axis
     integer :: d
     ok=.false.
-    if(.not.read_choice(sampling,'mode',[character(16)::'grid_index','physical_plane','volume','grid_node','wall','wall_midspan'], &
+    if(.not.read_choice(sampling,'mode',[character(16)::'grid_index','physical_plane','volume','grid_node','wall','wall_midspan', &
+      'station_span','station_line','wall_span','wall_line','volume_index'], &
       entry%view%sampling,error)) return
     select case(trim(entry%view%sampling))
+    case('wall_span','wall_line')
+      if(entry%view%kind/='wall_profile') then
+        error='wall sampling requires a wall_profile';return
+      endif
+      if(.not.read_index_sampling(sampling,entry,error)) return
+      if(entry%axis/=2.or.entry%index/=0) then
+        error='wall profiles select the physical lower wall at global j=0';return
+      endif
+      if(entry%view%sampling=='wall_line'.and.entry%ranges(1,3)/=entry%ranges(2,3)) then
+        error='wall_line needs one k index';return
+      endif
+      if(entry%view%sampling=='wall_span'.and.entry%ranges(1,3)==entry%ranges(2,3)) then
+        error='wall_span needs a nonzero spanwise node interval';return
+      endif
+      ok=.true.;error='';return
+    case('station_span','station_line')
+      if(entry%view%kind/='station_profile') then
+        error='station sampling requires a station_profile';return
+      endif
+      if(.not.read_index_sampling(sampling,entry,error)) return
+      if(entry%axis/=1) then
+        error='station profiles select a global i station and varying j/k ranges';return
+      endif
+      if(entry%view%sampling=='station_line'.and.entry%ranges(1,3)/=entry%ranges(2,3)) then
+        error='pointwise station_line needs one k index; use separate products for separate lines';return
+      endif
+      if(entry%view%sampling=='station_span'.and.entry%ranges(1,3)==entry%ranges(2,3)) then
+        error='station_span needs a nonzero spanwise node interval';return
+      endif
+      ok=.true.;error='';return
     case('grid_index')
       if(entry%view%kind/='slice') then
         error='grid_index sampling requires a slice';return
@@ -688,11 +754,28 @@ contains
       entry%view%normal=entry%view%normal/sqrt(sum(entry%view%normal**2))
       d=maxloc(abs(entry%view%normal),dim=1)
       if(entry%view%normal(d)<0) entry%view%normal=-entry%view%normal
-    case('volume')
-      if(entry%view%kind/='q_surface'.and.entry%view%kind/='streamlines') then
+    case('volume','volume_index')
+      if(entry%view%kind/='q_surface'.and.entry%view%kind/='streamlines'.and. &
+         entry%view%kind/='lambda2_surface'.and.entry%view%kind/='lambda_ci_surface') then
         error='volume sampling requires Q or streamlines';return
       endif
-      if(.not.keys_allowed(sampling,[character(16)::'mode','bounds'],error)) return
+      if(entry%view%sampling=='volume_index') then
+        if(entry%view%kind/='lambda2_surface'.and.entry%view%kind/='lambda_ci_surface') then
+          error='volume_index currently supplies instantaneous lambda2/lambda_ci surfaces';return
+        endif
+        if(.not.keys_allowed(sampling,[character(16)::'mode','bounds','index_ranges'],error)) return
+        ranges=json_get(sampling,'index_ranges'//c_null_char)
+        if(.not.keys_allowed(ranges,axes,error)) return
+        do d=1,3
+          if(.not.read_integer_vector(ranges,axes(d),endpoints,error)) return
+          if(endpoints(1)<0.or.endpoints(2)<=endpoints(1)) then
+            error='volume_index requires an ordered nonempty cell interval on each global axis';return
+          endif
+          entry%ranges(:,d)=endpoints
+        enddo
+      else
+        if(.not.keys_allowed(sampling,[character(16)::'mode','bounds'],error)) return
+      endif
     case('wall','wall_midspan')
       if(entry%view%kind/='wall_curve') then
         error='wall sampling requires a wall curve';return
@@ -746,7 +829,7 @@ contains
       if(.not.read_positive_real(display,'line_width',entry%view%line_width,error)) return
     else
     if(.not.keys_allowed(display,[character(16)::'projection','camera','focal_point','view_up','parallel_scale', &
-      'color_map','color_range','lighting','line_width'],error)) return
+      'color_map','color_range','lighting','line_width','coordinates'],error)) return
     if(.not.read_choice(display,'projection',[character(16)::'parallel','perspective'],entry%view%projection,error)) return
     if(.not.read_vector(display,'camera',entry%view%camera,error)) return
     if(.not.read_vector(display,'focal_point',entry%view%focal,error)) return
@@ -807,40 +890,83 @@ contains
     ok=.true.;error=''
   end function
 
+  logical function read_trace_integration(extraction,entry,error) result(ok)
+    type(c_ptr),intent(in) :: extraction
+    type(catalog_product),intent(inout) :: entry
+    character(:),allocatable,intent(out) :: error
+    character(16),parameter :: step_keys(5)=[character(16)::'initial_step','minimum_step','maximum_step', &
+      'maximum_error','maximum_length']
+    integer :: d
+    integer(int64) :: maximum_steps
+    ok=.false.
+    if(.not.read_choice(extraction,'integrator',[character(4)::'rk45'],entry%view%integrator,error)) return
+    if(.not.read_choice(extraction,'direction',[character(8)::'forward','backward','both'],entry%view%direction,error)) return
+    do d=1,5
+      if(.not.read_positive_real(extraction,trim(step_keys(d)),entry%view%integration(d),error)) return
+    enddo
+    if(entry%view%integration(2)>entry%view%integration(1).or.entry%view%integration(1)>entry%view%integration(3)) then
+      error='integration steps must satisfy minimum <= initial <= maximum';return
+    endif
+    if(.not.read_integer(extraction,'maximum_steps',maximum_steps,error,1_int64)) return
+    if(maximum_steps>huge(1)) then
+      error='maximum_steps exceeds the integrator counter range';return
+    endif
+    entry%view%maximum_steps=int(maximum_steps)
+    ok=.true.;error=''
+  end function
+
   logical function read_visual_extraction(root,entry,error) result(ok)
     type(c_ptr),intent(in) :: root
     type(catalog_product),intent(inout) :: entry
     character(:),allocatable,intent(out) :: error
     type(c_ptr) :: extraction
+    real(real64) :: reference_length,reference_velocity,level
+    integer :: power,level_exponent
     character(16),parameter :: step_keys(5)=[character(16)::'initial_step','minimum_step','maximum_step', &
       'maximum_error','maximum_length']
-    integer :: d
-    integer(int64) :: maximum_steps
     extraction=json_get(root,'extraction'//c_null_char);ok=.false.
+    if(entry%view%field=='wall_shear_vector') then
+      ok=.true.;error='';return
+    endif
+    if(entry%view%field=='wall_shear_lines') then
+      if(.not.keys_allowed(extraction,[character(16)::'seeds','integrator','direction','maximum_steps',step_keys],error)) return
+      entry%view%seed_layout='wall-index-list'
+      ok=read_trace_integration(extraction,entry,error);return
+    endif
     select case(trim(entry%view%kind))
     case('q_surface')
       if(.not.keys_allowed(extraction,[character(16)::'isovalue'],error)) return
       if(json_real(json_get(extraction,'isovalue'//c_null_char),entry%view%isovalue)==0) then
         error='isovalue must be a finite number';return
       endif
+    case('lambda2_surface','lambda_ci_surface')
+      if(.not.keys_allowed(extraction,[character(24)::'isovalue','reference_length','reference_velocity'],error)) return
+      if(json_real(json_get(extraction,'isovalue'//c_null_char),level)==0) then
+        error='vortex surface isovalue must be finite';return
+      endif
+      entry%view%isovalue=level
+      if(c_associated(json_get(extraction,'reference_length'//c_null_char)).neqv. &
+         c_associated(json_get(extraction,'reference_velocity'//c_null_char))) then
+        error='fixed-scale vortex thresholds require both reference_length and reference_velocity';return
+      endif
+      if(c_associated(json_get(extraction,'reference_length'//c_null_char))) then
+        if(.not.read_positive_real(extraction,'reference_length',reference_length,error)) return
+        if(.not.read_positive_real(extraction,'reference_velocity',reference_velocity,error)) return
+        if(level/=0) then
+          power=merge(2,1,entry%view%kind=='lambda2_surface')
+          level_exponent=exponent(level)+power*(exponent(reference_velocity)-exponent(reference_length))
+          entry%view%isovalue=scale(fraction(level)*(fraction(reference_velocity)/fraction(reference_length))**power, &
+            level_exponent)
+          if(.not.ieee_is_finite(entry%view%isovalue).or.entry%view%isovalue==0) then
+            error='native vortex threshold is outside the numerical range';return
+          endif
+        endif
+      endif
     case('streamlines')
       if(.not.keys_allowed(extraction,[character(16)::'seed_layout','integrator','direction','maximum_steps',step_keys],error)) return
       if(.not.read_choice(extraction,'seed_layout',[character(16)::'line16','tgv-stratified','bl-layered64', &
         'bl-layered256','sbli-layered16'],entry%view%seed_layout,error)) return
-      if(.not.read_choice(extraction,'integrator',[character(4)::'rk45'],entry%view%integrator,error)) return
-      if(.not.read_choice(extraction,'direction',[character(8)::'forward','backward','both'],entry%view%direction,error)) return
-      do d=1,5
-        if(.not.read_positive_real(extraction,trim(step_keys(d)),entry%view%integration(d),error)) return
-      enddo
-      if(entry%view%integration(2)>entry%view%integration(1).or. &
-        entry%view%integration(1)>entry%view%integration(3)) then
-        error='integration steps must satisfy minimum <= initial <= maximum';return
-      endif
-      if(.not.read_integer(extraction,'maximum_steps',maximum_steps,error,1_int64)) return
-      if(maximum_steps>huge(1)) then
-        error='maximum_steps exceeds the integrator counter range';return
-      endif
-      entry%view%maximum_steps=int(maximum_steps)
+      ok=read_trace_integration(extraction,entry,error);return
     case default
       if(c_associated(extraction)) then
         error='this product does not use extraction parameters';return
@@ -858,9 +984,13 @@ contains
     logical :: selected(size(catalog_field_names))
     integer :: id,i
     ok=.false.;output=json_get(root,'output'//c_null_char);sampling=json_get(root,'sampling'//c_null_char)
-    if(.not.read_choice(root,'kind',[character(16)::'slice','probe','wall_curve','q_surface','streamlines'], &
+    if(.not.read_choice(root,'kind',[character(32)::'slice','probe','wall_curve','q_surface','streamlines','station_profile','wall_profile', &
+      'lambda2_surface','lambda_ci_surface'], &
       entry%view%kind,error)) return
     if(.not.read_choice(output,'channel',[character(8)::'data','image','geometry'],entry%view%channel,error)) return
+    if((entry%view%kind=='station_profile'.or.entry%view%kind=='wall_profile').and.entry%view%channel/='data') then
+      error='statistical profiles currently supply one-dimensional numerical data';return
+    endif
     if(entry%view%channel=='data') then
       if(.not.keys_allowed(output,[character(8)::'channel','format'],error)) return
       if(.not.read_choice(output,'format',[character(16)::'hdf5-xdmf','csv'],entry%view%format,error)) return
@@ -895,6 +1025,35 @@ contains
         error='data slices require fields, not a display field';return
       endif
       if(.not.read_catalog_fields(root,entry,error)) return
+    elseif(entry%view%kind=='wall_profile') then
+      if(entry%view%format/='csv'.or.(entry%view%sampling/='wall_span'.and.entry%view%sampling/='wall_line')) then
+        error='wall profiles require csv and wall_span or wall_line';return
+      endif
+      if(entry%source/='reynolds'.or.entry%statistics_source/='selected-time') then
+        error='wall profiles average instantaneous quantities using Reynolds selected-time weights';return
+      endif
+      if(c_associated(json_get(root,'field'//c_null_char))) then
+        error='wall profiles require fields, not a display field';return
+      endif
+      if(.not.read_catalog_fields(root,entry,error)) return
+      if(any(entry%fields/=1.and.entry%fields/=6.and.(entry%fields<31.or.entry%fields>34))) then
+        error='wall profile fields are density, temperature, wall_shear_x/z, wall_heat_into_wall and dynamic_viscosity';return
+      endif
+    elseif(entry%view%kind=='station_profile') then
+      if(entry%view%format/='csv'.or.(entry%view%sampling/='station_span'.and. &
+         entry%view%sampling/='station_line')) then
+        error='station profiles require csv and station_span or station_line';return
+      endif
+      if(entry%statistics_source/='selected-time'.or.entry%source=='instantaneous') then
+        error='station profiles require Reynolds/Favre selected-time statistics';return
+      endif
+      if(c_associated(json_get(root,'field'//c_null_char))) then
+        error='station profiles require fields, not a display field';return
+      endif
+      if(.not.read_catalog_fields(root,entry,error)) return
+      if(any(entry%fields>6).or.(entry%source=='favre'.and.any(entry%fields==1))) then
+        error='station means support five-variable primitives, not Favre density';return
+      endif
     elseif(entry%view%kind=='probe') then
       if(entry%view%format/='csv') then
         error='probe output requires csv';return
@@ -919,6 +1078,7 @@ contains
       else
         select case(field)
         case('velocity_magnitude');selected(2:4)=.true.
+        case('wall_shear_vector','wall_shear_lines');selected(31:32)=.true.
         case('u_Uinf');selected(2)=.true.
         case('w_Uinf');selected(4)=.true.
         case('T_Tinf');selected(6)=.true.
@@ -933,8 +1093,17 @@ contains
       endif
       entry%view%field=field
       if(entry%view%kind=='q_surface') selected(22)=.true.
+      if(entry%view%kind=='lambda2_surface') selected(35)=.true.
+      if(entry%view%kind=='lambda_ci_surface') selected(36)=.true.
       if(entry%view%kind=='streamlines') selected(2:4)=.true.
       entry%fields=pack([(i,i=1,size(selected))],selected)
+    endif
+    if(any(entry%fields>=35).and.entry%source/='instantaneous') then
+      error='lambda2/lambda_ci use the instantaneous complete physical velocity gradient';return
+    endif
+    if(any(entry%fields>=31.and.entry%fields<=34).and.entry%source/='instantaneous'.and.entry%view%kind/='wall_profile'.and. &
+      .not.catalog_wall_mean(entry)) then
+      error='wall transport means require accumulating instantaneous wall quantities, not gradients of primitive means';return
     endif
     if(.not.read_visual_extraction(root,entry,error)) return
     ok=.true.;error=''
@@ -948,7 +1117,7 @@ contains
     character(:),allocatable :: value,error
     logical :: good
     integer :: i
-    entry%id=''; entry%source=''; entry%statistics_source=''; entry%error=''; entry%record=line
+    entry%id=''; entry%source=''; entry%statistics_source=''; entry%error=''; entry%record=line;entry%wall_units=''
     allocate(entry%fields(0))
     doc=json_read(line,len(line,kind=c_size_t),errors,size(errors,kind=c_size_t))
     if(.not.c_associated(doc)) then
@@ -960,7 +1129,8 @@ contains
     entry%id=text_value(json_get(root,'id'//c_null_char))
     validation: block
       if(.not.keys_allowed(root,[character(24)::'id','kind','enable_request','source', &
-          'statistics_source','fields','field','sampling','display','extraction','output','schedule'],error)) exit validation
+          'statistics_source','fields','field','sampling','display','extraction','output','schedule', &
+          'wall_reference','wall_units','thickness','fluctuation'],error)) exit validation
       if(.not.read_text(root,'id',entry%id,error)) exit validation
       if(entry%id=='.'.or.entry%id=='..'.or.index(entry%id,'/')>0.or.index(entry%id,achar(92))>0) then
         error='id must be a single product name, not a path'
@@ -987,6 +1157,62 @@ contains
         endif
       endif
       if(.not.read_catalog_body(root,entry,error)) exit validation
+      call read_catalog_wall_glyph(entry%record,entry%glyph_stride,entry%glyph_length,good,error)
+      if(.not.good) exit validation
+      call read_catalog_wall_seeds(entry%record,entry%wall_seeds,good,error)
+      if(.not.good) exit validation
+      if(entry%view%field=='wall_shear_vector'.or.entry%view%field=='wall_shear_lines') then
+        if(entry%view%kind/='slice'.or.entry%view%channel/='image'.or.entry%view%sampling/='grid_index'.or. &
+          entry%axis/=2.or.entry%index/=0) then
+          error='wall shear geometry requires an image of the physical lower wall at global j=0';exit validation
+        endif
+      endif
+      if(entry%view%field=='wall_shear_lines') then
+        if(entry%ranges(2,1)<=entry%ranges(1,1).or.entry%ranges(2,3)<=entry%ranges(1,3)) then
+          error='wall shear lines require at least one i/k rectangular cell';exit validation
+        endif
+        if(any(entry%wall_seeds(1,:)<entry%ranges(1,1)).or.any(entry%wall_seeds(1,:)>entry%ranges(2,1)).or. &
+           any(entry%wall_seeds(2,:)<entry%ranges(1,3)).or.any(entry%wall_seeds(2,:)>entry%ranges(2,3))) then
+          error='wall seeds must lie within the declared i/k integration region';exit validation
+        endif
+      endif
+      call read_catalog_fluctuation(entry%record,entry%fluctuation,good,error)
+      if(.not.good) exit validation
+      if(entry%fluctuation) then
+        if(entry%view%kind/='slice'.or.entry%view%sampling/='grid_index'.or.entry%axis/=2.or. &
+           entry%statistics_source/='selected-time'.or.entry%source=='instantaneous') then
+          error='fluctuation requires a fixed-j slice with Reynolds/Favre selected-time means';exit validation
+        endif
+        if(any(entry%fields<2).or.any(entry%fields>6).or. &
+           (entry%source=='favre'.and.any(entry%fields>4))) then
+          error='fluctuation supports velocity and Reynolds pressure/temperature only';exit validation
+        endif
+        if(entry%view%channel=='image') then
+          if(.not.any(catalog_field_names(2:6)==entry%view%field)) then
+            error='fluctuation images require one primitive component, not a vector magnitude';exit validation
+          endif
+        endif
+      endif
+      if(c_associated(json_get(root,'wall_reference'//c_null_char))) then
+        call read_catalog_wall_reference(entry%record,entry%wall_reference,good,error)
+        if(.not.good) exit validation
+      endif
+      if(c_associated(json_get(root,'wall_units'//c_null_char))) then
+        call read_catalog_wall_units(entry%record,entry%wall_units,good,error)
+        if(.not.good) exit validation
+      endif
+      call read_catalog_thickness(entry%record,entry%thickness,good,error)
+      if(.not.good) exit validation
+      if(entry%thickness%flags(1)==1) then
+        if(entry%ranges(1,2)/=0.or.entry%thickness%edge_band(2)>entry%ranges(2,2)) then
+          error='thickness needs a wall-origin profile containing its entire edge_band';exit validation
+        endif
+        if(.not.all([any(entry%fields==2),any(entry%fields==5),any(entry%fields==6)])) then
+          error='thickness needs velocity_x, pressure and temperature fields';exit validation
+        endif
+      endif
+      call read_catalog_coordinates(entry%record,entry%view,good,error)
+      if(.not.good) exit validation
       schedule=json_get(root,'schedule'//c_null_char)
       if(.not.keys_allowed(schedule,[character(16)::'mode','interval','events','windows','dense_interval'],error)) &
         exit validation
@@ -1026,6 +1252,7 @@ contains
     entry%error=error; entry%valid=len(error)==0
     call json_free(doc)
   end subroutine
+
 
   function error_text(bytes) result(text)
     character(c_char),intent(in) :: bytes(:)

@@ -39,6 +39,287 @@ def test_valid_index_product(tmp_path):
     assert 'field=density_gradient_magnitude' in result.stdout
 
 
+@pytest.mark.parametrize('source,fields', [('reynolds', ['velocity_x', 'pressure', 'temperature']),
+                                          ('favre', ['velocity_x', 'velocity_y', 'velocity_z'])])
+def test_fixed_j_fluctuation_definition(tmp_path, source, fields):
+    item = product('fluctuation')
+    item.update(source=source, statistics_source='selected-time', fluctuation=True, fields=fields)
+    result = run(tmp_path, [HEADER, item])
+    assert 'PRODUCT 1 valid=T' in result.stdout and 'fluctuation=T' in result.stdout, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('change', [dict(fluctuation=1), dict(fluctuation='true'),
+    dict(source='instantaneous'), dict(statistics_source='velocity-time'),
+    dict(fields=['density']), dict(fields=['Q_rs']), dict(source='favre', fields=['pressure']),
+    dict(source='favre', fields=['temperature']), dict(sampling=dict(mode='grid_index', axis='k', index=2,
+        index_ranges=dict(i=[0,2250],j=[0,260])))])
+def test_bad_fluctuation_is_product_local(tmp_path, change):
+    item = product('bad-fluctuation')
+    item.update(source='reynolds', statistics_source='selected-time', fluctuation=True, fields=['velocity_x'])
+    item.update(change)
+    result = run(tmp_path, [HEADER, item, product('good')])
+    assert 'PRODUCT 1 valid=F' in result.stdout and 'PRODUCT 2 valid=T id=good' in result.stdout
+
+
+def test_fluctuation_is_not_a_fluctuation_of_speed(tmp_path):
+    from test_insitu_catalog_products import visual_product
+    item = visual_product(name='speed')
+    item.update(source='reynolds',statistics_source='selected-time',fluctuation=True)
+    item['sampling'] = product()['sampling']
+    result = run(tmp_path,[HEADER,item,product('good')])
+    assert 'PRODUCT 1 valid=F' in result.stdout and 'PRODUCT 2 valid=T id=good' in result.stdout
+
+
+@pytest.mark.skipif(not os.environ.get('ASTR_CATALOG_STATE_PROBE'),reason='Select the root control probe')
+def test_fluctuation_definition_checkpoint_roundtrip(tmp_path):
+    item = product('fluctuation')
+    item.update(source='reynolds',statistics_source='selected-time',fluctuation=True,fields=['velocity_x'])
+    path = tmp_path/'fluctuation.jsonl'
+    path.write_text('\n'.join(json.dumps(row) for row in [HEADER,item])+'\n')
+    result = subprocess.run([os.environ['ASTR_CATALOG_STATE_PROBE'],str(path),'visual-checkpoint'],
+                            capture_output=True,text=True)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'PASS: runtime catalog visual-checkpoint' in result.stdout
+
+
+def test_complete_wall_transport_and_temperature_gradient_fields(tmp_path):
+    item = product('wall-full')
+    item['sampling'].update(index=0)
+    item['fields'] = ['temperature_gradient_x', 'temperature_gradient_y', 'temperature_gradient_z',
+                      'wall_shear_x', 'wall_shear_z', 'wall_heat_into_wall', 'dynamic_viscosity']
+    result = run(tmp_path, [HEADER, item])
+    assert result.returncode == 0 and 'PRODUCT 1 valid=T id=wall-full' in result.stdout, result.stdout + result.stderr
+    assert [line[6:] for line in result.stdout.splitlines() if line.startswith('field=')] == item['fields']
+
+
+@pytest.mark.parametrize('mode,krange', [('wall_span', [0, 480]), ('wall_line', [480, 480])])
+def test_reynolds_complete_wall_profile(tmp_path, mode, krange):
+    item = product('wall-profile')
+    item.update(kind='wall_profile', source='reynolds', statistics_source='selected-time',
+                fields=['density', 'temperature', 'wall_shear_x', 'wall_shear_z', 'wall_heat_into_wall', 'dynamic_viscosity'])
+    item['sampling'] = dict(mode=mode, axis='j', index=0, index_ranges=dict(i=[0, 2250], k=krange))
+    item['output'] = dict(channel='data', format='csv')
+    result = run(tmp_path, [HEADER, item])
+    assert result.returncode == 0 and 'PRODUCT 1 valid=T id=wall-profile' in result.stdout, result.stdout + result.stderr
+
+
+def test_wall_flux_is_not_a_flux_of_primitive_means(tmp_path):
+    item = product('bad-wall')
+    item.update(source='reynolds', statistics_source='velocity-time', fields=['wall_shear_x'])
+    item['sampling']['index'] = 0
+    result = run(tmp_path, [HEADER, item, product('good')])
+    assert 'PRODUCT 1 valid=F id=bad-wall' in result.stdout and 'PRODUCT 2 valid=T id=good' in result.stdout
+
+
+def test_selected_wall_footprint_is_a_mean_of_wall_quantities(tmp_path):
+    item = product('wall-footprint')
+    item.update(source='reynolds',statistics_source='selected-time',
+                fields=['density','temperature','wall_shear_x','wall_shear_z','wall_heat_into_wall','dynamic_viscosity'])
+    item['sampling']['index'] = 0
+    result = run(tmp_path,[HEADER,item])
+    assert 'PRODUCT 1 valid=T id=wall-footprint' in result.stdout,result.stdout+result.stderr
+
+
+@pytest.mark.parametrize('source,provider,index,fields',[('favre','selected-time',0,['wall_shear_x']),
+    ('reynolds','velocity-time',0,['wall_shear_x']),('reynolds','selected-time',1,['wall_shear_x']),
+    ('reynolds','selected-time',0,['wall_shear_x','velocity_x'])])
+def test_invalid_wall_mean_support_is_product_local(tmp_path,source,provider,index,fields):
+    item=product('bad-wall-mean')
+    item.update(source=source,statistics_source=provider,fields=fields)
+    item['sampling']['index']=index
+    result=run(tmp_path,[HEADER,item,product('good')])
+    assert 'PRODUCT 1 valid=F' in result.stdout and 'PRODUCT 2 valid=T id=good' in result.stdout
+
+
+def normalized_wall(reference):
+    item = product('wall-reference')
+    item.update(kind='wall_profile', source='reynolds', statistics_source='selected-time', fields=['wall_shear_x'])
+    item['sampling'] = dict(mode='wall_span', axis='j', index=0, index_ranges=dict(i=[0,2250], k=[0,480]))
+    item['output'] = dict(channel='data', format='csv')
+    item['wall_reference'] = reference
+    return item
+
+
+@pytest.mark.parametrize('reference,mode', [({}, 0), ({'recovery_temperature': 26.92}, 1),
+                                         ({'recovery_factor': .9}, 2), ({'recovery_factor': 0}, 2)])
+def test_explicit_wall_references(tmp_path, reference, mode):
+    result = run(tmp_path, [HEADER, normalized_wall(reference)])
+    assert 'PRODUCT 1 valid=T' in result.stdout, result.stdout + result.stderr
+    assert f'wall_reference_flags=1 {mode}' in result.stdout
+
+
+@pytest.mark.parametrize('reference', [False, 12, [], {'unknown': 1}, {'recovery_temperature': 0},
+                                     {'recovery_temperature': -1}, {'recovery_factor': -1},
+                                     {'recovery_factor': True}, {'recovery_temperature': '20'},
+                                     {'recovery_temperature': 20, 'recovery_factor': .9}])
+def test_bad_wall_reference_is_product_local(tmp_path, reference):
+    result = run(tmp_path, [HEADER, normalized_wall(reference), product('good')])
+    assert 'PRODUCT 1 valid=F' in result.stdout and 'PRODUCT 2 valid=T id=good' in result.stdout
+
+
+@pytest.mark.parametrize('ranks', (1, 2, 4))
+def test_wall_reference_broadcast(tmp_path, ranks):
+    probe = os.environ.get('ASTR_CATALOG_MPI_PROBE')
+    launcher = os.environ.get('ASTR_CATALOG_MPIEXEC')
+    if not probe or not launcher:
+        pytest.skip('Set the root-CMake MPI catalog probe and launcher')
+    formal = tmp_path / 'wall.jsonl'
+    formal.write_text('\n'.join(json.dumps(row) for row in [HEADER, normalized_wall({'recovery_factor': .9})])+'\n')
+    candidate, temperature = tmp_path / 'factor.jsonl', tmp_path / 'temperature.jsonl'
+    candidate.write_text('\n'.join(json.dumps(row) for row in [HEADER, normalized_wall({'recovery_factor': .8})])+'\n')
+    temperature.write_text('\n'.join(json.dumps(row) for row in [HEADER, normalized_wall({'recovery_temperature': 26.92})])+'\n')
+    result = subprocess.run([launcher, '--mca', 'coll_hcoll_enable', '0', '--oversubscribe', '-np', str(ranks),
+                             str(Path(probe).resolve()), str(formal), str(candidate), 'wall-reference', str(temperature)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.count('WALL_REFERENCE_OK') == ranks
+
+
+@pytest.mark.parametrize('mode,krange', [('station_span', [0, 480]), ('station_line', [17, 17])])
+def test_valid_selected_time_station_profile(tmp_path, mode, krange):
+    item = product('station')
+    item.update(kind='station_profile', source='reynolds', statistics_source='selected-time',
+                fields=['velocity_x', 'pressure', 'temperature'])
+    item['sampling'] = dict(mode=mode, axis='i', index=700, index_ranges=dict(j=[0, 260], k=krange))
+    item['output'] = dict(channel='data', format='csv')
+    result = run(tmp_path, [HEADER, item])
+    assert result.returncode == 0 and 'PRODUCT 1 valid=T id=station' in result.stdout, result.stdout + result.stderr
+    assert 'axis=1' in result.stdout and 'index=700' in result.stdout
+
+
+def thickness_product():
+    item = product('thickness')
+    item.update(kind='station_profile', source='favre', statistics_source='selected-time',
+                fields=['velocity_x', 'pressure', 'temperature'], thickness=dict(edge_band=[220, 240]))
+    item['sampling'] = dict(mode='station_span', axis='i', index=700,
+                            index_ranges=dict(j=[0, 260], k=[0, 480]))
+    item['output'] = dict(channel='data', format='csv')
+    return item
+
+
+@pytest.mark.parametrize('upper', [None, 12.5])
+def test_thickness_profile_options(tmp_path, upper):
+    item = thickness_product()
+    if upper is not None:
+        item['thickness']['explicit_upper'] = upper
+    result = run(tmp_path, [HEADER, item])
+    assert result.returncode == 0 and 'PRODUCT 1 valid=T' in result.stdout, result.stdout + result.stderr
+    assert 'thickness_band=220 240' in result.stdout
+    assert f'thickness_flags=1 {int(upper is not None)}' in result.stdout
+
+
+@pytest.mark.parametrize('change', ['null', 'not_object', 'missing_band', 'bad_key', 'float_index',
+                                  'bool_index', 'reversed', 'negative', 'wall_band', 'outside', 'off_wall',
+                                  'reynolds', 'missing_field', 'upper_nonfinite', 'upper_bool'])
+def test_invalid_thickness_retains_other_product(tmp_path, change):
+    item = thickness_product()
+    if change == 'null': item['thickness'] = None
+    elif change == 'not_object': item['thickness'] = []
+    elif change == 'missing_band': item['thickness'] = {}
+    elif change == 'bad_key': item['thickness']['estimate'] = 'auto'
+    elif change == 'float_index': item['thickness']['edge_band'] = [220.5, 240]
+    elif change == 'bool_index': item['thickness']['edge_band'] = [True, 240]
+    elif change == 'reversed': item['thickness']['edge_band'] = [240, 220]
+    elif change == 'negative': item['thickness']['edge_band'] = [-1, 220]
+    elif change == 'wall_band': item['thickness']['edge_band'] = [0, 0]
+    elif change == 'outside': item['thickness']['edge_band'] = [220, 261]
+    elif change == 'off_wall': item['sampling']['index_ranges']['j'] = [1, 260]
+    elif change == 'reynolds': item['source'] = 'reynolds'
+    elif change == 'missing_field': item['fields'] = ['velocity_x', 'temperature']
+    elif change == 'upper_nonfinite': item['thickness']['explicit_upper'] = 'nan'
+    elif change == 'upper_bool': item['thickness']['explicit_upper'] = True
+    result = run(tmp_path, [HEADER, item, product('good')])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'PRODUCT 1 valid=F id=thickness' in result.stdout
+    assert 'PRODUCT 2 valid=T id=good' in result.stdout
+
+
+@pytest.mark.parametrize('ranks', [1, 2, 4])
+def test_thickness_broadcast_version_and_restore(tmp_path, ranks):
+    probe = os.environ.get('ASTR_CATALOG_MPI_PROBE')
+    if not probe:
+        pytest.skip('Select the root-CMake MPI catalog probe')
+    item = thickness_product()
+    formal, candidate = tmp_path/'formal.jsonl', tmp_path/'candidate.jsonl'
+    formal.write_text('\n'.join(json.dumps(row) for row in [HEADER, item])+'\n')
+    item['thickness'] = dict(edge_band=[221, 241], explicit_upper=12.5)
+    candidate.write_text('\n'.join(json.dumps(row) for row in [HEADER, item])+'\n')
+    mpi = os.environ.get('ASTR_CATALOG_MPIEXEC', 'mpirun')
+    result = subprocess.run([mpi, '--mca', 'coll_hcoll_enable', '0', '--oversubscribe', '-np', str(ranks),
+                             str(Path(probe).resolve()), str(formal), str(candidate), 'thickness'],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout+result.stderr
+    assert result.stdout.count('THICKNESS_OK') == ranks
+
+
+@pytest.mark.parametrize('source', ['reynolds', 'favre'])
+def test_station_wall_units_reference(tmp_path, source):
+    item = product('station')
+    item.update(kind='station_profile', source=source, statistics_source='selected-time',
+                fields=['velocity_x', 'pressure', 'temperature'], wall_units='wall-reference')
+    item['sampling'] = dict(mode='station_span', axis='i', index=700,
+                            index_ranges=dict(j=[0, 260], k=[0, 480]))
+    item['output'] = dict(channel='data', format='csv')
+    result = run(tmp_path, [HEADER, normalized_wall({}), item])
+    assert result.returncode == 0 and 'PRODUCT 2 valid=T id=station' in result.stdout, result.stdout + result.stderr
+    assert 'wall_units=wall-reference' in result.stdout
+
+
+@pytest.mark.parametrize('value', [None, {}, [], 7, True, '', 'bad\nID', 'bad\x00ID'])
+def test_invalid_wall_units_is_product_local(tmp_path, value):
+    item = product('bad')
+    item.update(kind='station_profile', source='reynolds', statistics_source='selected-time',
+                fields=['velocity_x'], wall_units=value)
+    item['sampling'] = dict(mode='station_span', axis='i', index=700,
+                            index_ranges=dict(j=[0, 260], k=[0, 480]))
+    item['output'] = dict(channel='data', format='csv')
+    result = run(tmp_path, [HEADER, item, product('good')])
+    assert 'PRODUCT 1 valid=F id=bad' in result.stdout and 'PRODUCT 2 valid=T id=good' in result.stdout
+
+
+@pytest.mark.parametrize('ranks', [1, 2, 4])
+def test_wall_units_broadcast_version_and_restore(tmp_path, ranks):
+    probe = os.environ.get('ASTR_CATALOG_MPI_PROBE')
+    if not probe:
+        pytest.skip('Set ASTR_CATALOG_MPI_PROBE')
+    item = product('station')
+    item.update(kind='station_profile', source='favre', statistics_source='selected-time',
+                fields=['velocity_x'], wall_units='reference-a')
+    item['sampling'] = dict(mode='station_span', axis='i', index=700,
+                            index_ranges=dict(j=[0, 260], k=[0, 480]))
+    item['output'] = dict(channel='data', format='csv')
+    formal, candidate = tmp_path/'formal.jsonl', tmp_path/'candidate.jsonl'
+    formal.write_text('\n'.join(json.dumps(row) for row in [HEADER, item])+'\n')
+    item['wall_units'] = 'reference-b'
+    candidate.write_text('\n'.join(json.dumps(row) for row in [HEADER, item])+'\n')
+    mpi = os.environ.get('ASTR_CATALOG_MPIEXEC', 'mpirun')
+    result = subprocess.run([mpi, '--mca', 'coll_hcoll_enable', '0', '--oversubscribe', '-np', str(ranks),
+                             str(Path(probe).resolve()), str(formal), str(candidate), 'wall-units'],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout+result.stderr
+    assert result.stdout.count('WALL_UNITS_OK') == ranks
+
+
+@pytest.mark.parametrize('change', ['instantaneous', 'favre_density', 'display_field', 'point_interval',
+                                  'zero_span', 'wrong_axis', 'image'])
+def test_invalid_station_does_not_disable_valid_slice(tmp_path, change):
+    item = product('station')
+    item.update(kind='station_profile', source='reynolds', statistics_source='selected-time', fields=['pressure'])
+    item['sampling'] = dict(mode='station_span', axis='i', index=700,
+                            index_ranges=dict(j=[0, 260], k=[0, 480]))
+    item['output'] = dict(channel='data', format='csv')
+    if change == 'instantaneous': item['source'] = 'instantaneous'
+    elif change == 'favre_density': item.update(source='favre', fields=['density'])
+    elif change == 'display_field': item['field'] = 'pressure'
+    elif change == 'point_interval': item['sampling']['mode'] = 'station_line'
+    elif change == 'zero_span': item['sampling']['index_ranges']['k'] = [1, 1]
+    elif change == 'wrong_axis': item['sampling'].update(axis='j', index_ranges=dict(i=[0, 2250], k=[0, 480]))
+    elif change == 'image': item['output'] = dict(channel='image', format='jpeg')
+    result = run(tmp_path, [HEADER, item, product('good')])
+    assert result.returncode == 0 and 'PRODUCT 1 valid=F id=station' in result.stdout, result.stdout + result.stderr
+    assert 'PRODUCT 2 valid=T id=good' in result.stdout
+
+
 def test_bad_record_does_not_swallow_later_record(tmp_path):
     result = run(tmp_path, [HEADER, '{"id":"broken",', product('good')])
     assert result.returncode == 0, result.stdout + result.stderr

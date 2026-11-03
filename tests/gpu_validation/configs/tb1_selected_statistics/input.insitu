@@ -1,0 +1,5 @@
+&insitu_run
+ enabled=t, statistics=t, render=f, products='catalog_stats',
+ statistics_window=0.0005,0.0115, output_directory='outdat',
+ host_budget_bytes=67108864,device_budget_bytes=67108864,device_reserve_bytes=1073741824
+/

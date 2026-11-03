@@ -98,6 +98,28 @@ module commarray
     !
     allocate( vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3),stat=lallo)
     if(lallo.ne.0) stop ' !! error at allocating vel'
+    if(.not.lcomb) then
+      ! Primitive recovery fills physical nodes and face halos, not edge/corner storage.
+      do k=-hm,km+hm
+        do j=-hm,jm+hm
+          if((j<0.or.j>jm).and.(k<0.or.k>km)) then
+            rho(:,j,k)=0.e0_real_kind
+            vel(:,j,k,:)=0.e0_real_kind
+            prs(:,j,k)=0.e0_real_kind
+            tmp(:,j,k)=0.e0_real_kind
+          elseif(j<0.or.j>jm.or.k<0.or.k>km) then
+            rho(-hm:-1,j,k)=0.e0_real_kind
+            rho(im+1:im+hm,j,k)=0.e0_real_kind
+            vel(-hm:-1,j,k,:)=0.e0_real_kind
+            vel(im+1:im+hm,j,k,:)=0.e0_real_kind
+            prs(-hm:-1,j,k)=0.e0_real_kind
+            prs(im+1:im+hm,j,k)=0.e0_real_kind
+            tmp(-hm:-1,j,k)=0.e0_real_kind
+            tmp(im+1:im+hm,j,k)=0.e0_real_kind
+          endif
+        enddo
+      enddo
+    endif
     !
     allocate( spc(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:num_species),stat=lallo)
     if(lallo.ne.0) stop ' !! error at allocating spc'

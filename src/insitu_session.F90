@@ -20,6 +20,7 @@ module insitu_session
   use insitu_fields, only: nonreacting_wall_candidate
   use insitu_run_config, only: insitu_options
   use insitu_catalog, only: catalog_watch_state_file
+  use insitu_selected_runtime, only: configure_selected_runtime,release_selected_runtime,selected_runtime_file
   use insitu_product_schedule, only: configure_product_schedules,poll_product_schedules,product_schedules_active, &
     product_scene_due,product_state_file,product_results_complete,product_failures_present
   use insitu_config_collective, only: read_insitu_options_collective
@@ -316,8 +317,8 @@ contains
   end subroutine
 
   integer(c_int) function shared_device_fixture() result(allow)
-    use commvar, only: ia,ja,ka
-    use parallel, only: mpisize
+    use commvar, only: ia,ja,ka,flowtype,lreadgrid,numq,num_species
+    use parallel, only: mpisize,isize,jsize,ksize
     integer(int64) :: device_limit,host_limit
     allow=0_c_int
     device_limit=2147483648_int64; host_limit=4294967296_int64
@@ -330,6 +331,13 @@ contains
        options%processing_backend=='device'.and.options%rendering_pipeline=='standard-device'.and. &
        options%postprocess_transport=='pinned'.and.options%device_budget_bytes<=device_limit.and. &
        options%host_budget_bytes<=host_limit.and.options%device_reserve_bytes>=1073741824_int64) allow=1_c_int
+    if(options%products=='catalog_stats'.and.numq==5.and.num_species==0.and.mpisize==4.and. &
+       options%processing_backend=='device'.and.options%rendering_pipeline=='standard-device'.and. &
+       options%postprocess_transport=='pinned') allow=1_c_int
+    if(trim(flowtype)=='tgv'.and..not.lreadgrid.and.numq==5.and.num_species==0.and. &
+       all([ia,ja,ka]==32).and.mpisize==4.and.all([isize,jsize,ksize]==[2,2,1]).and. &
+       options%processing_backend=='device'.and.options%rendering_pipeline=='standard-device'.and. &
+       options%postprocess_transport=='pinned') allow=1_c_int
   end function
 
   subroutine output_render_file(path,writing,identity,budget,override,source_bytes)
@@ -602,6 +610,12 @@ contains
     logical :: ok,all_ok,native,permit
     integer :: i,j,k,status,role,extent(3),grid_source
     call require_sample(formal.and.enabled.and.statistics_enabled,'statistics provider is not active')
+    if(options%products=='catalog_stats') then
+      call selected_runtime_file(path,writing,identity,budget,allow_repartition)
+      statistics_step=int(identity%step);statistics_time=identity%time
+      if(.not.writing) output_statistics_restored=.true.
+      return
+    endif
     permit=.false.
     if(present(allow_repartition)) permit=allow_repartition
     if(options%products=='air5_walls') then
@@ -740,7 +754,8 @@ contains
   logical function native_device_statistics()
 #ifdef _CUDA
     use commvar, only: use_gpu
-    native_device_statistics=formal.and.enabled.and.statistics_enabled.and.use_gpu.and.options%products/='air5_walls'
+    native_device_statistics=formal.and.enabled.and.statistics_enabled.and.use_gpu.and. &
+      options%products/='air5_walls'.and.options%products/='catalog_stats'
 #else
     native_device_statistics=.false.
 #endif
@@ -799,6 +814,20 @@ contains
       statistics_configured=.true.
       oracle_io=.false.
       if(enabled) then
+        if(options%products=='catalog_stats') then
+          call require_sample(numq==5.and.num_species==0.and.ndims==3, &
+            'selected-time statistics require five nonreacting variables; read-grid geometry is checked before sampling')
+          call require_sample(options%processing_backend/='device'.or.use_gpu, &
+            'device selected-time statistics require usegpu=t')
+          statistics_enabled=options%statistics;statistics_window=options%statistics_window
+          statistics_host_limit=options%host_budget_bytes
+          call configure_selected_runtime(statistics_window,options%host_budget_bytes, &
+            options%device_budget_bytes,options%device_reserve_bytes,ok)
+          call require_sample(ok,'cannot configure selected-time statistics')
+          if(options%render) call configure_selected_render()
+          prefix=trim(options%output_directory)//'/sample';session_checked=.true.
+          return
+        endif
         device_preview_bl=trim(entry_command)=='insitu-preview'.and.trim(flowtype)=='bl'.and. &
           all([ia,ja,ka]==[450,130,96]).and.options%products=='streamlines'.and.options%view_count>0
         if(options%view_count>0) then
@@ -897,7 +926,8 @@ contains
               (all([ia,ja,ka]==32).or.device_curve_demo.or.(device_demo.and.all([ia,ja,ka]==256))).and. &
               (all(bctype==1).or.((device_curve_trace.or.device_curve_q).and.all(bctype==[1,1,41,41,1,1]))).and. &
               numq==5.and.num_species==0.and.nondimen.and. &
-              ndims==3.and.mpisize<=2.and.hm>=3.and.trim(difschm)=='643e', &
+              ndims==3.and.(mpisize<=2.or.(mpisize==4.and..not.lreadgrid.and. &
+                all([isize,jsize,ksize]==[2,2,1]))).and.hm>=3.and.trim(difschm)=='643e', &
               'device products require 32^3 TGV or explicit 256^3 render-only demonstration')
             if(device_curve_q) call require_sample(.not.options%statistics.and. &
               options%rendering_pipeline/='compatible', &
@@ -1031,6 +1061,34 @@ contains
       endif
     endif
     session_checked=.true.
+  end subroutine
+
+  subroutine configure_selected_render()
+    use commvar, only: use_gpu
+    use parallel, only: mpirank
+    integer :: ierr
+    logical :: ok
+    call require_sample(use_gpu.and.options%processing_backend=='device', &
+      'selected-time catalog rendering requires a GPU-bound solver and device processing')
+#ifdef ASTR_WITH_CATALYST
+    call require_sample(mesh_pipeline_available(trim(options%rendering_pipeline)//c_null_char)==1, &
+      'selected-time catalog rendering requires a built strict device pipeline')
+    render_signature=0;ok=.true.
+    if(mpirank==0) then
+      call file_fingerprint(trim(options%pipeline_file),render_signature(1),render_signature(2),ok)
+      if(ok) call file_fingerprint(trim(options%implementation_path)//'/libcatalyst-paraview.so', &
+        render_signature(3),render_signature(4),ok)
+    endif
+    call require_sample(ok,'cannot fingerprint selected-time render pipeline/backend')
+    render_signature(2)=ieor(render_signature(2),int(z'53454C4543545244',int64))
+    render_signature(3)=ieor(render_signature(3),postprocess_transport_marker(options%postprocess_transport))
+    if(options%rendering_pipeline=='direct-device') &
+      render_signature(4)=ieor(render_signature(4),int(z'4449524543545244',int64))
+    call MPI_Bcast(render_signature,4,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+    call require_sample(ierr==MPI_SUCCESS,'selected-time render signature broadcast')
+#else
+    call require_sample(.false.,'selected-time catalog images require ASTR_WITH_CATALYST=ON')
+#endif
   end subroutine
 
   subroutine paired_inventory(files)
@@ -2042,6 +2100,7 @@ contains
     integer(int64),optional,intent(in) :: parent_time_word
     real(real_kind),allocatable :: fields(:,:,:,:)
     integer :: status
+    logical :: ok
     call configure_statistics_validation()
     if(.not.statistics_enabled) return
     statistics_segment_step=int(step,int64); statistics_segment_time=t
@@ -2049,6 +2108,13 @@ contains
     if(present(parent_bytes)) statistics_parent_bytes=parent_bytes
     if(present(parent_time_word)) statistics_parent_time=parent_time_word
     statistics_segment_known=.true.
+    if(formal.and.options%products=='catalog_stats') then
+      call configure_selected_runtime(statistics_window,options%host_budget_bytes, &
+        options%device_budget_bytes,options%device_reserve_bytes,ok)
+      call require_sample(ok,'cannot begin a new selected statistics segment')
+      statistics_step=step;statistics_time=t;output_statistics_restored=.true.
+      return
+    endif
     ! Seed the resumed interval without advancing a rendering schedule.
     if(formal.and.(options%products=='air5_walls'.or.options%products=='channel_walls')) then
       call admit_statistics_host()
@@ -2224,6 +2290,7 @@ contains
       call finish_air5_statistics(prefix)
     if(allocated(point_statistics)) deallocate(point_statistics)
     if(allocated(final_statistics)) deallocate(final_statistics)
+    call release_selected_runtime()
     call release_insitu_geometry()
 #if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
     status=resource_finish()
@@ -2490,6 +2557,11 @@ contains
     endif
     if(.not.enabled) return
     call configure_statistics_validation()
+    if(formal.and.options%products=='catalog_stats') then
+      ! The dynamic catalog is polled later by the completed output observer;
+      ! selected-time samples there, before numerical products are evaluated.
+      statistics_step=step;statistics_time=time_end;return
+    endif
     if(trim(flowtype)=='air5hbl'.and..not.formal) then
       call require_sample(.not.statistics_enabled,'AIR5 wall oracle does not implement cumulative statistics')
       call write_air5_wall_sample(step,time_end,step_dt)

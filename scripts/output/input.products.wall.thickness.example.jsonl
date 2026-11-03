@@ -1,0 +1,2 @@
+{"catalog_schema":"astr-insitu-products-v1"}
+{"id":"station-thickness","kind":"station_profile","enable_request":1,"source":"favre","statistics_source":"selected-time","fields":["velocity_x","pressure","temperature"],"thickness":{"edge_band":[24,28],"explicit_upper":21.234},"sampling":{"mode":"station_span","axis":"i","index":32,"index_ranges":{"j":[0,32],"k":[0,24]}},"output":{"channel":"data","format":"csv"},"schedule":{"mode":"steps","interval":3}}

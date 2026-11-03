@@ -1,0 +1,412 @@
+module insitu_sample_moments_gpu
+  use astr_precision, only: real_kind
+  use iso_fortran_env, only: int64
+  use cudafor
+  use iso_c_binding, only: c_f_pointer
+  use gpu_check, only: sync_after_kernel,check_kernel_launch
+  use insitu_sample_moments, only: sample_moment_size,update_sample_moments,decode_sample_primitives, &
+    sample_profile_size,sample_profile_terms
+  implicit none
+  private
+  public :: push_selected_moments_gpu,gather_selected_moments_gpu
+  public :: selected_moment_device,allocate_selected_moments_gpu,release_selected_moments_gpu
+  public :: activate_selected_moments_gpu,selected_moment_value_gpu
+  public :: selected_moment_transfer_counts_gpu
+  public :: reduce_selected_profile_gpu,selected_profile_workspace_bytes_gpu
+  public :: selected_profile_transfer_counts_gpu
+  public :: push_scattered_moments_gpu,selected_external_workspace_bytes_gpu
+  integer(int64),save :: indexed_calls=0,indexed_status_bytes=0,indexed_index_bytes=0
+  integer(int64),save :: profile_calls=0,profile_download=0,profile_upload=0
+  type :: selected_moment_device
+    integer,device,pointer,contiguous :: indices(:,:)=>null(),invalid(:)=>null()
+    integer,device,pointer,contiguous :: external_positions(:)=>null()
+    real(real_kind),device,pointer,contiguous :: states(:,:)=>null()
+    real(real_kind),device,pointer,contiguous :: profile_weights(:)=>null(),profile_sums(:,:)=>null()
+  end type
+  real(real_kind),device,pointer,contiguous,save :: active_states(:,:)=>null()
+  integer,device,pointer,contiguous,save :: active_indices(:,:)=>null()
+  integer,device,save :: active_fields(5),active_cells(3),active_nodes,active_nfields
+contains
+  integer(int64) function selected_external_workspace_bytes_gpu(storage) result(bytes)
+    type(selected_moment_device),intent(in) :: storage
+    bytes=0
+    if(associated(storage%external_positions)) bytes=size(storage%external_positions,kind=int64)*storage_size(0)/8
+  end function
+
+  subroutine push_scattered_moments_gpu(storage,values_pointer,positions,nfields,weights,previous,ok)
+    type(selected_moment_device),intent(inout) :: storage
+    type(c_devptr),intent(in) :: values_pointer
+    integer,intent(in) :: positions(:),nfields
+    real(real_kind),intent(in) :: weights(2)
+    logical,intent(in) :: previous
+    logical,intent(out) :: ok
+    real(real_kind),device,pointer,contiguous :: values(:,:)
+    integer :: n,capacity,components,status,bad
+    n=size(positions);capacity=size(storage%states,1);components=size(storage%states,2);ok=.false.
+    if(components/=sample_moment_size(nfields,.false.).or.n>capacity) return
+    if(n==0) then
+      ok=.true.;return
+    endif
+    if(.not.associated(storage%external_positions)) then
+      allocate(storage%external_positions(capacity),stat=status)
+      if(status/=0) return
+    endif
+    storage%external_positions(:n)=positions;storage%invalid=0
+    ! The producer owns this packet until the explicitly synchronized update ends.
+    call c_f_pointer(values_pointer,values,[n,nfields+1])
+    call scatter_moments_kernel<<<(n+255)/256,256>>>(n,capacity,components,nfields,values,storage%external_positions, &
+      storage%states,weights(1),weights(2),previous,storage%invalid)
+    call sync_after_kernel('selected wall point statistics',force_sync=.true.)
+    bad=storage%invalid(1);ok=bad==0
+    indexed_calls=indexed_calls+1;indexed_status_bytes=indexed_status_bytes+storage_size(0)/8
+    indexed_index_bytes=indexed_index_bytes+int(n,int64)*storage_size(0)/8
+    nullify(values)
+  end subroutine
+
+  attributes(global) subroutine scatter_moments_kernel(n,capacity,components,nfields,values,positions,states, &
+      w0,w1,previous,invalid)
+    integer,value :: n,capacity,components,nfields
+    real(real_kind),value :: w0,w1
+    logical,value :: previous
+    real(real_kind),device,intent(in) :: values(n,nfields+1)
+    integer,device,intent(in) :: positions(*)
+    real(real_kind),device,intent(inout) :: states(capacity,components)
+    integer,device,intent(inout) :: invalid(*)
+    real(real_kind) :: local_state(30),fields(5),weights(2)
+    integer :: node,target,c,ignored,slots(3)
+    logical :: ok
+    node=(blockidx%x-1)*blockdim%x+threadidx%x
+    if(node>n) return
+    target=positions(node)
+    if(target<1.or.target>capacity) then
+      ignored=atomicExch(invalid(1),1);return
+    endif
+    local_state(:components)=states(target,:);fields(:nfields)=values(node,2:)
+    weights=[w0,w1];slots=0
+    call update_sample_moments(components,nfields,local_state,fields,values(node,1),weights,previous,slots,ok)
+    if(ok) then
+      do c=1,components
+        states(target,c)=local_state(c)
+      enddo
+    else
+      ignored=atomicExch(invalid(1),1)
+    endif
+  end subroutine
+
+  subroutine selected_profile_transfer_counts_gpu(calls,download,upload)
+    integer(int64),intent(out) :: calls,download,upload
+    calls=profile_calls;download=profile_download;upload=profile_upload
+  end subroutine
+
+  integer(int64) function selected_profile_workspace_bytes_gpu(storage) result(bytes)
+    type(selected_moment_device),intent(in) :: storage
+    bytes=0
+    if(associated(storage%profile_weights)) bytes=bytes+size(storage%profile_weights,kind=int64)*storage_size(0.e0_real_kind)/8
+    if(associated(storage%profile_sums)) bytes=bytes+size(storage%profile_sums,kind=int64)*storage_size(0.e0_real_kind)/8
+  end function
+
+  subroutine reduce_selected_profile_gpu(storage,ny,weights,nfields,covariance,profile,ok)
+    type(selected_moment_device),intent(inout) :: storage
+    integer,intent(in) :: ny,nfields
+    real(real_kind),intent(in) :: weights(:)
+    logical,intent(in) :: covariance
+    real(real_kind),allocatable,intent(out) :: profile(:,:)
+    logical,intent(out) :: ok
+    integer :: nc,nk,status,bad
+    nc=sample_profile_size(nfields,covariance);nk=size(weights);ok=.false.
+    if(nc==0.or.ny<0.or.nk<0) return
+    allocate(profile(nc,ny),stat=status)
+    if(status/=0) return
+    if(ny==0) then
+      ok=.true.;return
+    endif
+    if(int(ny,int64)*nk/=size(storage%states,1,kind=int64)) return
+    if(size(storage%states,2)/=sample_moment_size(nfields,covariance)) return
+    if(.not.associated(storage%profile_weights)) then
+      allocate(storage%profile_weights(nk),storage%profile_sums(nc,ny),stat=status)
+      if(status/=0) then
+        if(associated(storage%profile_weights)) deallocate(storage%profile_weights)
+        if(associated(storage%profile_sums)) deallocate(storage%profile_sums)
+        nullify(storage%profile_weights,storage%profile_sums);return
+      endif
+      storage%profile_weights=weights
+      profile_upload=profile_upload+int(nk,int64)*storage_size(0.e0_real_kind)/8
+    endif
+    if(size(storage%profile_weights)/=nk.or.any(shape(storage%profile_sums)/=[nc,ny])) return
+    storage%invalid=0
+    call profile_reduce_kernel<<<ny,128>>>(ny,nk,nfields,size(storage%states,2),nc,covariance, &
+      storage%states,storage%profile_weights,storage%profile_sums,storage%invalid)
+    call sync_after_kernel('selected statistics spanwise profile',force_sync=.true.)
+    bad=storage%invalid(1)
+    profile=storage%profile_sums
+    call check_kernel_launch('selected statistics profile result copy')
+    profile_calls=profile_calls+1
+    profile_download=profile_download+int(nc,int64)*ny*storage_size(0.e0_real_kind)/8+storage_size(0)/8
+    ok=bad==0
+  end subroutine
+
+  attributes(global) subroutine profile_reduce_kernel(ny,nk,nfields,ncomponents,nc,covariance,states,weights,sums,bad)
+    integer,value :: ny,nk,nfields,ncomponents,nc
+    logical,value :: covariance
+    real(real_kind),device,intent(in) :: states(ny*nk,ncomponents),weights(nk)
+    real(real_kind),device,intent(out) :: sums(nc,ny)
+    integer,device,intent(inout) :: bad(*)
+    real(real_kind),shared :: partial(128,24)
+    real(real_kind) :: state(30),terms(24),total(24)
+    integer :: lane,j,k,node,c,stride,ignored
+    logical :: ok
+    lane=threadIdx%x;j=blockIdx%x;total=0.e0_real_kind
+    do k=lane,nk,128
+      node=(k-1)*ny+j
+      do c=1,ncomponents
+        state(c)=states(node,c)
+      enddo
+      call sample_profile_terms(ncomponents,nfields,state,weights(k),covariance,terms,ok)
+      if(.not.ok) ignored=atomicExch(bad(1),1)
+      total(:nc)=total(:nc)+terms(:nc)
+    enddo
+    do c=1,nc
+      partial(lane,c)=total(c)
+    enddo
+    call syncthreads()
+    stride=64
+    do while(stride>0)
+      if(lane<=stride) then
+        do c=1,nc
+          partial(lane,c)=partial(lane,c)+partial(lane+stride,c)
+        enddo
+      endif
+      call syncthreads()
+      stride=stride/2
+    enddo
+    if(lane==1) then
+      do c=1,nc
+        sums(c,j)=partial(1,c)
+        if(.not.(abs(sums(c,j))<=huge(0.e0_real_kind))) ignored=atomicExch(bad(1),1)
+      enddo
+    endif
+  end subroutine
+
+  subroutine selected_moment_transfer_counts_gpu(calls,status_bytes,index_bytes)
+    integer(int64),intent(out) :: calls,status_bytes,index_bytes
+    calls=indexed_calls;status_bytes=indexed_status_bytes;index_bytes=indexed_index_bytes
+  end subroutine
+
+  subroutine activate_selected_moments_gpu(storage,field_ids,cells,nodes)
+    type(selected_moment_device),intent(in) :: storage
+    integer,intent(in) :: field_ids(:),cells(3),nodes
+    active_states=>storage%states;active_indices=>storage%indices
+    active_nfields=size(field_ids);active_fields=0
+    active_fields(:size(field_ids))=field_ids;active_cells=cells;active_nodes=nodes
+  end subroutine
+
+  attributes(device) function selected_moment_value_gpu(i,j,k,field,favre) result(value)
+    use iso_fortran_env, only: int64
+    integer,value :: i,j,k,field
+    logical,value :: favre
+    real(real_kind) :: value
+    integer(int64) :: key,current
+    integer :: lo,hi,mid,c
+    value=0.e0_real_kind;lo=1;hi=active_nodes
+    key=int(i,int64)+int(active_cells(1)+1,int64)*(int(j,int64)+int(active_cells(2)+1,int64)*k)
+    do while(lo<=hi)
+      mid=lo+(hi-lo)/2
+      current=int(active_indices(1,mid),int64)+int(active_cells(1)+1,int64)*( &
+        int(active_indices(2,mid),int64)+int(active_cells(2)+1,int64)*active_indices(3,mid))
+      if(current<key) then
+        lo=mid+1
+      elseif(current>key) then
+        hi=mid-1
+      else
+        if(field==1.and..not.favre) then
+          value=active_states(mid,3)/active_states(mid,2);return
+        endif
+        do c=1,active_nfields
+          if(active_fields(c)/=field) cycle
+          value=active_states(mid,3+active_nfields*merge(2,1,favre)+c);return
+        enddo
+        exit
+      endif
+    enddo
+    ! A missing selected support is a programming error, never a zero mean.
+    if(storage_size(value)==64) then
+      value=transfer(int(z'7ff8000000000000',int64),value)
+    else
+      value=transfer(int(z'7fc00000'),value)
+    endif
+  end function
+
+  subroutine allocate_selected_moments_gpu(storage,indices,components,ok)
+    type(selected_moment_device),intent(inout) :: storage
+    integer,intent(in) :: indices(:,:),components
+    logical,intent(out) :: ok
+    integer :: status,n
+    call release_selected_moments_gpu(storage)
+    ok=.false.;n=max(1,size(indices,2))
+    allocate(storage%indices(3,n),stat=status)
+    if(status==0) allocate(storage%invalid(1),stat=status)
+    if(status==0) allocate(storage%states(n,components),stat=status)
+    if(status/=0) then
+      call release_selected_moments_gpu(storage);return
+    endif
+    if(size(indices,2)>0) then
+      storage%indices(:,1:size(indices,2))=indices
+      indexed_index_bytes=indexed_index_bytes+int(size(indices),int64)*storage_size(0)/8
+    endif
+    storage%states=0.e0_real_kind;ok=.true.
+  end subroutine
+
+  subroutine release_selected_moments_gpu(storage)
+    type(selected_moment_device),intent(inout) :: storage
+    if(associated(storage%external_positions)) deallocate(storage%external_positions)
+    nullify(storage%external_positions)
+    nullify(active_states,active_indices)
+    if(associated(storage%states)) deallocate(storage%states)
+    if(associated(storage%indices)) deallocate(storage%indices)
+    if(associated(storage%invalid)) deallocate(storage%invalid)
+    if(associated(storage%profile_weights)) deallocate(storage%profile_weights)
+    if(associated(storage%profile_sums)) deallocate(storage%profile_sums)
+    nullify(storage%states,storage%indices,storage%invalid,storage%profile_weights,storage%profile_sums)
+  end subroutine
+
+  subroutine gather_selected_moments_gpu(q,im,jm,km,hm,indices,field_ids,const2,const6,states, &
+      weights,previous,covariance,invalid,ok,sample_count)
+    integer,intent(in) :: im,jm,km,hm,field_ids(:)
+    real(real_kind),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    integer,device,intent(in) :: indices(:,:)
+    real(real_kind),device,intent(inout) :: states(:,:)
+    real(real_kind),intent(in) :: const2,const6,weights(2)
+    logical,intent(in) :: previous,covariance
+    integer,device,intent(inout) :: invalid(:)
+    logical,intent(out) :: ok
+    integer,optional,intent(in) :: sample_count
+    integer :: capacity,nodes,nfields,components,ids(5),slots(3),c,bad
+    ok=.false.;capacity=size(states,1);nodes=capacity;nfields=size(field_ids);components=size(states,2)
+    if(present(sample_count)) nodes=sample_count
+    if(nodes<0.or.nodes>capacity.or.size(indices,1)/=3.or.size(indices,2)/=capacity.or.size(invalid)<1) return
+    if(components<=0.or.components/=sample_moment_size(nfields,covariance)) return
+    if(any(field_ids<2).or.any(field_ids>6)) return
+    ids=0;ids(:nfields)=field_ids;slots=0
+    if(covariance) then
+      do c=1,nfields
+        if(field_ids(c)<=4) slots(field_ids(c)-1)=c
+      enddo
+      if(any(slots==0)) return
+    endif
+    if(nodes==0) then
+      ok=.true.;return
+    endif
+    invalid=0
+    call gather_moments_kernel<<<(nodes+255)/256,256>>>(capacity,nodes,components,nfields,im,jm,km,hm, &
+      q,indices,states,ids(1),ids(2),ids(3),ids(4),ids(5), &
+      const2,const6,weights(1),weights(2),previous,slots(1),slots(2),slots(3),invalid)
+    call sync_after_kernel('indexed point statistics',force_sync=.true.)
+    bad=invalid(1)
+    call check_kernel_launch('indexed point statistics status copy')
+    indexed_calls=indexed_calls+1;indexed_status_bytes=indexed_status_bytes+storage_size(0)/8
+    ok=bad==0
+  end subroutine
+
+  attributes(global) subroutine gather_moments_kernel(capacity,nodes,components,nfields,im,jm,km,hm, &
+      q,indices,states,id1,id2,id3,id4,id5,const2,const6,w0,w1,previous,s1,s2,s3,invalid)
+    integer,value :: capacity,nodes,components,nfields,im,jm,km,hm,id1,id2,id3,id4,id5,s1,s2,s3
+    real(real_kind),value :: const2,const6,w0,w1
+    logical,value :: previous
+    real(real_kind),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    integer,device,intent(in) :: indices(3,capacity)
+    real(real_kind),device,intent(inout) :: states(capacity,components)
+    integer,device,intent(inout) :: invalid(*)
+    real(real_kind) :: local_q(5),values(5),local_state(30),density
+    integer :: node,i,j,k,c,ids(5),ignored
+    logical :: ok
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(node>nodes) return
+    i=indices(1,node);j=indices(2,node);k=indices(3,node)
+    if(i<0.or.i>im.or.j<0.or.j>jm.or.k<0.or.k>km) then
+      ignored=atomicExch(invalid(1),1);return
+    endif
+    ids=[id1,id2,id3,id4,id5];local_q=0.e0_real_kind
+    local_q(1)=q(i,j,k,1)
+    if(any(ids(:nfields)>=5)) then
+      local_q(2:5)=q(i,j,k,2:5)
+    else
+      do c=1,nfields
+        local_q(ids(c))=q(i,j,k,ids(c))
+      enddo
+    endif
+    call decode_sample_primitives(local_q,nfields,ids,const2,const6,values,density,ok)
+    if(.not.ok) then
+      ignored=atomicExch(invalid(1),1);return
+    endif
+    do c=1,components
+      local_state(c)=states(node,c)
+    enddo
+    call update_sample_moments(components,nfields,local_state,values,density,[w0,w1],previous,[s1,s2,s3],ok)
+    if(ok) then
+      do c=1,components
+        states(node,c)=local_state(c)
+      enddo
+    else
+      ignored=atomicExch(invalid(1),1)
+    endif
+  end subroutine
+
+  subroutine push_selected_moments_gpu(states,fields,rho,weights,previous,velocity_slots,invalid,ok,sample_count)
+    real(real_kind),device,intent(inout) :: states(:,:)
+    real(real_kind),device,intent(in) :: fields(:,:),rho(:)
+    real(real_kind),intent(in) :: weights(2)
+    logical,intent(in) :: previous
+    integer,intent(in) :: velocity_slots(3)
+    integer,device,intent(inout) :: invalid(:)
+    logical,intent(out) :: ok
+    integer,optional,intent(in) :: sample_count
+    integer :: nodes,capacity,components,nfields,bad
+    capacity=size(fields,1);nodes=capacity;nfields=size(fields,2);components=size(states,2)
+    if(present(sample_count)) nodes=sample_count
+    ok=.false.
+    if(size(states,1)/=capacity.or.size(rho)/=capacity.or.size(invalid)<1) return
+    if(nodes<0.or.nodes>capacity) return
+    if(components<=0.or.components/=sample_moment_size(nfields,any(velocity_slots/=0))) return
+    if(nodes==0) then
+      ok=.true.;return
+    endif
+    invalid=0
+    call selected_moments_kernel<<<(nodes+255)/256,256>>>(capacity,nodes,components,nfields, &
+      states,fields,rho,weights(1),weights(2),previous, &
+      velocity_slots(1),velocity_slots(2),velocity_slots(3),invalid)
+    call sync_after_kernel('selected point statistics',force_sync=.true.)
+    bad=invalid(1)
+    call check_kernel_launch('selected point statistics status copy')
+    ok=bad==0
+  end subroutine
+
+  attributes(global) subroutine selected_moments_kernel(capacity,nodes,components,nfields,states,fields,rho,w0,w1, &
+      previous,s1,s2,s3,invalid)
+    integer,value :: capacity,nodes,components,nfields,s1,s2,s3
+    real(real_kind),value :: w0,w1
+    logical,value :: previous
+    real(real_kind),device,intent(inout) :: states(capacity,components)
+    real(real_kind),device,intent(in) :: fields(capacity,nfields),rho(capacity)
+    integer,device,intent(inout) :: invalid(*)
+    integer :: node,ignored,c
+    real(real_kind) :: local_state(30),local_fields(5)
+    logical :: ok
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(node>nodes) return
+    do c=1,components
+      local_state(c)=states(node,c)
+    enddo
+    do c=1,nfields
+      local_fields(c)=fields(node,c)
+    enddo
+    call update_sample_moments(components,nfields,local_state,local_fields,rho(node),[w0,w1], &
+      previous,[s1,s2,s3],ok)
+    if(ok) then
+      do c=1,components
+        states(node,c)=local_state(c)
+      enddo
+    else
+      ignored=atomicExch(invalid(1),1)
+    endif
+  end subroutine
+end module

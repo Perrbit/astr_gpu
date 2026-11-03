@@ -2,6 +2,7 @@
 #define ASTR_INSITU_STREAMLINE_WORKLET_H
 
 #include "insitu_rk45_device.h"
+#include "insitu_wall_trace.h"
 #include "insitu_device_array.h"
 #include <viskores/Types.h>
 #include <viskores/VecVariable.h>
@@ -10,6 +11,8 @@
 #include <type_traits>
 #include <utility>
 #include <limits>
+#include <array>
+#include <stdexcept>
 
 namespace astr_insitu {
 static_assert(std::is_same<viskores::FloatDefault, Real>::value,
@@ -143,11 +146,64 @@ public:
     output=State(state.point[0],state.point[1],state.point[2],state.suggested,state.length,
                  state.error,state.steps,state.status);
   }
+  template<class Evaluate,class Portal>
+  VISKORES_EXEC void ExecuteWall(const State& input,const Evaluate& evaluate,const Portal& geometry,
+      State& output,viskores::Int32& count,viskores::Id index) const {
+    TraceState state{{input[0],input[1],input[2]},input[3],input[4],input[5],input.steps,input.status};
+    count=wall_trace_segment(evaluate,Owner{lower,upper,last},Writer<Portal>{geometry,index*(limit+1)},
+      state,limit,minimum,maximum,tolerance,target,steps);
+    output=State(state.point[0],state.point[1],state.point[2],state.suggested,state.length,state.error,
+      state.steps,state.status);
+  }
 private:
   int limit,steps;
   Real minimum,maximum,tolerance,target;
   astr_insitu::NativeVector lower,upper;
   viskores::Vec<bool,3> last;
+};
+
+// The wall uses a real 2-D rectangular field, never a thin artificial volume.
+class WallLengthGrid : public viskores::cont::ExecutionObjectBase {
+public:
+  using Array=viskores::cont::ArrayHandle<Real>;
+  WallLengthGrid(Array x,Array z,Array tx,Array tz,Real wall_y,
+      const std::array<Real,4>& physical,const std::array<Real,4>& region)
+    : x(x),z(z),tx(tx),tz(tz),wall_y(wall_y),physical(physical),region(region) {
+    if(x.GetNumberOfValues()<2 || z.GetNumberOfValues()<2 ||
+       x.GetNumberOfValues()>std::numeric_limits<int>::max() ||
+       z.GetNumberOfValues()>std::numeric_limits<int>::max() ||
+       tx.GetNumberOfValues()!=x.GetNumberOfValues()*z.GetNumberOfValues() ||
+       tz.GetNumberOfValues()!=tx.GetNumberOfValues())
+      throw std::invalid_argument("Wall trace rectangular axes and field sizes differ");
+  }
+  auto PrepareForExecution(viskores::cont::DeviceAdapterId device,viskores::cont::Token& token) const {
+    auto px=x.PrepareForInput(device,token),pz=z.PrepareForInput(device,token);
+    auto ux=tx.PrepareForInput(device,token),uz=tz.PrepareForInput(device,token);
+    return WallBilinearGrid<decltype(px),decltype(pz),decltype(ux),decltype(uz)>{px,pz,ux,uz,
+      int(x.GetNumberOfValues()),int(z.GetNumberOfValues()),wall_y,
+      {physical[0],physical[1],physical[2],physical[3]},
+      {region[0],region[1],region[2],region[3]}};
+  }
+  void RequireDeviceOnly() const {
+    require_device_only(x);require_device_only(z);require_device_only(tx);require_device_only(tz);
+  }
+private:
+  Array x,z,tx,tz;
+  Real wall_y;
+  std::array<Real,4> physical,region;
+};
+
+class RK45WallTraceWorklet : public RK45TraceWorklet {
+public:
+  using RK45TraceWorklet::RK45TraceWorklet;
+  using ControlSignature=RK45TraceWorklet::ControlSignature;
+  using ExecutionSignature=RK45TraceWorklet::ExecutionSignature;
+  using InputDomain=RK45TraceWorklet::InputDomain;
+  template<class Evaluate,class Portal>
+  VISKORES_EXEC void operator()(const State& input,const Evaluate& evaluate,const Portal& geometry,
+      State& output,viskores::Int32& count,viskores::Id index) const {
+    this->ExecuteWall(input,evaluate,geometry,output,count,index);
+  }
 };
 
 class RK45PhysicalTraceWorklet : public RK45TraceWorklet {

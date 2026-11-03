@@ -368,7 +368,7 @@ def main() -> int:
     parser.add_argument("--diffterm", choices=("t", "f"))
     parser.add_argument("--lreadgrid", choices=("t", "f"))
     parser.add_argument("--gridfile", help="optional replacement structured-grid HDF5 path")
-    parser.add_argument("--omit-grid-resource", action="store_true", help="do not copy unused grid.h5 for an internally generated fresh grid")
+    parser.add_argument("--omit-grid-resource", action="store_true", help="do not copy unused template grid.h5 for a generated or explicitly replaced fresh grid")
     parser.add_argument("--ninit", choices=(0, 1, 2, 3), type=int)
     parser.add_argument("--restart", choices=("t", "f"))
     parser.add_argument("--scheme", default="643e")
@@ -395,8 +395,15 @@ def main() -> int:
         raise ValueError("--feqlist must be positive")
     if (args.lwsequ is None) != (args.feqwsequ is None):
         raise ValueError("--lwsequ and --feqwsequ must be provided together")
-    if args.omit_grid_resource and (args.lreadgrid != 'f' or args.restart != 'f'):
-        raise ValueError('--omit-grid-resource requires explicit --lreadgrid=f and --restart=f')
+    if args.omit_grid_resource:
+        alternate=False
+        if args.gridfile:
+            selected=Path(args.gridfile)
+            if not selected.is_absolute():
+                selected=args.dst_case/selected
+            alternate=selected.resolve()!=(args.dst_case/'datin/grid.h5').resolve()
+        if args.restart!='f' or not (args.lreadgrid=='f' or (args.lreadgrid=='t' and alternate)):
+            raise ValueError('--omit-grid-resource requires a fresh generated grid or an explicit alternate --gridfile')
 
     if args.dst_case.exists():
         shutil.rmtree(args.dst_case)

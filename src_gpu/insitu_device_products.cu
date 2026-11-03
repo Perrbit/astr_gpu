@@ -1,5 +1,7 @@
 #include "insitu_device_geometry.h"
 #include "insitu_device_streamlines.h"
+#include "insitu_device_wall_trace.h"
+#include "insitu_catalog_json.h"
 #include "insitu_compact_mesh.h"
 #include "insitu_device_product_audit.h"
 #include "insitu_device_wall.h"
@@ -19,6 +21,7 @@
 #include <fstream>
 #include <set>
 #include <optional>
+#include <cstring>
 
 extern "C" void astr_insitu_device_allocation_preflight(std::size_t,const char*);
 extern "C" int astr_insitu_allocation_guard_active();
@@ -1275,5 +1278,248 @@ extern "C" int astr_insitu_render_line_product(const char* pipeline,const char* 
     }
   } catch(const std::exception& caught) {error=caught.what();}
   return astr_insitu::publish_runtime_product(pipeline,backend,script,fcomm,step,time,context,std::move(mesh),error,started);
+}
+
+namespace {
+struct WallLineKey {
+  std::vector<std::int64_t> seeds;
+  std::array<Real,5> integration;
+  int steps,direction;
+  bool operator<(const WallLineKey& other) const {
+    return std::tie(seeds,integration,steps,direction)<std::tie(other.seeds,other.integration,other.steps,other.direction);
+  }
+};
+struct WallLineCache {
+  std::shared_ptr<astr_insitu::DeviceGeometryOwner> owner;
+  std::map<std::string,double> controls;
+};
+struct WallLineGroup {
+  bool active=false;
+  int integrations=0,reuses=0;
+  std::map<WallLineKey,WallLineCache> entries;
+} wall_line_group;
+
+struct WallPlaneAxis : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3);
+  int axis,width;
+  VISKORES_CONT WallPlaneAxis(int axis,int width):axis(axis),width(width) {}
+  template<class Coordinates>
+  VISKORES_EXEC void operator()(viskores::Id i,const Coordinates& xyz,Real& value) const {
+    value=xyz.Get(axis==0?i:i*width)[axis];
+  }
+};
+struct WallPlaneControls : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3);
+  viskores::Id indices[8];
+  VISKORES_CONT WallPlaneControls(int width,int height,const int* first,const int* lower,const int* upper) {
+    indices[0]=lower[0]-first[0];indices[1]=upper[0]-first[0];
+    indices[2]=viskores::Id(lower[2]-first[2])*width;indices[3]=viskores::Id(upper[2]-first[2])*width;
+    indices[4]=0;indices[5]=width-1;indices[6]=0;indices[7]=viskores::Id(height-1)*width;
+  }
+  template<class Coordinates>
+  VISKORES_EXEC void operator()(viskores::Id i,const Coordinates& xyz,Real& value) const {
+    value=xyz.Get(indices[i])[(i==2 || i==3 || i==6 || i==7)?2:0];
+  }
+};
+struct WallPlaneSeed : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3);
+  int first[2],lower[2],upper[2],width;
+  bool last[2];
+  VISKORES_CONT WallPlaneSeed(int width,const int* begin,const int* lo,const int* hi,const int* range)
+    : width(width) {
+    for(int d=0;d<2;++d) {
+      const int axis=d==0?0:2;
+      first[d]=begin[axis];lower[d]=lo[axis];upper[d]=hi[axis];last[d]=hi[axis]==range[2*axis+1];
+    }
+  }
+  template<class Coordinates>
+  VISKORES_EXEC void operator()(const viskores::Vec<viskores::Id,2>& index,const Coordinates& xyz,
+      viskores::Vec<Real,4>& output) const {
+    bool owned=true;
+    for(int d=0;d<2;++d) owned=owned && index[d]>=lower[d] &&
+      (index[d]<upper[d] || (last[d] && index[d]==upper[d]));
+    output=viskores::Vec<Real,4>(Real(0));
+    if(owned) {
+      const auto point=xyz.Get(index[0]-first[0]+viskores::Id(width)*(index[1]-first[1]));
+      output={point[0],point[1],point[2],Real(1)};
+    }
+  }
+};
+struct WallShearNorm : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldOut);
+  using ExecutionSignature=void(_1,_2);
+  VISKORES_EXEC void operator()(const astr_insitu::NativeVector& value,Real& norm) const {
+    const Real scale=viskores::Max(viskores::Abs(value[0]),viskores::Abs(value[2]));
+    norm=scale==Real(0)?Real(0):scale*viskores::Sqrt((value[0]/scale)*(value[0]/scale)+(value[2]/scale)*(value[2]/scale));
+  }
+};
+}
+
+extern "C" void astr_insitu_runtime_wall_line_group(int begin) {
+  if(begin) {
+    if(wall_line_group.active) throw std::logic_error("Wall trace group already open");
+    wall_line_group=WallLineGroup{};wall_line_group.active=true;
+  } else {
+    for(auto& item:wall_line_group.entries) item.second.owner->retain_display_only();
+    int rank=0;MPI_Comm_rank(MPI_COMM_WORLD,&rank);
+    std::printf("ASTR_RUNTIME_WALL_LINE_GROUP rank=%d integrations=%d owner_reuse=%d retained_after=0\n",
+      rank,wall_line_group.integrations,wall_line_group.reuses);
+    wall_line_group=WallLineGroup{};
+  }
+}
+
+extern "C" int astr_insitu_render_wall_trace_product(const char* pipeline,const char* backend,const char* script,
+    int fcomm,int step,Real time,const char* id,const char* source,const char* definition,const char* directory,
+    std::int64_t version,const char* labels,const int* words,const double* settings,const int* field_ids,int fields,
+    int width,int height,Real* coordinates,Real* values,const int* first,const int* origin,const int* cells,
+    const int* ranges,const Real* physical,int provider,const Real* statistics,std::int64_t samples,std::int64_t host_budget) {
+  using namespace astr_insitu;
+  const auto comm=MPI_Comm_f2c(fcomm);
+  const auto started=runtime_product_clock();
+  RuntimeProductView context;DeviceMesh mesh;std::string error;
+  const RuntimeTraceStages stages{comm,id,step};
+  try {
+    LocalAllocationRecovery local_allocations;
+    context=runtime_product_view(id,source,definition,directory,version,labels,words,settings);
+    context.host_budget=host_budget;context.statistics_provider=provider;context.samples=samples;
+    std::copy_n(statistics,3,context.statistics.begin());
+    if(!initialized) {
+      int argc=1;char program[]="astr-wall-traces";char* arguments[]={program,nullptr};char** argv=arguments;
+      viskores::cont::Initialize(argc,argv);initialized=true;
+    }
+    if(viskores::cont::cuda::internal::CudaAllocator::UsingManagedMemory())
+      viskores::cont::cuda::internal::CudaAllocator::ForceManagedMemoryOff();
+    prepare_runtime_product_allocations(context,fcomm,step);
+    if(!wall_line_group.active) throw std::logic_error("Wall trace needs a frozen input group");
+  } catch(const std::exception& caught) {error=caught.what();}
+  if(consensus_product_failure(comm,error)) {astr_insitu_runtime_failure(error.c_str());return 1;}
+  try {
+    const auto key=stages("wall-definition",[&] {
+      WallLineKey key{};std::int64_t count=0;char message[512]{};
+      if(!astr_catalog_wall_trace_seeds(definition,std::strlen(definition),nullptr,0,&count,message,sizeof(message)))
+        throw std::invalid_argument(message);
+      key.seeds.resize(2*count);
+      if(!astr_catalog_wall_trace_seeds(definition,std::strlen(definition),key.seeds.data(),key.seeds.size(),&count,message,sizeof(message)))
+        throw std::invalid_argument(message);
+      for(int d=0;d<5;++d) key.integration[d]=Real(settings[26+d]);
+      key.steps=words[6];key.direction=context.labels[9]=="both"?0:(context.labels[9]=="backward"?-1:1);
+      return key;
+    });
+    auto found=wall_line_group.entries.find(key);
+    const bool integrated=found==wall_line_group.entries.end();
+    if(integrated) {
+      const auto device=viskores::cont::DeviceAdapterTagCuda{};
+      viskores::cont::GetRuntimeDeviceTracker().ForceDevice(device);
+      int lo[3],hi[3];
+      for(int d=0;d<3;++d) {lo[d]=std::max(origin[d],ranges[2*d]);hi[d]=std::min(origin[d]+cells[d],ranges[2*d+1]);}
+      const bool active=origin[1]==0 && width>1 && height>1 && hi[0]>lo[0] && hi[2]>lo[2];
+      std::array<Real,8> control{INFINITY,-INFINITY,INFINITY,-INFINITY,INFINITY,-INFINITY,INFINITY,-INFINITY};
+      const int seed_count=int(key.seeds.size()/2);
+      std::vector<Real> seed_packet(4*seed_count,Real(0)),seed_global(4*seed_count);
+      viskores::cont::ArrayHandle<Real> x,z,tx,tz;
+      stages("wall-fields",[&] {
+        if(!active) return;
+        const viskores::Id nodes=viskores::Id(width)*height;
+        auto xyz=borrow_cuda_array(reinterpret_cast<NativeVector*>(coordinates),nodes);
+        int component_x=-1,component_z=-1;
+        for(int d=0;d<fields;++d) {if(field_ids[d]==31) component_x=d;if(field_ids[d]==32) component_z=d;}
+        if(component_x<0 || component_z<0) throw std::invalid_argument("Wall trace needs both complete shear components");
+        tx=borrow_cuda_array(values+component_x*nodes,nodes);tz=borrow_cuda_array(values+component_z*nodes,nodes);
+        viskores::cont::Invoker invoke(device);
+        invoke(WallPlaneAxis(0,width),viskores::cont::ArrayHandleIndex(width),xyz,x);
+        synchronize_device_stage("WallTraceAxisX");
+        invoke(WallPlaneAxis(2,width),viskores::cont::ArrayHandleIndex(height),xyz,z);
+        synchronize_device_stage("WallTraceAxisZ");
+        viskores::cont::ArrayHandle<Real> metadata;
+        invoke(WallPlaneControls(width,height,first,lo,hi),viskores::cont::ArrayHandleIndex(8),xyz,metadata);
+        synchronize_device_stage("WallTraceBounds");
+        const auto scalar=metadata.ReadPortal();for(int d=0;d<8;++d) control[d]=scalar.Get(d);
+        std::vector<viskores::Vec<viskores::Id,2>> seeds(seed_count);
+        for(int i=0;i<seed_count;++i) seeds[i]={key.seeds[2*i],key.seeds[2*i+1]};
+        auto indices=viskores::cont::make_ArrayHandle(seeds,viskores::CopyFlag::On);
+        viskores::cont::ArrayHandle<viskores::Vec<Real,4>> packet;
+        invoke(WallPlaneSeed(width,first,lo,hi,ranges),indices,xyz,packet);
+        synchronize_device_stage("WallTraceSeedPacket");
+        const auto selected=packet.ReadPortal();
+        for(int i=0;i<seed_count;++i) for(int d=0;d<4;++d) seed_packet[4*i+d]=selected.Get(i)[d];
+        require_device_only(xyz);require_device_only(tx);require_device_only(tz);
+      });
+      Real local_region[4]={control[4],-control[5],control[6],-control[7]},region[4];
+      trace_mpi(MPI_Allreduce(local_region,region,4,numerical_mpi_type(),MPI_MIN,comm));
+      region[1]=-region[1];region[3]=-region[3];
+      trace_mpi(MPI_Allreduce(seed_packet.data(),seed_global.data(),4*seed_count,numerical_mpi_type(),MPI_SUM,comm));
+      auto seeds=stages("wall-seed-validation",[&] {
+        for(int d=0;d<4;++d) if(!std::isfinite(region[d])) throw std::invalid_argument("Wall trace region has no two-dimensional cells");
+        std::vector<NativeVector> output(seed_count);
+        for(int i=0;i<seed_count;++i) {
+          if(seed_global[4*i+3]!=Real(1)) throw std::invalid_argument("Wall seed does not have one physical owner");
+          output[i]={seed_global[4*i],seed_global[4*i+1],seed_global[4*i+2]};
+          for(int d=0;d<3;++d) if(!std::isfinite(output[i][d])) throw std::invalid_argument("Wall seed is nonfinite");
+        }
+        return output;
+      });
+      auto grid=stages("wall-evaluator",[&] {
+        return active?std::make_unique<WallLengthGrid>(x,z,tx,tz,physical[2],
+          std::array<Real,4>{physical[0],physical[1],physical[4],physical[5]},
+          std::array<Real,4>{region[0],region[1],region[2],region[3]}):nullptr;
+      });
+      const WallTracePartition partition{NativeVector(control[0],physical[2],control[2]),
+        NativeVector(control[1],physical[2],control[3]),viskores::Vec<bool,3>(hi[0]==ranges[1],true,hi[2]==ranges[5]),active};
+      const TraceConfiguration parameters{key.integration[0],key.integration[1],key.integration[2],key.integration[3],
+        key.integration[4],key.steps,key.direction};
+      auto traced=trace_wall_device(grid.get(),seeds,partition,parameters,comm,stages);
+      stages("wall-geometry",[&] {
+        auto data=traced.resident_geometry;
+        if(data.GetNumberOfCoordinateSystems()) {
+          auto vectors=data.GetPointField("velocity").GetData().AsArrayHandle<viskores::cont::ArrayHandle<NativeVector>>();
+          viskores::cont::ArrayHandle<Real> norm;viskores::cont::Invoker invoke(device);
+          invoke(WallShearNorm{},vectors,norm);synchronize_device_stage("WallTraceShearMagnitude");
+          require_device_only(norm);data.AddPointField("quantity",norm);
+        }
+        WallLineCache cached;cached.owner=std::make_shared<DeviceGeometryOwner>(data,step,time,2,"quantity",true);
+        for(const char* name:{"length","steps","zero","stage_zero","accuracy","physical_exit","region_exit"})
+          cached.controls[std::string("wall_trace_terminal_")+name]=0;
+        for(const auto& state:traced.final_state) {
+          const char* reason=state.status==TraceLength?"length":state.status==TraceSteps?"steps":state.status==WallZero?"zero":
+            state.status==WallStageZero?"stage_zero":state.status==WallAccuracyLimited?"accuracy":
+            state.status==WallPhysicalExit?"physical_exit":"region_exit";
+          ++cached.controls[std::string("wall_trace_terminal_")+reason];
+        }
+        for(int i=0;i<traced.particles;++i) {
+          const auto prefix="wall_trace_final"+std::to_string(i)+"_";
+          const auto& state=traced.final_state[i];
+          for(int d=0;d<3;++d) cached.controls[prefix+char('x'+d)]=state[d];
+          cached.controls[prefix+"length"]=state[4];cached.controls[prefix+"steps"]=state.steps;
+          cached.controls[prefix+"status"]=state.status;cached.controls[prefix+"direction"]=traced.directions[i];
+        }
+        cached.controls["wall_trace_seed_count"]=seed_count;cached.controls["wall_trace_particles"]=traced.particles;
+        cached.controls["wall_trace_control_read_bytes"]=traced.control_read_bytes;
+        cached.controls["wall_trace_input_metadata_d2h_bytes"]=active?Real((8+4*seed_count)*sizeof(Real)):Real(0);
+        cached.controls["wall_source_nodes"]=active?double(viskores::Id(width)*height):0.;
+        const Real source_bounds[6]={control[4],control[5],physical[2],physical[2],control[6],control[7]};
+        for(int d=0;d<6;++d) cached.controls["wall_source_bound"+std::to_string(d)]=active?source_bounds[d]:Real(0);
+        found=wall_line_group.entries.emplace(key,std::move(cached)).first;
+      });
+      ++wall_line_group.integrations;
+    } else ++wall_line_group.reuses;
+    stages("wall-display",[&] {
+      auto& cached=found->second;
+      auto colors=cached.owner->color_display(device_display_palette(context.labels[6]),false,Real(settings[22]),Real(settings[23]));
+      const auto& view=cached.owner->get();
+      mesh.name="runtime_product";mesh.actor_key=context.id;mesh.owner=cached.owner;
+      mesh.draw.positions=reinterpret_cast<const float*>(view.display_coordinates);
+      mesh.draw.colors=reinterpret_cast<const unsigned char*>(colors);mesh.draw.indices=view.display_connectivity;
+      mesh.draw.points=view.points;mesh.draw.cells=view.cells;mesh.draw.arity=2;mesh.draw.device=view.device;
+      std::copy(view.bounds,view.bounds+6,mesh.draw.bounds);mesh.controls=cached.controls;
+      mesh.controls["wall_trace_integration_performed"]=integrated;
+      if(!integrated) {mesh.controls["wall_trace_control_read_bytes"]=0;mesh.controls["wall_trace_input_metadata_d2h_bytes"]=0;}
+      mesh.controls["actual_min"]=view.speed_range[0];mesh.controls["actual_max"]=view.speed_range[1];
+    });
+  } catch(const CollectiveTraceError& caught) {error=caught.what();}
+    catch(const std::exception& caught) {std::fprintf(stderr,"Distributed wall trace failed: %s\n",caught.what());MPI_Abort(comm,1);return 1;}
+  return publish_runtime_product(pipeline,backend,script,fcomm,step,time,context,std::move(mesh),error,started);
 }
 #endif

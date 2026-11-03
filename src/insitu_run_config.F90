@@ -9,14 +9,24 @@ module insitu_run_config
   public :: streamline_view,insitu_max_views,read_streamline_views,streamline_trajectory_key,streamline_display_key
   public :: catalog_product,catalog_field_names,catalog_field_id,catalog_definition_equal
   public :: catalog_render,pack_catalog_render,unpack_catalog_render
-  character(32),parameter :: catalog_field_names(27)=[character(32) :: &
+  public :: read_catalog_coordinates
+  public :: read_catalog_wall_reference,catalog_wall_reference
+  public :: read_catalog_wall_units
+  public :: read_catalog_thickness,catalog_thickness
+  public :: read_catalog_fluctuation
+  public :: catalog_wall_mean
+  public :: read_catalog_wall_glyph
+  public :: read_catalog_wall_seeds
+  character(32),parameter :: catalog_field_names(36)=[character(32) :: &
     'density','velocity_x','velocity_y','velocity_z','pressure','temperature', &
     'vibrational_temperature','mass_fraction_N2','mass_fraction_O2','mass_fraction_N', &
     'mass_fraction_O','mass_fraction_NO', &
     'velocity_gradient_xx','velocity_gradient_yx','velocity_gradient_zx', &
     'velocity_gradient_xy','velocity_gradient_yy','velocity_gradient_zy', &
     'velocity_gradient_xz','velocity_gradient_yz','velocity_gradient_zz', &
-    'Q_rs','velocity_divergence','vorticity_x','vorticity_y','vorticity_z','density_gradient_magnitude']
+    'Q_rs','velocity_divergence','vorticity_x','vorticity_y','vorticity_z','density_gradient_magnitude', &
+    'temperature_gradient_x','temperature_gradient_y','temperature_gradient_z', &
+    'wall_shear_x','wall_shear_z','wall_heat_into_wall','dynamic_viscosity','lambda2','lambda_ci']
   type :: catalog_render
     character(32) :: kind='slice',channel='data',format='hdf5-xdmf',sampling='grid_index',field=''
     character(32) :: projection='',color_map='',seed_layout='',integrator='',direction='',side=''
@@ -25,16 +35,33 @@ module insitu_run_config
     real(real64) :: origin(3)=0,normal(3)=0,bounds(6)=0,camera(3)=0,focal(3)=0,up(3)=0
     ! The selected-quantity range is a color range for geometry, a y range for wall charts.
     real(real64) :: scale=0,color_range(2)=0,line_width=0,isovalue=0,integration(5)=0
+    integer :: coordinate_flags(2)=[1,0]
+    real(real64) :: coordinate_values(7)=[0.e0_real64,0.e0_real64,0.e0_real64, &
+      1.e0_real64,1.e0_real64,1.e0_real64,1.e0_real64]
+  end type
+  type :: catalog_wall_reference
+    integer :: flags(2)=0
+    real(real64) :: value=0
+  end type
+  type :: catalog_thickness
+    integer :: flags(2)=0
+    integer(int64) :: edge_band(2)=0
+    real(real64) :: explicit_upper=0
   end type
   type :: catalog_product
-    character(:),allocatable :: id,source,statistics_source,record,error
+    character(:),allocatable :: id,source,statistics_source,record,error,wall_units
     character(:),allocatable :: event_ids(:),window_ids(:)
     integer,allocatable :: fields(:)
     integer :: line=0,axis=0
     integer(int64) :: index=0,ranges(2,3)=0,enable_request=0,interval_steps=0,dense_interval_steps=0
     real(real64) :: interval_time=0,dense_interval_time=0
-    logical :: valid=.false.
+    logical :: valid=.false.,fluctuation=.false.
+    integer :: glyph_stride(2)=0
+    real(real64) :: glyph_length=0
+    integer(int64),allocatable :: wall_seeds(:,:)
     type(catalog_render) :: view
+    type(catalog_wall_reference) :: wall_reference
+    type(catalog_thickness) :: thickness
   end type
   integer,parameter :: insitu_max_products=64
   integer,parameter :: insitu_max_views=6
@@ -80,6 +107,210 @@ module insitu_run_config
     type(adaptive_binding) :: product_adaptive(insitu_max_products)
   end type
 contains
+  subroutine read_catalog_wall_glyph(record,stride,length,ok,message)
+    use iso_c_binding, only: c_int,c_char,c_size_t,c_double,c_null_char
+    character(*),intent(in) :: record
+    integer,intent(out) :: stride(2)
+    real(real64),intent(out) :: length
+    logical,intent(out) :: ok
+    character(:),allocatable,intent(out) :: message
+    integer(c_int) :: steps(2),status
+    real(c_double) :: native_length
+    character(c_char) :: error(256)
+    integer :: i
+    interface
+      integer(c_int) function decode(text,n,stride,length,error,capacity) bind(C,name='astr_catalog_wall_glyph')
+        import c_int,c_char,c_double,c_size_t
+        character(c_char),intent(in) :: text(*)
+        integer(c_size_t),value :: n,capacity
+        integer(c_int),intent(out) :: stride(2)
+        real(c_double),intent(out) :: length
+        character(c_char),intent(out) :: error(*)
+      end function
+    end interface
+    status=decode(record//c_null_char,len(record,kind=c_size_t),steps,native_length,error,size(error,kind=c_size_t))
+    stride=int(steps);length=real(native_length,real64);ok=status==1;message=''
+    if(.not.ok) then
+      do i=1,size(error)
+        if(error(i)==c_null_char) exit
+        message=message//error(i)
+      enddo
+    endif
+  end subroutine
+
+  logical function catalog_wall_mean(definition) result(is_wall_mean)
+    type(catalog_product),intent(in) :: definition
+    is_wall_mean=definition%source=='reynolds'.and.definition%statistics_source=='selected-time'.and. &
+      definition%view%kind=='slice'.and.definition%view%sampling=='grid_index'.and. &
+      definition%axis==2.and.definition%index==0.and.any(definition%fields>=31).and. &
+      all(definition%fields==1.or.definition%fields==6.or. &
+          (definition%fields>=31.and.definition%fields<=34))
+  end function
+
+  subroutine read_catalog_fluctuation(record,fluctuation,ok,message)
+    use iso_c_binding, only: c_int,c_char,c_size_t,c_null_char
+    character(*),intent(in) :: record
+    logical,intent(out) :: fluctuation,ok
+    character(:),allocatable,intent(out) :: message
+    integer(c_int) :: flag,status
+    character(c_char) :: error(256)
+    integer :: i
+    interface
+      integer(c_int) function decode(text,n,flag,error,capacity) bind(C,name='astr_catalog_fluctuation')
+        import c_int,c_char,c_size_t
+        character(c_char),intent(in) :: text(*)
+        integer(c_size_t),value :: n,capacity
+        integer(c_int),intent(out) :: flag
+        character(c_char),intent(out) :: error(*)
+      end function
+    end interface
+    status=decode(record//c_null_char,len(record,kind=c_size_t),flag,error,size(error,kind=c_size_t))
+    ok=status==1;fluctuation=flag==1;message=''
+    if(.not.ok) then
+      do i=1,size(error)
+        if(error(i)==c_null_char) exit
+        message=message//error(i)
+      enddo
+    endif
+  end subroutine
+
+  subroutine read_catalog_thickness(record,options,ok,message)
+    use iso_c_binding, only: c_int,c_char,c_size_t,c_double,c_int64_t,c_null_char
+    character(*),intent(in) :: record
+    type(catalog_thickness),intent(out) :: options
+    logical,intent(out) :: ok
+    character(:),allocatable,intent(out) :: message
+    integer(c_int) :: flags(2),status
+    integer(c_int64_t) :: band(2)
+    real(c_double) :: upper
+    character(c_char) :: error(256)
+    integer :: i
+    interface
+      integer(c_int) function decode(text,n,flags,band,upper,error,capacity) bind(C,name='astr_catalog_thickness')
+        import c_int,c_char,c_double,c_size_t,c_int64_t
+        character(c_char),intent(in) :: text(*)
+        integer(c_size_t),value :: n,capacity
+        integer(c_int),intent(out) :: flags(2)
+        integer(c_int64_t),intent(out) :: band(2)
+        real(c_double),intent(out) :: upper
+        character(c_char),intent(out) :: error(*)
+      end function
+    end interface
+    status=decode(record//c_null_char,len(record,kind=c_size_t),flags,band,upper,error,size(error,kind=c_size_t))
+    ok=status==1;message=''
+    if(ok) then
+      options%flags=int(flags);options%edge_band=int(band,int64);options%explicit_upper=real(upper,real64)
+    else
+      do i=1,size(error)
+        if(error(i)==c_null_char) exit
+        message=message//error(i)
+      enddo
+    endif
+  end subroutine
+
+  subroutine read_catalog_wall_units(record,reference,ok,message)
+    use iso_c_binding, only: c_int,c_char,c_size_t,c_null_char
+    character(*),intent(in) :: record
+    character(:),allocatable,intent(out) :: reference,message
+    logical,intent(out) :: ok
+    character(c_char),allocatable :: target(:)
+    character(c_char) :: error(256)
+    integer :: i,n,status
+    interface
+      integer(c_int) function decode(text,n,target,target_capacity,error,capacity) bind(C,name='astr_catalog_wall_units')
+        import c_int,c_char,c_size_t
+        character(c_char),intent(in) :: text(*)
+        integer(c_size_t),value :: n,target_capacity,capacity
+        character(c_char),intent(out) :: target(*),error(*)
+      end function
+    end interface
+    allocate(target(len(record)+1));reference='';message=''
+    status=decode(record//c_null_char,len(record,kind=c_size_t),target,size(target,kind=c_size_t), &
+      error,size(error,kind=c_size_t))
+    ok=status==1
+    if(ok) then
+      n=0
+      do i=1,size(target)
+        if(target(i)==c_null_char) exit
+        n=n+1
+      enddo
+      deallocate(reference);allocate(character(n)::reference)
+      do i=1,n
+        reference(i:i)=target(i)
+      enddo
+    else
+      do i=1,size(error)
+        if(error(i)==c_null_char) exit
+        message=message//error(i)
+      enddo
+    endif
+  end subroutine
+
+  subroutine read_catalog_wall_reference(record,reference,ok,message)
+    use iso_c_binding, only: c_int,c_char,c_size_t,c_double,c_null_char
+    character(*),intent(in) :: record
+    type(catalog_wall_reference),intent(out) :: reference
+    logical,intent(out) :: ok
+    character(:),allocatable,intent(out) :: message
+    integer(c_int) :: flags(2),status
+    real(c_double) :: value
+    character(c_char) :: error(256)
+    integer :: i
+    interface
+      integer(c_int) function decode(text,n,flags,value,error,capacity) bind(C,name='astr_catalog_wall_reference')
+        import c_int,c_char,c_double,c_size_t
+        character(c_char),intent(in) :: text(*)
+        integer(c_size_t),value :: n,capacity
+        integer(c_int),intent(out) :: flags(2)
+        real(c_double),intent(out) :: value
+        character(c_char),intent(out) :: error(*)
+      end function
+    end interface
+    status=decode(record//c_null_char,len(record,kind=c_size_t),flags,value,error,size(error,kind=c_size_t))
+    ok=status==1;message=''
+    if(ok) then
+      reference%flags=int(flags);reference%value=real(value,real64)
+    else
+      do i=1,size(error)
+        if(error(i)==c_null_char) exit
+        message=message//error(i)
+      enddo
+    endif
+  end subroutine
+
+  subroutine read_catalog_coordinates(record,view,ok,message)
+    use iso_c_binding, only: c_int,c_char,c_size_t,c_double,c_null_char
+    character(*),intent(in) :: record
+    type(catalog_render),intent(inout) :: view
+    logical,intent(out) :: ok
+    character(:),allocatable,intent(out) :: message
+    integer(c_int) :: flags(2),status
+    real(c_double) :: values(7)
+    character(c_char) :: error(256)
+    integer :: i
+    interface
+      integer(c_int) function coordinates(text,n,flags,values,error,capacity) &
+          bind(C,name='astr_catalog_display_coordinates')
+        import c_int,c_char,c_double,c_size_t
+        character(c_char),intent(in) :: text(*)
+        integer(c_size_t),value :: n,capacity
+        integer(c_int),intent(out) :: flags(2)
+        real(c_double),intent(out) :: values(7)
+        character(c_char),intent(out) :: error(*)
+      end function
+    end interface
+    status=coordinates(record//c_null_char,len(record,kind=c_size_t),flags,values,error,size(error,kind=c_size_t))
+    ok=status==1;message=''
+    if(ok) then
+      view%coordinate_flags=int(flags);view%coordinate_values=real(values,real64)
+    else
+      do i=1,size(error)
+        if(error(i)==c_null_char) exit
+        message=message//error(i)
+      enddo
+    endif
+  end subroutine
+
   subroutine pack_catalog_render(view,labels,integers,reals)
     type(catalog_render),intent(in) :: view
     character(32),intent(out) :: labels(11)
@@ -107,16 +338,75 @@ contains
     view%color_range=reals(23:24);view%line_width=reals(25);view%isovalue=reals(26);view%integration=reals(27:31)
   end subroutine
 
+  subroutine read_catalog_wall_seeds(record,seeds,ok,message)
+    use iso_c_binding, only: c_char,c_int,c_size_t,c_int64_t,c_ptr,c_null_ptr,c_loc,c_null_char
+    character(*),intent(in) :: record
+    integer(int64),allocatable,target,intent(out) :: seeds(:,:)
+    logical,intent(out) :: ok
+    character(:),allocatable,intent(out) :: message
+    character(c_char) :: error(512)
+    integer(c_int64_t) :: count
+    integer(c_int) :: status
+    integer :: i
+    interface
+      integer(c_int) function decode(text,n,indices,capacity,count,error,error_capacity) &
+          bind(C,name='astr_catalog_wall_trace_seeds')
+        import c_char,c_int,c_size_t,c_int64_t,c_ptr
+        character(c_char),intent(in) :: text(*)
+        integer(c_size_t),value :: n,capacity,error_capacity
+        type(c_ptr),value :: indices
+        integer(c_int64_t),intent(out) :: count
+        character(c_char),intent(out) :: error(*)
+      end function
+    end interface
+    status=decode(record,len(record,kind=c_size_t),c_null_ptr,0_c_size_t,count,error,size(error,kind=c_size_t))
+    ok=status==1;message=''
+    if(ok) then
+      allocate(seeds(2,count))
+      if(count>0) then
+        status=decode(record,len(record,kind=c_size_t),c_loc(seeds),size(seeds,kind=c_size_t), &
+          count,error,size(error,kind=c_size_t))
+        ok=status==1
+      endif
+    endif
+    if(.not.ok) then
+      if(allocated(seeds)) deallocate(seeds)
+      allocate(seeds(2,0))
+      do i=1,size(error)
+        if(error(i)==c_null_char) exit
+        message=message//error(i)
+      enddo
+    endif
+  end subroutine
+
   logical function catalog_definition_equal(a,b) result(same)
     type(catalog_product),intent(in) :: a,b
     character(32) :: labels_a(11),labels_b(11)
-    integer :: integers_a(7),integers_b(7)
+    integer :: integers_a(7),integers_b(7),seeds_a,seeds_b
     real(real64) :: reals_a(31),reals_b(31)
     same=.false.
+    if(a%fluctuation.neqv.b%fluctuation) return
+    if(any(a%glyph_stride/=b%glyph_stride).or.a%glyph_length/=b%glyph_length) return
+    seeds_a=0;seeds_b=0
+    if(allocated(a%wall_seeds)) seeds_a=size(a%wall_seeds,2)
+    if(allocated(b%wall_seeds)) seeds_b=size(b%wall_seeds,2)
+    if(seeds_a/=seeds_b) return
+    if(seeds_a>0) then
+      if(any(a%wall_seeds/=b%wall_seeds)) return
+    endif
     if(a%id/=b%id.or.a%source/=b%source.or.a%statistics_source/=b%statistics_source.or. &
       a%axis/=b%axis.or.a%index/=b%index.or.any(a%ranges/=b%ranges)) return
     if(size(a%fields)/=size(b%fields)) return
     if(any(a%fields/=b%fields)) return
+    if(allocated(a%wall_units).neqv.allocated(b%wall_units)) return
+    if(allocated(a%wall_units)) then
+      if(a%wall_units/=b%wall_units) return
+    endif
+    if(any(a%wall_reference%flags/=b%wall_reference%flags).or.a%wall_reference%value/=b%wall_reference%value) return
+    if(any(a%thickness%flags/=b%thickness%flags).or.any(a%thickness%edge_band/=b%thickness%edge_band).or. &
+      a%thickness%explicit_upper/=b%thickness%explicit_upper) return
+    if(any(a%view%coordinate_flags/=b%view%coordinate_flags).or. &
+       any(a%view%coordinate_values/=b%view%coordinate_values)) return
     call pack_catalog_render(a%view,labels_a,integers_a,reals_a)
     call pack_catalog_render(b%view,labels_b,integers_b,reals_b)
     same=all(labels_a==labels_b).and.all(integers_a==integers_b).and.all(reals_a==reals_b)
@@ -226,7 +516,7 @@ contains
       case('sbli_diagnostics');streamline_seeds='sbli-layered16'
       end select
     endif
-    if(products=='sbli_2d') then
+    if(products=='sbli_2d'.or.products=='catalog_stats') then
       if(host_budget_bytes==-1_int64) host_budget_bytes=unlimited_budget_bytes
       if(device_budget_bytes==-1_int64) device_budget_bytes=unlimited_budget_bytes
     endif
@@ -251,8 +541,9 @@ contains
     if(processing_backend=='device') then
       message='device processing requires explicit postprocess_transport=device-aware or pinned'
       if(postprocess_transport/='device-aware'.and.postprocess_transport/='pinned') return
-      message='device processing requires enabled GPU rendering and positive device budget'
-      if(.not.enabled.or..not.render.or.derivative_backend/='gpu'.or.device_budget_bytes<=0) return
+      message='device processing requires enabled GPU rendering or selected-time statistics and positive device budget'
+      if(.not.enabled.or.(.not.render.and..not.(catalog.and.products=='catalog_stats'.and.statistics)).or. &
+        derivative_backend/='gpu'.or.device_budget_bytes<=0) return
       message='device walls require standard-device or direct-device, without a compatible fallback'
       if((products=='channel_walls'.or.products=='air5_walls').and.rendering_pipeline=='compatible'.and..not.catalog) return
       message='resident wall separation reduction is not yet admitted'
@@ -267,7 +558,12 @@ contains
     if(products/='all'.and.products/='q_surface'.and.products/='streamlines'.and. &
       products/='q_streamlines'.and.products/='velocity_slice'.and.products/='channel_walls'.and. &
       products/='air5_walls'.and.products/='tgv256_demo'.and.products/='curve_demo'.and.products/='boundary_layer'.and. &
-      products/='m12_diagnostics'.and.products/='sbli_diagnostics'.and.products/='sbli_2d') return
+      products/='m12_diagnostics'.and.products/='sbli_diagnostics'.and.products/='sbli_2d'.and.products/='catalog_stats') return
+    message='catalog_stats requires enabled time statistics and the numerical catalog channel'
+    if(products=='catalog_stats'.and.(.not.enabled.or..not.statistics.or..not.catalog)) return
+    message='selected-time catalog images require the strict device pipeline'
+    if(products=='catalog_stats'.and.render.and.(processing_backend/='device'.or. &
+      rendering_pipeline=='compatible'.or.derivative_backend/='gpu')) return
     message='unsupported streamline seed layout'
     if(streamline_seeds/='line16'.and.streamline_seeds/='tgv-stratified'.and.streamline_seeds/='bl-layered64'.and. &
       streamline_seeds/='bl-layered256'.and.streamline_seeds/='sbli-layered16') return

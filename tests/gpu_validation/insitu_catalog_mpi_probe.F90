@@ -29,6 +29,125 @@ program insitu_catalog_mpi_probe
   call poll_catalog_watch(1_int64,.001_real64,[2250,260,480],5,MPI_COMM_WORLD,updated,message)
   call require(updated,'initial file was not applied')
   call runtime_catalog_state(1,state)
+  if(mode=='wall-seeds') then
+    call require(state%version==1.and.size(state%definition%wall_seeds,2)==3,'initial wall seed count differs')
+    call require(all(state%definition%wall_seeds==reshape([8_int64,4_int64,24_int64,8_int64,40_int64,12_int64],[2,3])), &
+      'initial wall seed order differs')
+    if(rank==0) then
+      status=rename_file(trim(candidate)//c_null_char,trim(formal)//c_null_char)
+      call require(status==0,'wall seed publication failed')
+    endif
+    call MPI_Barrier(MPI_COMM_WORLD,err)
+    call poll_catalog_watch(11_int64,.011_real64,[2250,260,480],5,MPI_COMM_WORLD,updated,message)
+    call runtime_catalog_state(1,state)
+    call require(updated.and.state%version==2,'seed-only change needs a new semantic version')
+    call require(all(state%definition%wall_seeds(:,2)==[25_int64,8_int64]),'updated wall seed differs')
+    open(newunit=unit,status='scratch',access='stream',form='unformatted')
+    call catalog_watch_state_file(unit,.true.,11_int64,.011_real64,MPI_COMM_WORLD,ok)
+    call require(ok,'cannot save wall seed definition')
+    call configure_catalog_watch(trim(formal),10_int64,11_int64,MPI_COMM_WORLD)
+    rewind(unit)
+    call catalog_watch_state_file(unit,.false.,11_int64,.011_real64,MPI_COMM_WORLD,ok)
+    close(unit)
+    call require(ok,'cannot restore wall seed definition')
+    call runtime_catalog_state(1,state)
+    call require(state%version==2.and.all(state%definition%wall_seeds(:,2)==[25_int64,8_int64]), &
+      'restored wall seed identity differs')
+    call catalog_watch_counts(reads,checks)
+    if(rank/=0) call require(reads==0.and.checks==0,'nonroot accessed the wall seed catalog')
+    print '(a,i0,a)','RANK ',rank,' WALL_SEEDS_OK'
+    call MPI_Finalize(err)
+    stop
+  endif
+  if(mode=='thickness') then
+    call require(state%version==1.and.all(state%definition%thickness%flags==[1,0]),'initial thickness flags differ')
+    call require(all(state%definition%thickness%edge_band==[220_int64,240_int64]),'initial edge band differs')
+    if(rank==0) then
+      status=rename_file(trim(candidate)//c_null_char,trim(formal)//c_null_char)
+      call require(status==0,'thickness publication failed')
+    endif
+    call MPI_Barrier(MPI_COMM_WORLD,err)
+    call poll_catalog_watch(11_int64,.011_real64,[2250,260,480],5,MPI_COMM_WORLD,updated,message)
+    call runtime_catalog_state(1,state)
+    call require(updated.and.state%version==2,'thickness changes need a new semantic version')
+    call require(all(state%definition%thickness%edge_band==[221_int64,241_int64]).and. &
+      all(state%definition%thickness%flags==[1,1]).and.state%definition%thickness%explicit_upper==12.5_real64, &
+      'updated thickness options differ')
+    open(newunit=unit,status='scratch',access='stream',form='unformatted')
+    call catalog_watch_state_file(unit,.true.,11_int64,.011_real64,MPI_COMM_WORLD,ok)
+    call require(ok,'cannot save thickness effective definition')
+    call configure_catalog_watch(trim(formal),10_int64,11_int64,MPI_COMM_WORLD)
+    rewind(unit)
+    call catalog_watch_state_file(unit,.false.,11_int64,.011_real64,MPI_COMM_WORLD,ok)
+    close(unit)
+    call require(ok,'cannot restore thickness effective definition')
+    call runtime_catalog_state(1,state)
+    call require(state%version==2.and.all(state%definition%thickness%edge_band==[221_int64,241_int64]).and. &
+      all(state%definition%thickness%flags==[1,1]).and.state%definition%thickness%explicit_upper==12.5_real64, &
+      'restored thickness options differ')
+    call catalog_watch_counts(reads,checks)
+    if(rank/=0) call require(reads==0.and.checks==0,'nonroot read the thickness catalog')
+    print '(a,i0,a)','RANK ',rank,' THICKNESS_OK'
+    call MPI_Finalize(err)
+    stop
+  endif
+  if(mode=='wall-reference') then
+    call require(state%version==1.and.state%definition%view%kind=='wall_profile','wall reference kind differs')
+    call require(all(state%definition%wall_reference%flags==[1,2]),'wall reference flags differ')
+    call require(state%definition%wall_reference%value==.9_real64,'wall recovery factor differs')
+    if(rank==0) then
+      status=rename_file(trim(candidate)//c_null_char,trim(formal)//c_null_char)
+      call require(status==0,'wall reference candidate publication failed')
+    endif
+    call MPI_Barrier(MPI_COMM_WORLD,err)
+    call poll_catalog_watch(11_int64,.011_real64,[2250,260,480],5,MPI_COMM_WORLD,updated,message)
+    call runtime_catalog_state(1,state)
+    call require(updated.and.state%version==2,'factor-only change did not create a semantic version')
+    call require(all(state%definition%wall_reference%flags==[1,2]).and. &
+      state%definition%wall_reference%value==.8_real64,'updated factor differs')
+    if(rank==0) then
+      status=rename_file(trim(repeat_candidate)//c_null_char,trim(formal)//c_null_char)
+      call require(status==0,'temperature reference publication failed')
+    endif
+    call MPI_Barrier(MPI_COMM_WORLD,err)
+    call poll_catalog_watch(21_int64,.021_real64,[2250,260,480],5,MPI_COMM_WORLD,updated,message)
+    call runtime_catalog_state(1,state)
+    call require(updated.and.state%version==3,'reference-form change did not create a semantic version')
+    call require(all(state%definition%wall_reference%flags==[1,1]).and. &
+      state%definition%wall_reference%value==26.92_real64,'updated recovery temperature differs')
+    call catalog_watch_counts(reads,checks)
+    if(rank/=0) call require(reads==0.and.checks==0,'nonroot reparsed wall reference')
+    print '(a,i0,a)','RANK ',rank,' WALL_REFERENCE_OK'
+    call MPI_Finalize(err)
+    stop
+  endif
+  if(mode=='wall-units') then
+    call require(state%version==1.and.state%definition%wall_units=='reference-a','initial wall units reference differs')
+    if(rank==0) then
+      status=rename_file(trim(candidate)//c_null_char,trim(formal)//c_null_char)
+      call require(status==0,'wall units publication failed')
+    endif
+    call MPI_Barrier(MPI_COMM_WORLD,err)
+    call poll_catalog_watch(11_int64,.011_real64,[2250,260,480],5,MPI_COMM_WORLD,updated,message)
+    call runtime_catalog_state(1,state)
+    call require(updated.and.state%version==2.and.state%definition%wall_units=='reference-b', &
+      'changing only the reference ID must change the semantic version on every rank')
+    open(newunit=unit,status='scratch',access='stream',form='unformatted')
+    call catalog_watch_state_file(unit,.true.,11_int64,.011_real64,MPI_COMM_WORLD,ok)
+    call require(ok,'cannot save wall units effective definition')
+    call configure_catalog_watch(trim(formal),10_int64,11_int64,MPI_COMM_WORLD)
+    rewind(unit)
+    call catalog_watch_state_file(unit,.false.,11_int64,.011_real64,MPI_COMM_WORLD,ok)
+    close(unit)
+    call require(ok,'cannot restore wall units effective definition')
+    call runtime_catalog_state(1,state)
+    call require(state%version==2.and.state%definition%wall_units=='reference-b','saved wall units ID differs')
+    call catalog_watch_counts(reads,checks)
+    if(rank/=0) call require(reads==0.and.checks==0,'nonroot accessed the wall units catalog file')
+    print '(a,i0,a)','RANK ',rank,' WALL_UNITS_OK'
+    call MPI_Finalize(err)
+    stop
+  endif
   if(mode=='geometry') then
     call require(state%version==1.and.state%definition%view%channel=='geometry','geometry channel differs')
     call require(state%definition%view%format=='vtk-xml'.and.state%definition%view%formats==0,'geometry format differs')
@@ -41,10 +160,15 @@ program insitu_catalog_mpi_probe
     call MPI_Finalize(err)
     stop
   endif
-  if(mode=='visual') then
+  if(mode=='visual'.or.mode=='coordinates') then
     call require(state%version==1.and.state%definition%view%kind=='q_surface','visual kind differs')
     call require(state%definition%view%camera(1)==150.and.state%definition%view%bounds(2)==300,'visual vectors differ')
     call require(state%definition%view%formats==1.and.state%definition%view%isovalue==.25_real64,'extraction differs')
+    if(mode=='coordinates') then
+      call require(all(state%definition%view%coordinate_flags==[0,1]),'coordinate flags differ')
+      call require(all(state%definition%view%coordinate_values==[10.e0_real64,0.e0_real64,0.e0_real64, &
+        2.e0_real64,1.e0_real64,4.e0_real64,1.e0_real64]),'coordinate references or display factors differ')
+    endif
     call catalog_watch_counts(reads,checks)
     if(rank/=0) call require(reads==0.and.checks==0,'nonroot reparsed the visual record')
     print '(a,i0,a)','RANK ',rank,' VISUAL_OK'

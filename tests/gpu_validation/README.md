@@ -1,5 +1,422 @@
 # GPU Validation
 
+## Current Goal Resource Policy
+
+The 2026-11-03 user instruction removes artificial resource quotas for new
+turbulent-boundary-layer product acceptance runs. Keep historical evidence and
+deliberate quota-failure tests unchanged. Use `-1` host/device budgets and zero
+device reserve in the new `catalog_stats` namelist. The SBLI helper's
+`unrestricted=True` writes the same unlimited I/O budgets and uses no external
+increment/time limits; image/statistics namelist limits stay explicit at the
+call site. Streaming buffer size and physical/integration validity limits are
+not quotas. Production defaults are not globally disabled.
+
+`test_insitu_unrestricted_resources.py` independently checks observation with
+no quotas, continued enforcement of explicitly requested quotas, native parser
+acceptance, and a real two-step NP4/two-GPU shared-allocation render run. Unit
+monitor peaks are mocked, not claimed hardware measurements. Set
+`ASTR_INSITU_CONFIG_PROBE` for the parser and `ASTR_WALL_FOOTPRINT_RENDER_EXE`
+for the existing strict device solver. The run keeps resource CSV/JSON reports;
+it does not consume all memory as a stress test.
+
+## TB2 Wall Shear Glyphs
+
+`test_insitu_wall_vectors.py` covers explicit instantaneous/mean shear-direction
+images, not integrated wall shear lines. `ASTR_CATALOG_PROBE` and
+`ASTR_CATALOG_STATE_PROBE` enable parsing and typed-definition round trips.
+`ASTR_WALL_GLYPH_PROBE=build_m12_device_render/bin/insitu_runtime_plane_probe`
+selects the root-built `wall <topology>` component mode: independent analytic
+directions, tiny/zero vectors, all-zero geometry, compensated display stretching,
+deterministic connectivity and unique shared/periodic ownership on seven
+NP1/2/4 topologies. Its diagnostic geometry downloads are explicit test oracles.
+The separate memcheck uses NP2 y, including one empty wall rank; the standalone
+probe uses host MPI/OSC and does not validate device-aware field transport.
+
+`ASTR_WALL_FOOTPRINT_RENDER_EXE` selects the current strict device solver for the
+GRCBC image matrix, CPU/GPU two-component mean and norm comparisons, MPI-interface
+ROI endpoint, 5+7 exact restoration and unchanged authoritative state with output
+off. The actual image matrix covers all seven topologies on standard-device and
+NP2 x on direct-device. Production images download neither fields nor geometry;
+only the declared six-scalar coordinate frame and selection controls are read.
+
+The separate two-step timing/resource pair emits one mean glyph picture per
+step without output HDF5/checkpoints; its first frame includes Catalyst setup.
+It is not a stable performance benchmark. Example:
+`scripts/output/input.products.sbli.wall-vectors.example.jsonl`.
+
+## TB2 Wall Footprints
+
+`test_insitu_wall_footprints.py` checks nodewise complete-wall time means against
+independent endpoint integration of instantaneous two-dimensional references.
+Select `ASTR_SELECTED_RUNTIME_EXE` for the root-CMake FP64 CPU/GPU executable.
+The small GRCBC matrix covers NP1, NP2 x/y/z and NP4 mixed topologies, exact
+5+7-step continuation and unchanged authoritative fields with products off.
+`ASTR_SELECTED_RUNTIME_M12_SOURCE` additionally enables the already approved
+ten-step original-random-blowing fixture and checks retained spanwise variation.
+The periodic output endpoint is the unique node-zero statistical alias, not a
+second accumulated history.
+
+`ASTR_WALL_FOOTPRINT_RENDER_EXE` selects the strict Catalyst/device build. The
+image matrix uses two complete GRCBC steps, instantaneous and Reynolds-mean wall
+shear/heat maps, 800x600 JPEG and explicitly annotated z display x20. It covers
+all seven topologies on standard-device and NP2 x on direct-device. Initial
+instantaneous pictures at step zero are retained; means wait for positive time
+coverage. The separate GPU NP2 memcheck declares device statistics with render
+off, verifies pre-MPI binding and requires two zero-error reports. The cost pair
+has only two mean-wall pictures per step, without output HDF5 or checkpoints;
+it records a short completed-step inclusive window, not production performance.
+
+The small-bounded configuration example is
+`scripts/output/input.products.sbli.wall-footprints.example.jsonl`.
+Scalar footprints do not close the planned shear-vector and shear-line products.
+
+## TB2 Fixed-j Local Fluctuations
+
+`test_insitu_fluctuations.py` reuses the selected-time history and private index
+slice producer. Set `ASTR_SELECTED_RUNTIME_EXE` to the root-CMake FP64 executable.
+The numeric tests cover TGV and the existing small GRCBC SBLI fixture on both
+CPU/GPU, NP1, all NP2 directions and NP4 mixed topologies. They compare each
+fluctuation to the explicit current-minus-local-mean reference. Exact TGV 5+7
+continuation and output-switch tests keep their own gates. `analyse_matrix` reads
+passing JUnit records and compares all primitive components across the seven
+same-topology CPU/GPU pairs, without rerunning CFD.
+
+Set `ASTR_FLUCTUATION_RENDER_EXE` to the current strict Catalyst/device build for
+the two-step 32-cubed TGV image tests (four 800x600 JPEG products per step).
+`standard-device` covers NP1/2/4; `direct-device` covers NP2. Per-frame receipts
+must report zero field/final-geometry readback and the actual selected-time
+coverage. The independent two-step cost pair has no HDF5 or checkpoint I/O;
+it records completed-step inclusive timing and external 20-ms resource samples,
+not a stable production benchmark. `test_fluctuation_gpu_memcheck` is a separate
+two-rank numerical memory check, without rendering. Example definitions:
+`scripts/output/input.products.tgv.fluctuations.example.jsonl`.
+
+Current evidence and remaining coverage are recorded in
+`documents/ASTR_INSITU_TURBULENT_BOUNDARY_LAYER_PRODUCTS_PROGRESS.md`.
+These gates do not close wall-vector/shear-line TB2.2/3 or TB3/TB4.
+
+## TB1 Selected Statistics
+
+### Coordinate Component Checks Without CFD
+
+`insitu_coordinates_vtk_probe.py --metadata-only` checks native/normalized and
+display-scaled plane/cube annotations using real VTK objects. It also exercises
+fixed-preset coordinate-frame reuse, unchanged input points/camera/clipping,
+and empty/nonempty transitions. This mode calls neither Render nor image/file
+publication. `--collective-only` exercises the actual pipeline bounding-box
+helper and Int64 geometry-count reduction, including a locally empty rank,
+globally empty geometry and counts exceeding 32 bits. Use `pvbatch --symmetric`
+for the multi-rank check, not multiple independent `pvpython` clients:
+
+`--include-wall-planes --require-plane-layout` additionally covers native and
+stretched XZ/YZ planes. These cannot use VTK's XY-only 2D text placement.
+Set `ASTR_COORDINATE_PVPYTHON` to run the two corresponding
+`test_insitu_coordinates.py` checks: metadata-only and ten synthetic JPEGs,
+without a CFD executable or any flow fields. The separate before/after record
+compares the exact coordinate metadata and the six unaffected XY/volume images.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 <project-mpirun> --mca coll_hcoll_enable 0 --oversubscribe -np 1 \
+<paraview>/bin/pvpython tests/gpu_validation/insitu_coordinates_vtk_probe.py --metadata-only
+PYTHONDONTWRITEBYTECODE=1 <project-mpirun> --mca coll_hcoll_enable 0 --oversubscribe -np 2 \
+<paraview>/bin/pvbatch --symmetric tests/gpu_validation/insitu_coordinates_vtk_probe.py --collective-only
+```
+
+These are annotation/metadata component checks, not a substitute for real
+fixed-preset/preview strict-device images, solver-state invariance, resource
+measurements or high-resolution layout review. Catalog image acceptance remains
+separate. See the turbulent-boundary-layer products progress record.
+
+The active TB1 increment adds a catalog-owned selected-node statistics
+provider, including pressure and temperature, without allocating a full
+three-dimensional velocity-statistics array. Its current numerical-only
+`catalog_stats` profile is a short-test entry; selected-state persistence is
+connected but final BL/SBLI product acceptance remains incomplete. The expanded
+14-test exact-restart matrix passes after the approved CPU cache-corner initialization fix.
+See `configs/tb1_selected_statistics/` and the dedicated progress document.
+
+```bash
+cmake --build <build> --target astr insitu_selected_statistics_probe --parallel 4
+ASTR_INSITU_SELECTED_PROBE=<absolute-build>/bin/insitu_selected_statistics_probe \
+python3 -m pytest -x -q tests/gpu_validation/test_insitu_profile_statistics.py -k selected_statistics_lifecycle
+ASTR_SELECTED_RUNTIME_EXE=<absolute-M12-UDF-build>/bin/astr \
+ASTR_SELECTED_RUNTIME_M12_SOURCE=<existing-read-only-M12-directory> \
+python3 -m pytest -x -q tests/gpu_validation/test_insitu_selected_runtime.py
+```
+
+The latter uses the existing 64x32x24, dt=.02, ten-step M12 fixture with its
+original random wall forcing, not a production run. A CUDA-capable binary
+also selects the CPU path through the input for a matching UDF. Individual
+means are checked against independently integrated instantaneous archives.
+`analyse_selected_statistics.py` compares saved CPU/GPU and topology evidence
+without launching CFD. Its `--scope` explicitly distinguishes same-topology
+from cross-topology trajectories; an incomplete or failed comparison is not
+a pass for the full matrix.
+
+`test_selected_statistics_exact_checkpoint_continuation` compares full state
+and `statistics.h5` bitwise, not just numerical tolerances. The local registry
+probe also packs/restores across a real sampling gap. Raw selected moments,
+previous endpoint, coverage and segment identity are serialized in the normal
+statistics component; old dense providers keep their formats. Snapshot I/O
+may stage selected cumulative state, separately from ordinary device-resident
+sampling. No new checksum/read-back verification pass is added.
+
+### TB1 Station Profiles
+
+`test_insitu_station_profiles.py` exercises real completed-step station CSVs,
+not a Python replacement for the solver. It independently integrates saved
+instantaneous i-sections, then combines local temporal means and central
+moments with physical spanwise weights. Full/partial periodic spans and a
+pointwise line are separate products. Reynolds/Favre velocity covariance,
+RMS squares, density stress and pressure/temperature means are checked.
+The suite also checks scalar-only dependencies, product-failure isolation,
+unchanged authority, and bitwise state/statistics/CSV continuation.
+
+```bash
+ASTR_SELECTED_RUNTIME_EXE=<absolute-M12-UDF-build>/bin/astr \
+ASTR_SELECTED_RUNTIME_M12_SOURCE=<existing-read-only-M12-directory> \
+python3 -m pytest -x -q tests/gpu_validation/test_insitu_station_profiles.py
+```
+
+The existing moment/spatial probes now include strong variable-density
+profile projection, nonuniform span lengths, descending coordinates, periodic
+endpoint aliases and empty owners. The pure `--kernel-only` moment probe also
+executes the CUDA span reducer, suitable for Memcheck/Racecheck without MPI
+initialization. Evidence for this increment is in
+`out/tb1_station_profiles_20261103/`; it does not close the separate M12
+cross-topology CFD trajectory discrepancy or the remaining TB1 wall/scale/
+thickness products. See the dedicated TB1–TB4 progress document.
+
+## TB1 Wall And Thickness Operators
+
+`test_insitu_thickness_runtime.py` checks the approved explicit external band
+estimator, the case viscosity at its Reynolds mean temperature, outer-connected
+delta99, both integration limits, H and Re_theta against independent NumPy
+quadrature on real completed-step profiles. The 64x32x24 M12 fixture is unchanged.
+Its CPU/GPU seven-topology matrix does not write unnecessary checkpoints;
+separate CPU/GPU NP2 z cases check exact 5+5 continuation, saved-effective options
+despite conflicting disk definitions, and unchanged state/statistics without
+thickness. A GPU NP2 z case combines thickness with matching wall units. Invalid
+wall-node edge references are isolated; a finite positive near-zero wall
+velocity must not be used as an external state. The independent operator probe
+checks single-node and nonuniform bands without relying on the real fixture.
+
+```bash
+ASTR_SELECTED_RUNTIME_EXE=<absolute-M12-UDF-build>/bin/astr \
+ASTR_SELECTED_RUNTIME_M12_SOURCE=<existing-read-only-M12-directory> \
+python3 -m pytest -x -q tests/gpu_validation/test_insitu_thickness_runtime.py
+python3 tests/gpu_validation/analyse_station_profiles.py <saved-thickness-matrix> \
+--output <same-topology-report.json>
+```
+
+The CSV comment scalars are numerical output, not an image-derived estimate.
+The saved-matrix analyzer compares both these scalars and cumulative columns;
+unavailable values must have matching flags/absence, not silently become zeros.
+The real M12 checks cover wall41 and the existing Cartesian generated grid;
+other wall families and real SBLI are not claimed by this increment.
+
+The same suite now covers read-Cartesian M12 with original random wall forcing.
+Set `ASTR_SELECTED_RUNTIME_CARTESIAN_GRID` to the immutable 64x32x24 Cartesian
+grid from an earlier fixture. Its read NP2 z case plus
+`test_read_cartesian_random_restart_topologies` cover CPU/GPU NP1, NP2 x/y/z and
+NP4 xy/xz/yz. Each compares continuous ten steps with 5+5 exact continuation,
+the complete `state.h5`/`statistics.h5`, control/RNG bytes and continuation CSVs.
+The tail test deletes only its newly prepared input copies and must restore
+grid, profile, forcing and initial field from frozen resources. The original
+extruded grid.2d path has separate CPU/GPU regressions. Nonseparable and
+descending-axis input copies must fail before RK/publication, without admitting
+CURVE. Two further cases disable selected statistics while retaining the
+read-Cartesian checkpoint path and identical flow state.
+
+```bash
+ASTR_SELECTED_RUNTIME_EXE=<absolute-M12-UDF-build>/bin/astr \
+ASTR_SELECTED_RUNTIME_M12_SOURCE=<existing-read-only-M12-directory> \
+ASTR_SELECTED_RUNTIME_CARTESIAN_GRID=<immutable-64x32x24-grid.h5> \
+python3 -m pytest -x -q tests/gpu_validation/test_insitu_thickness_runtime.py \
+-k 'exact_restore or read_cartesian_random or does_not_admit_curve or without_statistics'
+python3 tests/gpu_validation/analyse_station_profiles.py <evidence-root> \
+--restart-records <read-z.xml> <read-other-topologies.xml> --output <comparison.json>
+```
+
+The saved-record analyzer uses the completed continuous-reference cases named
+by passed JUnit records, the test's explicit backend parameter and the actual
+MPI topology in `run.log`. Failed records and incomplete/duplicate matrices are
+not treated as passes. It does not rerun CFD or change stored evidence.
+
+`insitu_boundary_layer_probe` checks complete Newtonian tangential stress,
+signed Fourier conduction, wall reference scales and one-dimensional
+thickness diagnostics. It reuses the seven-node sixth-order private derivative
+weights and prescribed physical metrics, including all offsets on stretched
+axes. CPU and CUDA builds both use the root CMake:
+
+```bash
+cmake --build <build> --target insitu_boundary_layer_probe --parallel 4
+ASTR_BL_DIAGNOSTIC_PROBE=<absolute-build>/bin/insitu_boundary_layer_probe \
+python3 -m pytest -x -q tests/gpu_validation/test_insitu_boundary_layer.py
+compute-sanitizer --tool memcheck --leak-check full --error-exitcode 99 \
+<absolute-GPU-build>/bin/insitu_boundary_layer_probe --kernel-only
+```
+
+NP=1/2/4 is an operator/device-binding test, not MPI wall-halo or real-flow
+acceptance. The trapezoid diagnostic has a separate 16/32/64 stretched-grid
+convergence check: it is second order, not the solver's derivative order.
+Kernels do not download wall fields; the probe explicitly downloads twelve
+points for comparison. The following real-flow suite now covers complete-step
+capture, selected temporal accumulation and wall-profile output; it is not
+production or wall-unit/thickness-product acceptance.
+
+```bash
+ASTR_SELECTED_RUNTIME_EXE=<absolute-M12-UDF-build>/bin/astr \
+ASTR_SELECTED_RUNTIME_M12_SOURCE=<existing-read-only-M12-directory> \
+python3 -m pytest -x -q tests/gpu_validation/test_insitu_wall_transport_runtime.py
+python3 tests/gpu_validation/analyse_station_profiles.py <saved-matrix> \
+--family wall --output <same-topology-report.json>
+```
+
+The bounded 64x32x24 fixture keeps its original dt=.02 and random wall forcing.
+Fourteen instantaneous cases use explicit complete-step checkpoints as
+independent stencil/metric oracles. Fourteen mean cases integrate instantaneous
+archives independently, including full/partial periodic spans, the terminal
+alias line and viscosity/shear/thermal-only dependencies. CPU/GPU exact 5+5
+continuation checks full state, statistics and CSVs; disabling wall histories
+preserves authority bitwise. GPU wall-template communication uses CUDA-aware
+MPI, separately from the solver's pinned halo backend. Large diagnostic
+archives/checkpoints are explicit oracle I/O, not the ordinary sampler path.
+
+### TB1 GRCBC SBLI Combination
+
+`test_insitu_sbli_statistics.py` reuses the existing 64x48x16 Ma=2 incident-shock
+fixture with its original dt=2.5e-4, twelve steps, 743e/643e, no filter and
+11/22/41/52/1/1 complete-RHS GRCBC boundary chain. It does not change the solver
+or claim a developed-SBLI validation. The selected window is [.5dt,11.5dt].
+Small explicitly enabled endpoint archives provide independent temporal/span
+references; two same-state final checkpoints also provide independent rational
+seven-node wall derivatives with the actual stored metrics. These are
+diagnostic oracles, not required ordinary product I/O.
+
+```bash
+ASTR_SELECTED_RUNTIME_EXE=<absolute-FP64-CPU-GPU-build>/bin/astr \
+python3 -m pytest -x -q tests/gpu_validation/test_insitu_sbli_statistics.py
+python3 tests/gpu_validation/analyse_station_profiles.py <evidence-root> \
+--restart-records <complete-matrix.xml> --output <station-comparison.json>
+python3 tests/gpu_validation/analyse_station_profiles.py <evidence-root> \
+--family wall --restart-records <complete-matrix.xml> --output <wall-comparison.json>
+```
+
+All seven topologies, same-backend 5+7 exact continuation, conflicting disk
+definitions, and statistics OFF/ON authority are separate checks. A lazy
+module fixture shares the immutable NP2 z continuous references. A separately
+selected cost test can reuse them via
+`ASTR_SBLI_STATISTICS_REFERENCE_ROOT=<completed-matrix-directory>`; this is a
+test-only evidence input, not a solver option. That cost pair writes no HDF5
+under outdat and no checkpoints; the completed-step-inclusive timing contains
+postprocessing, unlike the RK-only/early complete-step timer. Its process-tree
+RSS and per-physical-GPU memory use the existing 20 ms sampler and budgets.
+One short pair is not a stable performance benchmark.
+
+This fixture explicitly enables CUDA-aware MPI for the selected wall-statistics
+private exchange and keeps solver halos pinned. The ordinary pure-compute
+launcher disables device MPI buffers and cannot be reused unmodified. The
+negative test verifies product-local failure and blank unavailable wall units,
+not successful wall statistics under an unsupported configuration. Every
+launch records its actual command and relevant runtime settings in launch.json.
+
+The first-frame tiny-covariance regression catches the actual `ES24.16`
+three-digit-exponent omission. The fix is in both new profile CSV writers;
+tests never repair archived strings or filter near-zero values. Generalized
+wall/unit reference checkers retain their M12 defaults; their unchanged results
+were checked against the actual frozen M12 recipes without rerunning CFD.
+
+`input.products.wall.statistics.example.jsonl` supplies the numerical-only
+wall products. `input.products.wall.references.example.jsonl` additionally
+selects statistical wall scales, fixed-reference Cf/Cq and optional Stanton
+numbers via `wall_reference`. The real normalized suite is:
+
+```bash
+ASTR_SELECTED_RUNTIME_EXE=<absolute-M12-UDF-build>/bin/astr \
+ASTR_SELECTED_RUNTIME_M12_SOURCE=<existing-read-only-M12-directory> \
+python3 -m pytest -x -q tests/gpu_validation/test_insitu_wall_references.py
+```
+
+It checks automatic full wall dependencies, six shared histories across
+different recovery inputs, all seven CPU/GPU topologies and exact continuation
+against conflicting unconsumed disk definitions. It compares the ratio of
+compatible means, not averaged instantaneous Stanton numbers. A representable
+extreme Cf test also checks coefficient reconstruction: direct NVHPC `SCALE`
+at exponent 1024 returned Inf; two bounded scaling operations retain the finite
+result. This is a new diagnostic arithmetic correction, not a solver change.
+The same suite checks first off-wall height, actual adjacent x cell lengths
+and selected-span z minimum/maximum lengths in statistical wall units.
+Full/partial periodic spans and a periodic terminal line reuse their original
+histories. Nonperiodic missing neighbors remain empty, and same-topology
+comparison explicitly checks the missing-value masks. Operator probes include
+stretched and reversed axes and periodic incident-cell lengths. These small
+axis reductions add no device field transfer. Wall-unit velocity/stress
+profiles and thickness output still need product integration.
+The edge-state averaging proposal remains
+awaiting confirmation; neither the synthetic nor the short-flow gates prove
+turbulent statistical stationarity or physical SBLI validation.
+
+### Matching Wall-Unit Profiles
+
+`input.products.wall.units.example.jsonl` names a live wall product through
+the optional station `wall_units` ID. Raw columns are retained. The new
+`test_insitu_wall_unit_profiles.py` checks full/partial spans, a terminal
+line, scalar-only y+, both statistical means, signed covariances and Favre
+density stress normalized by mean wall density. Velocity RMS acceptance uses
+the corresponding variance and reports the raw RMS difference separately.
+The target wall output clock deliberately differs from the station clock;
+normalization must use live moments, not its last CSV.
+
+```bash
+ASTR_SELECTED_RUNTIME_EXE=<absolute-M12-UDF-build>/bin/astr \
+ASTR_SELECTED_RUNTIME_M12_SOURCE=<existing-read-only-M12-directory> \
+python3 -m pytest -x -q tests/gpu_validation/test_insitu_wall_unit_profiles.py
+```
+
+The suite includes continuous/exact 5+5 continuation against conflicting disk
+IDs, unchanged-authority comparisons, unavailable-reference retention and real
+catalog removal/re-addition. The latter distinguishes actual gaps from a
+history still sampled by another consumer. Its existing preload publisher
+changes only the root catalog file at real watcher polls, never flow arrays.
+The full real-flow matrix remains an acceptance requirement; inspect the
+progress record rather than inferring it passed from this command.
+
+The matrix formula checks deliberately disable checkpoint/volume output:
+they consume live one-dimensional CSVs, not saved 3D fields. The independent
+exact-continuation tests still retain full checkpoints and compare authority
+and cumulative state bitwise. This avoids duplicating unused geometry/state
+files without reducing the matrix or changing numerical gates.
+For the read-Cartesian matrix also set
+`ASTR_SELECTED_RUNTIME_CARTESIAN_GRID` to the immutable `datin/grid.h5` from
+an earlier 64x32x24 M12 fixture. A short local symlink respects the solver's
+existing 64-character grid filename interface. No source grid is rewritten.
+CPU/GPU geometry checks use only physical nodes; GPU full-block validation
+stays resident and downloads three small axis lines plus a status word once.
+
+`test_cartesian_read_grid_station_exact_continuation` adds a separate read-grid
+TGV continuation test. Select the immutable 16-cubed uniform mesh with
+`ASTR_SELECTED_RUNTIME_TGV_READ_GRID`; it uses continuous 12 versus 5+7 steps
+and one retained full checkpoint per directory. GPU NP1 has observed state,
+statistics and CSV bitwise equality; CPU read-grid TGV and real SBLI still need
+their own evidence. Read-Cartesian M12 wall41/random-forcing now has the separate
+CPU/GPU seven-topology exact matrix described above; neither result replaces
+the other fixture's gate.
+The first run exposed a packaging error: the generic preparer also copied an
+unused 128-cubed template grid into all three directories. The read-Cartesian
+path now explicitly omits that template and supplies the selected short grid
+name during preparation. This preparation-only correction has a small CLI unit
+test; no post-correction CFD replay was launched pending the disk decision.
+
+Selected-statistics probes also exercise two sequences with identical scalar
+coverage metadata but different gap positions. Integer coverage identities
+intern exact same-step/same-weight transitions of the same history prefix;
+they are not checksums and cannot be compared between arbitrary registries.
+The v2 selected-time component stores the identity and counter, not a growing
+sample log. Same-backend/topology packing and continuation are bitwise checks.
+Previous v1 selected-time components lack this state and are not exact v2
+restart inputs; existing velocity-time and other statistics formats are unchanged.
+
 ## Compact CP9/CP10 Closeout
 
 `run_compact_performance.py` runs the approved local explicit/compact matrix.
@@ -10083,3 +10500,72 @@ then feeds the five-run median. CPU algorithm RK timing excludes independent
 reinterpreted. Failed configurations are retained and skipped; independent
 configurations continue, and incomplete repetitions are not summarized as
 complete. No platform performance evidence is claimed by local short tests.
+
+## TB2.3 Wall-Shear Traces
+
+`test_insitu_wall_trace.py` checks the rectangular two-dimensional wall evaluator
+and the wall-only strict Cash–Karp RK45 worklet, the shared production particle
+driver and the real `wall_shear_lines` product. Component geometry readback is
+an explicit oracle; real-image and cost runs do not download line geometry.
+The axes contain 16 intervals and 17 nodes; nonuniform axes are also checked.
+The interpolated raw shear is normalized afterward using component scaling.
+The ordinary fluid RK45 acceptance rule is unchanged.
+
+```bash
+cmake --build build_cpu_probe --target insitu_wall_trace_probe --parallel 8
+cmake --build build_m12_device_render --target insitu_wall_trace_gpu_probe \
+  insitu_wall_trace_worklet_probe insitu_viskores_trace_probe --parallel 8
+env ASTR_WALL_TRACE_CPU_PROBE="$PWD/build_cpu_probe/bin/insitu_wall_trace_probe" \
+  ASTR_WALL_TRACE_GPU_PROBE="$PWD/build_m12_device_render/bin/insitu_wall_trace_gpu_probe" \
+  ASTR_WALL_TRACE_WORKLET_PROBE="$PWD/build_m12_device_render/bin/insitu_wall_trace_worklet_probe" \
+  ASTR_WALL_TRACE_FLUID_REGRESSION_PROBE="$PWD/build_m12_device_render/bin/insitu_viskores_trace_probe" \
+  ASTR_INSITU_DEVICE_MPI_PREFIX="$MPI_PREFIX" \
+  python3 -m pytest -x -q tests/gpu_validation/test_insitu_wall_trace.py
+```
+
+The 18 trajectory inputs cover signs/directions, exact and tiny nonzero shear,
+rotation, zero trial stages, strict error rejection, three distinct boundary
+statuses, nonfinite input, accepted-step limits, a short final interval and
+nonuniform coordinates. A further endpoint guard checks a candidate with six
+nonzero stages but an exactly zero final combination. Failed candidates never
+change the accepted point, length or count.
+
+Seven MPI topologies include NP2 x/y/z and NP4 2x2x1/2x1x2/1x2x2. Empty upper-y
+ranks participate, while ownership and handoff use actual x/z cell bounds.
+The synthetic test constructs local halos directly. Its accepted-geometry
+readback is an explicit analytical oracle, not a production residency claim;
+all source arrays must remain device-only. The test uses the existing particle
+MPI type and geometry compaction helpers, not a new production scheduler.
+
+Evidence `out/tb2_wall_trace_20261103/final.xml` has 12 passing checks, including
+four-rank memcheck and an externally sampled resource run; the separate
+`fluid_regression.xml` has four passing rebuilt fluid-worklet checks.
+New tests have no artificial memory/disk/reserve or wall-clock limits.
+The resource report keeps measurements and records null quotas and zero
+headroom. No true allocation failure or numerical gate is disabled.
+
+The product extends fixed-j image support with three interpolation layers using
+the existing index-slice private exchange. Cartesian coordinates and full metric
+rows in that new support are read from valid axis faces, not unfilled geometry
+corners. This leaves the solver and default slice geometry unchanged. The
+NP4 x/z corner failure and its device diagnostic remain in the evidence tree.
+
+For the real gate, build the FP64 CPU `astr` and test-only
+`insitu_wall_trace_reference` shared target, and the strict GPU `astr` from root
+CMake. Set `ASTR_WALL_TRACE_RENDER_EXE`, `ASTR_WALL_TRACE_CPU_EXE` and
+`ASTR_WALL_TRACE_REFERENCE_LIB`. Image and CPU-reference tests share immutable
+module fixtures, rather than rerunning a flow for each assertion. The native
+CPU oracle integrates native CPU ASTR's formal two-dimensional HDF5 output; it
+is not a Python flow integrator or a CPU copy of the GPU field.
+
+`real_final.xml` has 16 image/endpoint checks over seven standard-device
+topologies and NP2 x direct-device. The immutable data's additional native
+shear-range analysis is in `real_range_offline/summary.json`; it did not rerun
+CFD. `lifecycle.xml` covers cache reuse, 12 versus 5+7 exact continuation,
+images-off authority and NP4 x/z memcheck. `gap.xml` verifies late joins with or
+without a continuing statistics consumer and real sampling gaps.
+`cost.xml` records a two-step no-HDF5/no-checkpoint cost and resource pair;
+`wall_regression.xml` covers the existing scalar-wall/glyph images.
+Current evidence spans 68 distinct test IDs across these batches, not 68
+independent physical experiments. This is not a developed SBLI/separation or
+production-performance qualification.

@@ -13,11 +13,14 @@ import pynvml as nvml
 def run_monitored(command, directory, runtime, stream, report_path, baseline=None,
                   device_extra_budget_bytes=2*1024**3, host_extra_budget_bytes=4*1024**3,
                   device_reserve_bytes=1024**3, timeout_seconds=180, check_progress=None):
+    """None disables a test quota/time limit, not measurement; reserve zero means no artificial headroom."""
     nvml.nvmlInit()
     devices = [(nvml.nvmlDeviceGetUUID(h), h) for h in (
         nvml.nvmlDeviceGetHandleByIndex(i) for i in range(nvml.nvmlDeviceGetCount()))]
     report = dict(status='running', sampling_period_seconds=0.02, samples=0,
                   host_rss_peak_bytes=0, devices={},
+                  limits=dict(device_extra_bytes=device_extra_budget_bytes,host_extra_bytes=host_extra_budget_bytes,
+                              device_reserve_bytes=device_reserve_bytes,timeout_seconds=timeout_seconds),
                   scope='sum of process-tree RSS; deduplicated NVML compute/graphics PID memory')
     process = None
     started = time.monotonic()
@@ -61,9 +64,9 @@ def run_monitored(command, directory, runtime, stream, report_path, baseline=Non
                 if baseline is not None:
                     if uuid not in baseline['devices']:
                         raise ValueError('GPU identity differs from off baseline')
-                    if entry['peak_bytes']-baseline['devices'][uuid]['peak_bytes'] > device_extra_budget_bytes:
+                    if device_extra_budget_bytes is not None and entry['peak_bytes']-baseline['devices'][uuid]['peak_bytes'] > device_extra_budget_bytes:
                         raise ValueError(f'{uuid}: sampled additional device-memory budget exceeded')
-            if baseline is not None and rss-baseline['host_rss_peak_bytes'] > host_extra_budget_bytes:
+            if baseline is not None and host_extra_budget_bytes is not None and rss-baseline['host_rss_peak_bytes'] > host_extra_budget_bytes:
                 raise ValueError('Sampled additional host-RSS budget exceeded')
             if check_progress is not None:
                 check_progress()
@@ -73,7 +76,7 @@ def run_monitored(command, directory, runtime, stream, report_path, baseline=Non
                 if code:
                     raise subprocess.CalledProcessError(code, command)
                 break
-            if time.monotonic()-started > timeout_seconds:
+            if timeout_seconds is not None and time.monotonic()-started > timeout_seconds:
                 raise TimeoutError('Local resource probe exceeded its time budget')
             time.sleep(0.02)
         if not report['devices']:

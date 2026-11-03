@@ -5,14 +5,46 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import sys
+import shutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import prepare_tgv_case
 
 
 class PrepareTgvCaseTests(unittest.TestCase):
+    def test_explicit_external_grid_omits_the_unused_template(self) -> None:
+        root=Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            source=Path(tmp)/'source';datin=source/'datin';datin.mkdir(parents=True)
+            for name in ('input.tgv','controller'):
+                shutil.copyfile(root/'examples/Taylor_Green_Vortex/datin'/name,datin/name)
+            template=datin/'grid.h5';template.write_bytes(b'unused template resource')
+            target=Path(tmp)/'prepared'
+            argv=['prepare_tgv_case','--src-case',str(source),'--dst-case',str(target),
+                  '--use-gpu','t','--maxstep','11','--feqchkpt','5','--grid','16,16,16',
+                  '--lreadgrid','t','--restart','f','--gridfile','datin/grid.cartesian.h5',
+                  '--omit-grid-resource']
+            with patch.object(sys,'argv',argv):
+                self.assertEqual(prepare_tgv_case.main(),0)
+            self.assertFalse((target/'datin/grid.h5').exists())
+            text=(target/'datin/input.tgv').read_text()
+            self.assertIn('datin/grid.cartesian.h5',text)
+            lines=text.splitlines()
+            marker=next(i for i,line in enumerate(lines) if 'nondimen,diffterm,lfilter,lreadgrid' in line)
+            flags=lines[prepare_tgv_case.next_data_line(lines,marker)].split(',')
+            self.assertEqual(flags[3],'t')
+            self.assertEqual(flags[8],'t')
+            self.assertEqual(template.read_bytes(),b'unused template resource')
+            rejected=Path(tmp)/'rejected'
+            argv[argv.index('--dst-case')+1]=str(rejected)
+            argv[argv.index('--gridfile')+1]='datin/grid.h5'
+            with patch.object(sys,'argv',argv), self.assertRaisesRegex(ValueError,'alternate --gridfile'):
+                prepare_tgv_case.main()
+            self.assertFalse(rejected.exists())
+
     def test_default_validation_output_is_explicitly_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "input.output"

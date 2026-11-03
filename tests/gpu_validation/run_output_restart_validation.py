@@ -78,7 +78,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              product_catalog_records=None,product_poll_steps=10,catalog_replay=None,image_publication_failure=None,
              runtime_line_oracle=False,trace_collective_fault=False,runtime_allocation_refusal=None,wall_publication_failure=None,
              runtime_compatible_oracle=False,geometry_publication_failure=None,trace_allocation_refusal=None,
-             wall_capture_refusal=None):
+             wall_capture_refusal=None,tgv_cartesian_grid=None):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -90,17 +90,22 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         raise ValueError('checkpoint_enabled must be an explicit boolean')
     if checkpoint_enabled is False and (restore is not None or args.initial_restart):
         raise ValueError('checkpoint-free observation cannot request restart')
-    timeout=getattr(args,'runtime_timeout_seconds',180)
-    if timeout<=0:
+    unrestricted=getattr(args,'unrestricted',False)
+    timeout=None if unrestricted else getattr(args,'runtime_timeout_seconds',180)
+    if timeout is not None and timeout<=0:
         raise ValueError('test runtime timeout must be positive')
-    directory_budget = getattr(args, 'directory_budget_bytes', 64 * 1024**2)
-    if directory_budget <= 0:
+    directory_budget = None if unrestricted else getattr(args, 'directory_budget_bytes', 64 * 1024**2)
+    if directory_budget is not None and directory_budget <= 0:
         raise ValueError('test directory budget must be positive')
-    output_host_budget = getattr(args, 'output_host_budget_bytes', 64 * 1024**2)
-    if type(output_host_budget) is not int or output_host_budget < buffer_bytes:
+    output_host_budget = -1 if unrestricted else getattr(args, 'output_host_budget_bytes', 64 * 1024**2)
+    if not unrestricted and (type(output_host_budget) is not int or output_host_budget < buffer_bytes):
         raise ValueError('output host budget must contain the requested packing buffer')
+    if unrestricted:
+        device_budget_bytes=-1
     if grid is not None and (args.case != 'tgv' or args.initial_dimension != 0):
         raise ValueError('explicit validation grid requires internally initialized TGV')
+    if tgv_cartesian_grid is not None and (args.case!='tgv' or tgv_mapping is not None):
+        raise ValueError('read-Cartesian TGV uses a separate grid source, not a CURVE mapping')
     if tgv_mapping is not None and (args.case != 'tgv' or args.initial_dimension != 0 or
                                    grid not in ('32,32,32', '64,64,64', '128,128,128', '256,256,256') or
                                    tgv_mapping not in ('periodic','y-wavy')):
@@ -172,7 +177,9 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         "--use-gpu", "t" if backend == "gpu" else "f", "--grid", grid or "16,16,16",
         "--maxstep", str(steps - 1), "--feqchkpt", "1", "--deltat", str(dt),
         *(["--feqlist", "1"] if scale_dt is not None else []),
-        "--lfilter", "t" if lfilter else "f", "--diffterm", "t", "--scheme", scheme], check=True)
+        "--lfilter", "t" if lfilter else "f", "--diffterm", "t", "--scheme", scheme,
+        *(['--omit-grid-resource','--lreadgrid','t','--restart','f','--gridfile','datin/grid.cartesian.h5']
+          if tgv_cartesian_grid is not None else [])], check=True)
     if tgv_reynolds is not None:
         if args.case!='tgv' or args.initial_dimension!=0 or not np.isfinite(tgv_reynolds) or tgv_reynolds<=0:
             raise ValueError('reference Reynolds override requires internally initialized TGV and a finite positive value')
@@ -203,6 +210,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
             set_homogeneous(primary,'t,f,t')
             wall = '273.15d0' if curve_wall_temperature is None else f'{curve_wall_temperature:.17e}'
             set_bctype(primary,f'1;1;41,{wall};41,{wall};1;1')
+    if tgv_cartesian_grid is not None:
+        (case/'datin/grid.cartesian.h5').symlink_to(Path(tgv_cartesian_grid).resolve(strict=True))
     if args.initial_dimension and source_fault != "initial_field":
         if initial_resource is None:
             initial_path = prepare_initial_resource(case, input_name, args.initial_dimension)
@@ -392,7 +401,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                        UCX_CUDA_COPY_DMABUF='no', UCX_CUDA_IPC_ENABLE_MNNVL='no',
                        UCX_TLS='self,sm,cuda_copy,cuda_ipc')
         else:
-            env.update(OMPI_MCA_pml='ob1', OMPI_MCA_btl='self,tcp', OMPI_MCA_osc='pt2pt',
+            # Resource accounting uses a node-shared window when ranks share one GPU.
+            env.update(OMPI_MCA_pml='ob1', OMPI_MCA_btl='self,tcp', OMPI_MCA_osc='sm,pt2pt',
                        OMPI_MCA_opal_cuda_support='false', OMPI_MCA_coll_ucc_enable='0')
     if no_field_io:
         if args.case=='tgv' and args.initial_dimension==0 and tgv_mapping is None:
@@ -549,9 +559,9 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                 raise ValueError("resource sampling requires a successful GPU gate without memcheck")
             from insitu_resource_monitor import run_monitored
             run_monitored(command, case, env, log, case / "resources.sampled.json", baseline=resource_baseline,
-                device_extra_budget_bytes=getattr(args, 'resource_device_extra_budget_bytes', 2*1024**3),
-                host_extra_budget_bytes=getattr(args, 'resource_host_extra_budget_bytes', 4*1024**3),
-                device_reserve_bytes=getattr(args, 'resource_device_reserve_bytes', 1024**3),
+                device_extra_budget_bytes=None if unrestricted else getattr(args, 'resource_device_extra_budget_bytes', 2*1024**3),
+                host_extra_budget_bytes=None if unrestricted else getattr(args, 'resource_host_extra_budget_bytes', 4*1024**3),
+                device_reserve_bytes=0 if unrestricted else getattr(args, 'resource_device_reserve_bytes', 1024**3),
                 timeout_seconds=timeout, check_progress=cfl_gate.check if cfl_gate else None)
             returncode = 0
         else:
@@ -561,10 +571,10 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                 if cfl_gate is None:
                     returncode = process.wait(timeout=timeout)
                 else:
-                    deadline = perf_counter()+timeout
+                    deadline = None if timeout is None else perf_counter()+timeout
                     while True:
                         cfl_gate.check()
-                        if perf_counter() >= deadline:
+                        if deadline is not None and perf_counter() >= deadline:
                             raise TimeoutError('CFL-monitored solver exceeded runtime budget')
                         try:
                             returncode = process.wait(timeout=.02)
@@ -608,7 +618,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     if (case / "outdat/flowfield.h5").exists():
         raise AssertionError("new output emitted a legacy flowfield file")
     disk_bytes = sum(p.stat().st_size for p in case.rglob("*") if p.is_file())
-    if disk_bytes > directory_budget:
+    if directory_budget is not None and disk_bytes > directory_budget:
         raise RuntimeError(f"test directory budget exceeded: {case}: {disk_bytes}")
     return case, disk_bytes
 

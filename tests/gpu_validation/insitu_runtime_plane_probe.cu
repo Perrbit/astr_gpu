@@ -101,6 +101,99 @@ static Real physical_component(int rank,bool q_surface=false) {
   return error;
 }
 
+static Real wall_glyph_component(int rank,const char* topology_text) {
+  int topology[3]{},ranks=0;
+  if(std::sscanf(topology_text,"%d,%d,%d",topology,topology+1,topology+2)!=3)
+    throw std::runtime_error("Expected the three-rank topology extents");
+  MPI_Comm_size(MPI_COMM_WORLD,&ranks);
+  if(topology[0]*topology[1]*topology[2]!=ranks) throw std::runtime_error("Topology rank count differs");
+  int cells[3],origin[3],upper[3];
+  const int position[]={rank%topology[0],(rank/topology[0])%topology[1],rank/(topology[0]*topology[1])};
+  for(int d=0;d<3;++d) {
+    if(topology[d]<1 || 16%topology[d]) throw std::runtime_error("Nonintegral glyph fixture partition");
+    cells[d]=16/topology[d];origin[d]=position[d]*cells[d];upper[d]=origin[d]+cells[d]-1;
+    if(d!=2 && origin[d]+cells[d]==16) ++upper[d];
+  }
+  const int nx=position[1]?0:cells[0]+1,nz=position[1]?0:cells[2]+1,n=nx*nz,ids[]={31,32};
+  std::vector<Vector> positions(n);
+  std::vector<Real> fields(2*n);
+  auto shear=[](int i,int k) {
+    if(i==0 && k==0) return Vector(Real(0.));
+    if(i==4 && k==0) return Vector(Real(1.e-300),Real(0.),Real(0.));
+    return Vector(i/4%2?-Real(1.):Real(1.),Real(0.),k/4%2?Real(1.):Real(0.));
+  };
+  for(int k=0;k<nz;++k) for(int i=0;i<nx;++i) {
+    const int node=i+nx*k,gi=i+origin[0],gk=k+origin[2];
+    positions[node]=Vector(Real(gi)/Real(16.),Real(0.),Real(gk)/Real(16.));
+    const auto tau=shear(gi,gk);fields[node]=tau[0];fields[n+node]=tau[2];
+  }
+  Vector* xyz=nullptr;Real* values=nullptr;
+  if(n) {
+    cuda_ok(cudaMalloc(&xyz,n*sizeof(Vector)));cuda_ok(cudaMalloc(&values,2*n*sizeof(Real)));
+    cuda_ok(cudaMemcpy(xyz,positions.data(),n*sizeof(Vector),cudaMemcpyHostToDevice));
+    cuda_ok(cudaMemcpy(values,fields.data(),2*n*sizeof(Real),cudaMemcpyHostToDevice));
+  }
+  astr_insitu::RuntimeProductView context{};context.id="wall-vector";context.source="instantaneous";
+  context.definition=R"({"field":"wall_shear_vector","extraction":{"stride":[4,4],"length":0.3}})";
+  context.labels[4]="wall_shear_vector";context.labels[6]="diverging_blue_red";
+  context.reals[22]=0.;context.reals[23]=2.;
+  astr_insitu::begin_runtime_index_group();
+  auto mesh=astr_insitu::build_runtime_wall_glyph_mesh(context,0,Real(0.),ids,2,nx,nz,reinterpret_cast<Real*>(xyz),values,origin,upper);
+  auto repeated=astr_insitu::build_runtime_wall_glyph_mesh(context,0,Real(0.),ids,2,nx,nz,reinterpret_cast<Real*>(xyz),values,origin,upper);
+  if(mesh.owner!=repeated.owner) throw std::runtime_error("Display-only glyph reuse failed");
+  astr_insitu::end_runtime_index_group();
+  auto owner=std::static_pointer_cast<astr_insitu::DeviceGeometryOwner>(mesh.owner);
+  const auto& view=owner->get();
+  if(view.points%6 || view.cells!=view.points/2 || view.arity!=2) throw std::runtime_error("Invalid arrow line topology");
+  std::vector<Vector> points(view.points);std::vector<Real> scalar(view.points);
+  std::vector<viskores::Id> indices(2*view.cells);
+  if(view.points) {
+    cuda_ok(cudaMemcpy(points.data(),view.coordinates,points.size()*sizeof(Vector),cudaMemcpyDeviceToHost));
+    cuda_ok(cudaMemcpy(scalar.data(),view.scalar,scalar.size()*sizeof(Real),cudaMemcpyDeviceToHost));
+    cuda_ok(cudaMemcpy(indices.data(),view.connectivity,indices.size()*sizeof(viskores::Id),cudaMemcpyDeviceToHost));
+  }
+  int selected[17*16]{},total[17*16]{};Real error=0;
+  for(viskores::Id v=0;v<view.points;v+=6) {
+    const auto tail=points[v];const int i=int(std::llround(tail[0]*16)),k=int(std::llround(tail[2]*16));
+    if(i<0 || i>16 || k<0 || k>=16 || i%4 || k%4 || (i==0 && k==0)) throw std::runtime_error("Invalid or duplicate periodic seed");
+    ++selected[i+17*k];const auto tau=shear(i,k);const Real magnitude=std::hypot(tau[0],tau[2]);
+    const Vector d(tau[0]/magnitude,Real(0.),tau[2]/magnitude),perpendicular(-d[2],Real(0.),d[0]);
+    const auto tip=tail+Real(.3)*d;
+    const Vector expected[]={tail,tip,tip,tip-Real(.075)*d+Real(.036)*perpendicular,tip,tip-Real(.075)*d-Real(.036)*perpendicular};
+    for(int c=0;c<6;++c) {
+      error=std::max(error,std::abs(scalar[v+c]-magnitude));
+      for(int a=0;a<3;++a) error=std::max(error,std::abs(points[v+c][a]-expected[c][a]));
+      if(indices[v+c]!=v+c) throw std::runtime_error("Glyph connectivity is not deterministic");
+    }
+  }
+  MPI_Allreduce(selected,total,17*16,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
+  for(int k=0;k<16;++k) for(int i=0;i<=16;++i)
+    if(total[i+17*k]!=int(i%4==0 && k%4==0 && (i!=0 || k!=0)))
+      throw std::runtime_error("Shared or periodic glyph ownership differs");
+  context.definition=R"({"field":"wall_shear_vector","extraction":{"stride":[4,4],"length":0.3},"display":{"coordinates":{"display_scale":[1,1,20]}}})";
+  auto stretched=astr_insitu::build_runtime_wall_glyph_mesh(context,0,Real(0.),ids,2,nx,nz,reinterpret_cast<Real*>(xyz),values,origin,upper);
+  const auto& scaled_view=std::static_pointer_cast<astr_insitu::DeviceGeometryOwner>(stretched.owner)->get();
+  if(scaled_view.points!=view.points) throw std::runtime_error("Display scaling changed physical glyph selection");
+  std::vector<Vector> scaled_points(view.points);
+  if(view.points) cuda_ok(cudaMemcpy(scaled_points.data(),scaled_view.coordinates,scaled_points.size()*sizeof(Vector),cudaMemcpyDeviceToHost));
+  for(viskores::Id v=0;v<view.points;v+=6) {
+    const auto tail=points[v];const int i=int(std::llround(tail[0]*16)),k=int(std::llround(tail[2]*16));
+    const auto tau=shear(i,k);const Real magnitude=std::hypot(tau[0],tau[2]);
+    const Vector d(tau[0]/magnitude,Real(0.),tau[2]/magnitude),p(-Real(20.)*d[2],Real(0.),d[0]/Real(20.));
+    const auto tip=tail+Real(.3)*d;
+    const Vector expected[]={tail,tip,tip,tip-Real(.075)*d+Real(.036)*p,tip,tip-Real(.075)*d-Real(.036)*p};
+    for(int c=0;c<6;++c) for(int a=0;a<3;++a) error=std::max(error,std::abs(scaled_points[v+c][a]-expected[c][a]));
+  }
+  if(n) {
+    std::fill(fields.begin(),fields.end(),Real(0.));
+    cuda_ok(cudaMemcpy(values,fields.data(),2*n*sizeof(Real),cudaMemcpyHostToDevice));
+  }
+  auto zero=astr_insitu::build_runtime_wall_glyph_mesh(context,0,Real(0.),ids,2,nx,nz,reinterpret_cast<Real*>(xyz),values,origin,upper);
+  if(zero.draw.points || zero.draw.cells || zero.controls.at("wall_glyph_count")!=0.)
+    throw std::runtime_error("A zero wall field must remain an empty glyph product");
+  cuda_ok(cudaFree(xyz));cuda_ok(cudaFree(values));return error;
+}
+
 int main(int argc,char** argv) {
   MPI_Init(&argc,&argv);
   int rank=0,devices=0;
@@ -109,6 +202,12 @@ int main(int argc,char** argv) {
     cuda_ok(cudaGetDeviceCount(&devices));
     if(!devices) throw std::runtime_error("A CUDA device is required");
     cuda_ok(cudaSetDevice(rank%devices));
+    if(argc==3 && std::string(argv[1])=="wall") {
+      const Real error=wall_glyph_component(rank,argv[2]);
+      if(error>Real(2.e-10)) throw std::runtime_error("Wall arrow formula gate failed");
+      std::printf("PASS wall glyph rank=%d error=%.17g unique_global_arrows=19\n",rank,double(error));
+      MPI_Finalize();return 0;
+    }
     constexpr int nx=7,ny=5,n=nx*ny;
     std::vector<Vector> positions(n);
     std::vector<Real> fields(3*n);

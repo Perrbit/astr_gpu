@@ -4,6 +4,8 @@ module index_slice_gpu
   use iso_c_binding, only: c_f_pointer,c_loc,c_size_t,c_int
   use cudafor
   use gpu_check, only: sync_after_kernel
+  use insitu_run_config, only: catalog_field_names
+  use insitu_boundary_layer, only: wall_transport,nonreacting_wall_material
   implicit none
   private
   public :: allocate_index_slice_gpu,release_index_slice_gpu,fill_index_slice_gpu
@@ -14,9 +16,20 @@ module index_slice_gpu
   public :: validate_index_slice_transport
   real(real_kind),pointer,contiguous,device,save :: neighborhood(:,:)=>null(),result_d(:,:)=>null()
   real(real_kind),pointer,contiguous,device,save :: coordinates_d(:,:)=>null()
-  integer,device,save :: raw_ids_d(12),fields_d(27)
+  real(real_kind),pointer,contiguous,device,save :: vortex_gradients(:,:)=>null()
+  integer,save :: vortex_slots(2)=0
+  integer,device,save :: raw_ids_d(12),fields_d(size(catalog_field_names)),evaluation_invalid(1)
   real(real_kind),device,save :: weights_d(7,0:6)
+  real(real_kind),device,save :: sample_const2,sample_const6
+  interface
+    integer(c_int) function vortex_device(n,stride,gradient,output,l2,ci,invalid) bind(C,name='astr_insitu_vortex_device')
+      import c_int,c_devptr
+      integer(c_int),value :: n,stride,l2,ci
+      type(c_devptr),value :: gradient,output,invalid
+    end function
+  end interface
   integer,save :: raw_count=0,field_count=0
+  logical,save :: wall_fields=.false.
   real(real_kind),pointer,contiguous,device,save :: send_slot(:,:)=>null(),receive_slot(:,:)=>null()
   integer,pointer,contiguous,device,save :: exchange_indices(:,:)=>null(),exchange_positions(:,:)=>null()
   real(real_kind),allocatable,target,save :: send_host(:),receive_host(:)
@@ -164,8 +177,10 @@ contains
     endif
   end subroutine
   attributes(device) function source_value(i,j,k,field,source,count) result(value)
-    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,q_d
+    use insitu_sample_moments, only: decode_sample_primitives
     use insitu_statistics_gpu, only: slice_statistics_gpu_value
+    use insitu_sample_moments_gpu, only: selected_moment_value_gpu
 #ifdef ASTR_AIR5_CHEMISTRY
     use commarray_gpu, only: tve_d,spc_d
     use chemistry_mean_statistics_gpu, only: slice_air5_mean_value_gpu
@@ -173,6 +188,25 @@ contains
     integer,value :: i,j,k,field,source
     integer(int64),value :: count
     real(real_kind) :: value
+    real(real_kind) :: current(1),density,local_q(5)
+    integer :: c
+    logical :: ok
+    if(source==7.or.source==8) then
+      do c=1,5
+        local_q(c)=q_d(i,j,k,c)
+      enddo
+      call decode_sample_primitives(local_q,1,[field],sample_const2,sample_const6,current,density,ok)
+      if(real_bytes==8) then
+        value=transfer(int(z'7ff8000000000000',int64),value)
+      else
+        value=transfer(int(z'7fc00000'),value)
+      endif
+      if(ok) value=current(1)-selected_moment_value_gpu(i,j,k,field,source==8)
+      return
+    endif
+    if(source==5.or.source==6) then
+      value=selected_moment_value_gpu(i,j,k,field,source==6);return
+    endif
     if(source==1.or.source==2) then
       value=slice_statistics_gpu_value(i,j,k,field,source==2);return
     endif
@@ -200,15 +234,19 @@ contains
   end function
 
   subroutine allocate_index_slice_gpu(nodes,output_nodes,raw_ids,fields,weights,ok,device_geometry)
+    use commvar, only: const2,const6
     integer,intent(in) :: nodes,output_nodes,raw_ids(:),fields(:)
     real(real_kind),intent(in) :: weights(7,0:6)
     logical,intent(out) :: ok
     logical,optional,intent(in) :: device_geometry
     call release_index_slice_gpu()
+    sample_const2=const2;sample_const6=const6
     exchange_download=0;exchange_upload=0
-    raw_count=size(raw_ids);field_count=size(fields)
+    raw_count=size(raw_ids);field_count=size(fields);wall_fields=any(fields>=31.and.fields<=34)
+    vortex_slots=[findloc(fields,35,dim=1),findloc(fields,36,dim=1)]
     ok=allocate_real2(neighborhood,max(1,nodes),max(1,raw_count))
     if(ok) ok=allocate_real2(result_d,max(1,output_nodes),field_count)
+    if(ok.and.any(vortex_slots/=0)) ok=allocate_real2(vortex_gradients,9,max(1,output_nodes))
     if(present(device_geometry)) then
       if(ok.and.device_geometry) ok=allocate_real2(coordinates_d,3,max(1,output_nodes))
     endif
@@ -223,12 +261,16 @@ contains
     call free_real2(neighborhood)
     call free_real2(result_d)
     call free_real2(coordinates_d)
-    raw_count=0;field_count=0
+    call free_real2(vortex_gradients)
+    vortex_slots=0
+    raw_count=0;field_count=0;wall_fields=.false.
   end subroutine
 
   subroutine index_slice_device_view(values,coordinates)
-    type(c_devptr),intent(out) :: values,coordinates
-    values=c_devloc(result_d);coordinates=c_devloc(coordinates_d)
+    type(c_devptr),intent(out) :: values
+    type(c_devptr),optional,intent(out) :: coordinates
+    values=c_devloc(result_d)
+    if(present(coordinates)) coordinates=c_devloc(coordinates_d)
   end subroutine
 
   attributes(global) subroutine fill_kernel(indices,positions,n,nraw,source,count,neighborhood)
@@ -335,22 +377,36 @@ contains
   end subroutine
 
   attributes(global) subroutine evaluate_kernel(first,extent,lower,shape,origin,intervals,periodic,n,nraw,nfields, &
-                                               source,count,neighborhood,result_d)
+                                               source,count,neighborhood,result_d,nondimen,tempconst,tempconst1, &
+                                               reynolds,prandtl,const5,cp,invalid,cell_counts,cartesian_support,gradients,need_vortex)
     use commarray_gpu, only: dxi_d
     integer,value :: n,nraw,nfields,source
     integer(int64),value :: count
     integer,device,intent(in) :: first(3),extent(3),lower(3),shape(3),origin(3),intervals(3)
+    integer,device,intent(in) :: cell_counts(3)
     logical,device,intent(in) :: periodic(3)
     real(real_kind),device,intent(in) :: neighborhood(:,:)
     real(real_kind),device,intent(out) :: result_d(:,:)
+    real(real_kind),device,intent(out) :: gradients(:,:)
+    logical,value :: need_vortex
+    logical,value :: nondimen
+    logical,value :: cartesian_support
+    real(real_kind),value :: tempconst,tempconst1,reynolds,prandtl,const5,cp
+    integer,device,intent(inout) :: invalid(*)
     integer :: node,point(3),local(3),stencil(3),offset(3),sample(3),center,d,c,s,m,slot,field,pos
-    real(real_kind) :: directional(4,3),gradient(3,3),density_gradient(3),diagnostic(15),v
+    real(real_kind) :: directional(5,3),gradient(3,3),density_gradient(3),diagnostic(18),v
+    real(real_kind) :: thermal(3),mu,kappa,shear(3),heat,temperature,normal(3),metric(3,3)
+    logical :: thermal_needed,wall_needed,wall_mean,ok
+    integer :: ignored
     node=(blockidx%x-1)*blockdim%x+threadidx%x-1
     if(node>=n) return
     point=first+[mod(node,extent(1)),mod(node/extent(1),extent(2)),node/(extent(1)*extent(2))]
     local=point-origin
-    directional=0;gradient=0;density_gradient=0
-    if(any(fields_d(:nfields)>=13)) then
+    directional=0;gradient=0;density_gradient=0;thermal=0;mu=0;kappa=0;shear=0;heat=0
+    thermal_needed=any(fields_d(:nfields)>=28.and.fields_d(:nfields)<=30).or.any(fields_d(:nfields)==33)
+    wall_mean=source==5.and.any(fields_d(:nfields)>=31.and.fields_d(:nfields)<=34)
+    wall_needed=any(fields_d(:nfields)>=31.and.fields_d(:nfields)<=34).and..not.wall_mean
+    if((any(fields_d(:nfields)>=13.and.fields_d(:nfields)<=33).or.need_vortex).and..not.wall_mean) then
       stencil=point-3
       do d=1,3
         if(.not.periodic(d)) stencil(d)=min(max(stencil(d),0),intervals(d)-6)
@@ -362,16 +418,31 @@ contains
           pos=1+sample(1)+shape(1)*(sample(2)+shape(2)*sample(3))
           do m=1,nraw
             field=raw_ids_d(m)
-            if(field>4) cycle
-            directional(field,d)=directional(field,d)+weights_d(s+1,offset(d))*neighborhood(pos,m)
+            c=field
+            if(field==6.and.thermal_needed) c=5
+            if(c>5.or.(c==5.and.field/=6)) cycle
+            directional(c,d)=directional(c,d)+weights_d(s+1,offset(d))*neighborhood(pos,m)
           enddo
         enddo
       enddo
+      if(cartesian_support) then
+        ! Cartesian metric row c depends only on computational coordinate c.
+        ! Read a face, never the unfilled multi-direction geometry corner.
+        do c=1,3
+          sample=min(max(local,0),cell_counts);sample(c)=local(c)
+          do d=1,3
+            metric(c,d)=dxi_d(sample(1),sample(2),sample(3),c,d)
+          enddo
+        enddo
+      else
+        metric=dxi_d(local(1),local(2),local(3),:,:)
+      endif
       do d=1,3
         do c=1,3
-          gradient(c,d)=sum(directional(c+1,:)*dxi_d(local(1),local(2),local(3),:,d))
+          gradient(c,d)=sum(directional(c+1,:)*metric(:,d))
         enddo
-        density_gradient(d)=sum(directional(1,:)*dxi_d(local(1),local(2),local(3),:,d))
+        density_gradient(d)=sum(directional(1,:)*metric(:,d))
+        thermal(d)=sum(directional(5,:)*metric(:,d))
       enddo
     endif
     diagnostic(:9)=reshape(gradient,[9])
@@ -381,10 +452,41 @@ contains
     diagnostic(13)=gradient(1,3)-gradient(3,1)
     diagnostic(14)=gradient(2,1)-gradient(1,2)
     diagnostic(15)=sqrt(sum(density_gradient*density_gradient))
+    diagnostic(16:18)=thermal
+    if(need_vortex) gradients(:,node+1)=reshape(gradient,[9])
     sample=point-lower;center=1+sample(1)+shape(1)*(sample(2)+shape(2)*sample(3))
+    if(wall_needed) then
+      do c=1,nraw
+        if(raw_ids_d(c)==6) temperature=neighborhood(center,c)
+      enddo
+      call nonreacting_wall_material(temperature,nondimen,tempconst,tempconst1,reynolds,prandtl,const5,cp, &
+        any(fields_d(:nfields)==33),mu,kappa,ok)
+      if(.not.ok) ignored=atomicExch(invalid(1),1)
+      if(ok.and.any(fields_d(:nfields)>=31.and.fields_d(:nfields)<=33)) then
+        normal=[0.e0_real_kind,1.e0_real_kind,0.e0_real_kind]
+        call wall_transport(mu,kappa,gradient,thermal,normal,shear,heat,ok)
+        if(.not.ok) ignored=atomicExch(invalid(1),1)
+      endif
+    endif
     do m=1,nfields
       field=fields_d(m)
-      if(field>=13) then
+      if(wall_mean) then
+        slot=1
+        do c=1,nraw
+          if(raw_ids_d(c)==field) slot=c
+        enddo
+        v=neighborhood(center,slot)
+      elseif(field==31) then
+        v=shear(1)
+      elseif(field==32) then
+        v=shear(3)
+      elseif(field==33) then
+        v=heat
+      elseif(field==34) then
+        v=mu
+      elseif(field>=35) then
+        cycle ! Filled by the common CPU/CUDA eigensystem implementation below.
+      elseif(field>=13) then
         v=diagnostic(field-12)
       elseif(source==0) then
         v=source_value(local(1),local(2),local(3),field,source,count)
@@ -399,34 +501,68 @@ contains
     enddo
   end subroutine
 
-  attributes(global) subroutine coordinate_kernel(first,extent,origin,n,coordinates)
+  attributes(global) subroutine coordinate_kernel(first,extent,origin,n,coordinates,cell_counts,cartesian_support)
     use commarray_gpu, only: x_d
     integer,value :: n
+    logical,value :: cartesian_support
     integer,device,intent(in) :: first(3),extent(3),origin(3)
+    integer,device,intent(in) :: cell_counts(3)
     real(real_kind),device,intent(out) :: coordinates(:,:)
-    integer :: node,local(3)
+    integer :: node,local(3),sample(3),d
     node=(blockidx%x-1)*blockdim%x+threadidx%x-1
     if(node>=n) return
     local=first-origin+[mod(node,extent(1)),mod(node/extent(1),extent(2)),node/(extent(1)*extent(2))]
-    coordinates(:,node+1)=x_d(local(1),local(2),local(3),:)
+    if(cartesian_support) then
+      do d=1,3
+        sample=min(max(local,0),cell_counts);sample(d)=local(d)
+        coordinates(d,node+1)=x_d(sample(1),sample(2),sample(3),d)
+      enddo
+    else
+      coordinates(:,node+1)=x_d(local(1),local(2),local(3),:)
+    endif
   end subroutine
 
-  subroutine evaluate_index_slice_gpu(first,extent,lower,shape,origin,intervals,periodic,source,count)
+  subroutine evaluate_index_slice_gpu(first,extent,lower,shape,origin,intervals,periodic,source,count,ok,cartesian_support)
+    use commvar, only: nondimen,tempconst,tempconst1,reynolds,prandtl,const5,cp,im,jm,km
     integer,intent(in) :: first(3),extent(3),lower(3),shape(3),origin(3),intervals(3),source
     logical,intent(in) :: periodic(3)
     integer(int64),intent(in) :: count
-    integer,device :: first_d(3),extent_d(3),lower_d(3),shape_d(3),origin_d(3),intervals_d(3)
+    logical,intent(out) :: ok
+    logical,optional,intent(in) :: cartesian_support
+    logical :: support
+    integer,device :: first_d(3),extent_d(3),lower_d(3),shape_d(3),origin_d(3),intervals_d(3),cells_d(3)
     logical,device :: periodic_d(3)
-    integer :: n
-    n=product(extent)
+    integer :: n,bad,status
+    real(real_kind),device,pointer,contiguous :: gradients(:,:)
+    n=product(extent);ok=.true.
+    support=.false.
+    if(present(cartesian_support)) support=cartesian_support
     if(n==0) return
     first_d=first;extent_d=extent;lower_d=lower;shape_d=shape;origin_d=origin;intervals_d=intervals
+    cells_d=[im,jm,km]
     periodic_d=periodic
+    if(wall_fields.or.any(vortex_slots/=0)) evaluation_invalid=0
+    ! Existing diagnostics never dereference this alias when no vortex is requested.
+    gradients=>result_d
+    if(associated(vortex_gradients)) gradients=>vortex_gradients
     call evaluate_kernel<<<(n+255)/256,256>>>(first_d,extent_d,lower_d,shape_d,origin_d,intervals_d,periodic_d, &
-      n,raw_count,field_count,source,count,neighborhood,result_d)
+      n,raw_count,field_count,source,count,neighborhood,result_d,nondimen,tempconst,tempconst1, &
+      reynolds,prandtl,const5,cp,evaluation_invalid,cells_d,support,gradients,any(vortex_slots/=0))
     call sync_after_kernel('index slice physical diagnostics',.true.)
+    if(any(vortex_slots/=0)) then
+      status=vortex_device(int(n,c_int),int(size(result_d,1),c_int),c_devloc(vortex_gradients),c_devloc(result_d), &
+        int(vortex_slots(1)-1,c_int),int(vortex_slots(2)-1,c_int),c_devloc(evaluation_invalid))
+      call require_slice_transfer(status)
+      call sync_after_kernel('index slice instantaneous vortex criteria',.true.)
+      write(*,'(a,i0,a,i0,a,i0)') 'ASTR_VORTEX_DEVICE nodes=',n,' scratch_bytes=',int(n,int64)*9*real_bytes, &
+        ' result_components=',merge(1,0,vortex_slots(1)/=0)+merge(1,0,vortex_slots(2)/=0)
+      call free_real2(vortex_gradients)
+    endif
+    if(wall_fields.or.any(vortex_slots/=0)) then
+      bad=evaluation_invalid(1);ok=bad==0
+    endif
     if(associated(coordinates_d)) then
-      call coordinate_kernel<<<(n+255)/256,256>>>(first_d,extent_d,origin_d,n,coordinates_d)
+      call coordinate_kernel<<<(n+255)/256,256>>>(first_d,extent_d,origin_d,n,coordinates_d,cells_d,support)
       call sync_after_kernel('index slice retained geometry',.true.)
     endif
   end subroutine

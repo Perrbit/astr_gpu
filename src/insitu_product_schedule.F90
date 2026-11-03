@@ -5,7 +5,9 @@ module insitu_product_schedule
   use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t,c_double
   use ieee_arithmetic, only: ieee_is_finite
   use insitu_run_config, only: insitu_options,insitu_max_products,catalog_product,catalog_definition_equal,catalog_field_names, &
-    pack_catalog_render,unpack_catalog_render
+    read_catalog_wall_reference,read_catalog_wall_units,read_catalog_thickness,read_catalog_fluctuation,read_catalog_wall_glyph, &
+    read_catalog_wall_seeds, &
+    pack_catalog_render,unpack_catalog_render,read_catalog_coordinates
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule,write_schedule_state, &
     restore_schedule_state,resume_schedule,schedule_next_target
   use adaptive_output, only: adaptive_clock,adaptive_binding_equal,adaptive_dependencies_reset, &
@@ -17,6 +19,7 @@ module insitu_product_schedule
   public :: product_results_complete,product_state_file,product_schedules_active
   public :: product_schedule_equal,product_failures_present
   public :: runtime_product_state,runtime_catalog_apply,runtime_catalog_count,runtime_catalog_state
+  public :: runtime_catalog_status
   public :: runtime_catalog_due,runtime_catalog_success,runtime_catalog_disable,runtime_catalog_wait
   public :: runtime_catalog_state_file
   public :: runtime_catalog_reject
@@ -49,6 +52,11 @@ module insitu_product_schedule
   character(64),save :: disabled_products(128)=''
   integer,save :: disabled_count=0
 contains
+  integer function runtime_catalog_status(index) result(status)
+    integer,intent(in) :: index
+    status=runtime_states(index)%status
+  end function
+
   logical function runtime_catalog_image_work() result(active)
     integer :: i
     active=.false.
@@ -187,6 +195,8 @@ contains
     real(real64) :: view_reals(31)
     integer(int64) :: words(10)
     real(real64) :: periods(2)
+    logical :: coordinates_ok
+    character(:),allocatable :: coordinates_error
     call runtime_text_file(unit,writing,entry%source,status)
     if(status/=0) return
     call runtime_text_file(unit,writing,entry%statistics_source,status)
@@ -227,6 +237,37 @@ contains
         status=1;return
       endif
       call unpack_catalog_render(entry%view,labels,view_words,view_reals)
+      call read_catalog_coordinates(entry%record,entry%view,coordinates_ok,coordinates_error)
+      if(.not.coordinates_ok) then
+        status=1;return
+      endif
+      call read_catalog_wall_reference(entry%record,entry%wall_reference,coordinates_ok,coordinates_error)
+      if(.not.coordinates_ok) then
+        status=1;return
+      endif
+      call read_catalog_thickness(entry%record,entry%thickness,coordinates_ok,coordinates_error)
+      if(.not.coordinates_ok) then
+        status=1;return
+      endif
+      call read_catalog_fluctuation(entry%record,entry%fluctuation,coordinates_ok,coordinates_error)
+      if(.not.coordinates_ok) then
+        status=1;return
+      endif
+      call read_catalog_wall_glyph(entry%record,entry%glyph_stride,entry%glyph_length,coordinates_ok,coordinates_error)
+      if(.not.coordinates_ok) then
+        status=1;return
+      endif
+      call read_catalog_wall_seeds(entry%record,entry%wall_seeds,coordinates_ok,coordinates_error)
+      if(.not.coordinates_ok) then
+        status=1;return
+      endif
+      entry%wall_units=''
+      if(entry%valid) then
+        call read_catalog_wall_units(entry%record,entry%wall_units,coordinates_ok,coordinates_error)
+        if(.not.coordinates_ok) then
+          status=1;return
+        endif
+      endif
     endif
     if(status/=0) return
     call runtime_names_file(unit,writing,entry%event_ids,status)
@@ -318,7 +359,7 @@ contains
     if(state%definition%index<0.or.any(state%definition%ranges<0)) return
     if(any(state%definition%ranges(1,:)>state%definition%ranges(2,:))) return
     select case(trim(state%definition%view%sampling))
-    case('grid_index')
+    case('grid_index','station_span','station_line','wall_span','wall_line')
       if(state%definition%axis<1.or.state%definition%axis>3) return
       if(any(state%definition%ranges(:,state%definition%axis)/=state%definition%index)) return
     case('grid_node')

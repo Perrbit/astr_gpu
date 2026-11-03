@@ -1192,10 +1192,18 @@ contains
       units='solver-dimensionless'
     elseif(field<=12) then
       units=trim(basic_units(field))
-    elseif(field==22) then
+    elseif(field==22.or.field==35) then
       units='s^-2'
     elseif(field==27) then
       units='kg m^-4'
+    elseif(field>=28.and.field<=30) then
+      units='K m^-1'
+    elseif(field==31.or.field==32) then
+      units='Pa'
+    elseif(field==33) then
+      units='W m^-2'
+    elseif(field==34) then
+      units='Pa s'
     else
       units='s^-1'
     endif

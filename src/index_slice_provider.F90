@@ -4,22 +4,33 @@ module index_slice_provider
   use astr_precision, only: real_kind,real_bytes
   use astr_precision_mpi, only: mpi_real_type
   use benchmark_runtime, only: insitu_clock,report_insitu_timing
-  use commvar, only: ia,ja,ka,im,jm,km
+  use commvar, only: ia,ja,ka,im,jm,km,nondimen,tempconst,tempconst1,reynolds,prandtl,const5,cp
   use parallel, only: ig0,jg0,kg0
   use commarray, only: x,dxi
-  use insitu_run_config, only: catalog_product
+  use insitu_run_config, only: catalog_product,catalog_field_names,catalog_wall_mean
   use index_slice_source, only: slice_source_value_cpu,slice_source_on_gpu
   use index_slice_stencil, only: slice_stencil_start,slice_stencil_weights,slice_diagnostics
+  use insitu_boundary_layer, only: wall_transport,nonreacting_wall_material
+  use iso_c_binding, only: c_int
 #ifdef _CUDA
   use index_slice_gpu
 #endif
   implicit none
   private
   public :: prepare_index_slice
+  interface
+    integer(c_int) function vortex_point(gradient,requested,values) bind(C,name='astr_insitu_vortex_point')
+      import c_int,real_kind
+      real(real_kind),intent(in) :: gradient(3,3)
+      integer(c_int),value :: requested
+      real(real_kind),intent(out) :: values(2)
+    end function
+  end interface
 contains
   subroutine prepare_index_slice(definition,source,count,values,xyz,first,extent,ok,message, &
                                  neighborhood_bytes,download_bytes,exchange_bytes,compute_seconds, &
-                                 include_cell_endpoints,retain_device,transport,host_diagnostics,staging_download,staging_upload)
+                                 include_cell_endpoints,retain_device,transport,host_diagnostics,staging_download,staging_upload, &
+                                 unique_periodic_nodes,retain_device_geometry,point_geometry,plane_support)
     type(catalog_product),intent(in) :: definition
     integer,intent(in) :: source
     integer(int64),intent(in) :: count
@@ -31,6 +42,10 @@ contains
     real(real_kind),intent(out) :: compute_seconds
     logical,optional,intent(in) :: include_cell_endpoints,retain_device
     logical,optional,intent(in) :: host_diagnostics
+    logical,optional,intent(in) :: unique_periodic_nodes
+    logical,optional,intent(in) :: retain_device_geometry
+    logical,optional,intent(in) :: point_geometry
+    integer,optional,intent(in) :: plane_support
     integer(int64),optional,intent(out) :: staging_download,staging_upload
     character(*),optional,intent(in) :: transport
     integer :: intervals(3),origin(3),cells(3),owned_upper(3),bounds(2,3),box(2,3),shape(3),nsend,nrecv,capacity
@@ -38,11 +53,15 @@ contains
     real(real_kind),allocatable :: neighborhood(:,:),send_values(:,:),recv_values(:,:)
     integer :: raw_ids(12),nraw,nfields,nout,nn,rank,ranks,comm,err,status,d,m,i,j,k,n,p,dest,src,local(3)
     integer :: point(3),sample(3),stencil(3),offset(3),pos,c,s,field,slot,header(2,3)
-    logical :: selected(12),periodic(3),derived,valid,mesh_nodes,device_output,private_transport,host_eval,gpu_fields
+    logical :: selected(size(catalog_field_names)),periodic(3),derived,valid,mesh_nodes,device_output,private_transport,host_eval,gpu_fields
+    logical :: thermal_needed,wall_needed,transport_ok
+    logical :: geometry_output,wall_mean,point_tiles,cartesian_support
     character(16) :: transport_mode
-    real(real_kind) :: weights(7,0:6),directional(4,3),gradient(3,3),density_gradient(3),diagnostic(15),started
+    real(real_kind) :: weights(7,0:6),directional(5,3),gradient(3,3),density_gradient(3),diagnostic(18),started
+    real(real_kind) :: thermal(3),mu,kappa,shear(3),heat,temperature,metric(3,3)
     real(8) :: phase_started
-    integer :: step
+    integer :: step,vortex_mask,vortex_status
+    real(real_kind) :: vortex(2)
     if(present(staging_download)) staging_download=0
     if(present(staging_upload)) staging_upload=0
     block
@@ -56,8 +75,14 @@ contains
     call MPI_Comm_size(comm,ranks,err);call mpi_ok(err)
     intervals=[ia,ja,ka];origin=[ig0,jg0,kg0];cells=[im,jm,km]
     mesh_nodes=.false.;device_output=.false.
+    point_tiles=.false.
+    cartesian_support=.false.
+    if(present(plane_support)) cartesian_support=plane_support>0
+    if(present(point_geometry)) point_tiles=point_geometry
     if(present(include_cell_endpoints)) mesh_nodes=include_cell_endpoints
     if(present(retain_device)) device_output=retain_device
+    geometry_output=device_output
+    if(present(retain_device_geometry)) geometry_output=device_output.and.retain_device_geometry
     host_eval=.false.
     if(present(host_diagnostics)) host_eval=host_diagnostics
     gpu_fields=slice_source_on_gpu(source)
@@ -73,20 +98,40 @@ contains
     if(definition%axis>0) bounds(:,definition%axis)=int(definition%index)
     first=max(origin,bounds(1,:));owned_upper=origin+cells-1
     where(origin+cells==intervals) owned_upper=owned_upper+1
+    ! Statistical consumers omit the duplicate endpoint retained by plot surfaces.
+    if(present(unique_periodic_nodes)) then
+      if(unique_periodic_nodes) then
+        where(periodic.and.origin+cells==intervals) owned_upper=owned_upper-1
+      endif
+    endif
     if(mesh_nodes) then
       do d=1,3
         if(d/=definition%axis) owned_upper(d)=origin(d)+cells(d)
       enddo
     endif
     extent=max(0,min(owned_upper,bounds(2,:))-first+1)
-    if(mesh_nodes) then
+    if(present(plane_support)) then
+      if(plane_support>0.and.definition%axis>0.and.all(extent>0)) then
+        do d=1,3
+          if(d==definition%axis) cycle
+          first(d)=max(bounds(1,d),origin(d)-plane_support,0)
+          owned_upper(d)=min(bounds(2,d),origin(d)+cells(d)+plane_support,intervals(d))
+        enddo
+        extent=max(0,min(owned_upper,bounds(2,:))-first+1)
+      endif
+    endif
+    if(mesh_nodes.and..not.point_tiles) then
       do d=1,3
         if(d/=definition%axis.and.extent(d)<2) extent=0
       enddo
     endif
     if(any(extent==0)) extent=0
     nfields=size(definition%fields)
-    derived=any(definition%fields>=13)
+    wall_mean=source==5.and.catalog_wall_mean(definition)
+    derived=any(definition%fields>=13.and.definition%fields<=33.or.definition%fields>=35).and..not.wall_mean
+    thermal_needed=any(definition%fields>=28.and.definition%fields<=30).or.any(definition%fields==33)
+    wall_needed=any(definition%fields>=31.and.definition%fields<=34).and..not.wall_mean
+    vortex_mask=merge(1,0,any(definition%fields==35))+merge(2,0,any(definition%fields==36))
     ok=.false.;message='';neighborhood_bytes=0;download_bytes=0;exchange_bytes=0;compute_seconds=0
     if(device_output.and..not.gpu_fields) then
       message='retained device slices require the GPU source'
@@ -105,16 +150,23 @@ contains
     selected=.false.
     do m=1,nfields
       field=definition%fields(m)
+      if(wall_mean) then
+        selected(field)=.true.;cycle
+      endif
       if(field<=12.and.(source/=0.or.host_eval)) selected(field)=.true.
       if(field>=13.and.field<=21) selected(2+mod(field-13,3))=.true.
       if(field==22.or.field==23) selected(2:4)=.true.
+      if(field>=35) selected(2:4)=.true.
       if(field==24) selected(3:4)=.true.
       if(field==25) selected([2,4])=.true.
       if(field==26) selected(2:3)=.true.
       if(field==27) selected(1)=.true.
+      if(field>=28.and.field<=30.or.field==33) selected(6)=.true.
+      if(field==31.or.field==32) selected(2:4)=.true.
+      if(field>=31.and.field<=34) selected(6)=.true.
     enddo
     nraw=0
-    do m=1,12
+    do m=1,size(selected)
       if(.not.selected(m)) cycle
       nraw=nraw+1;raw_ids(nraw)=m
     enddo
@@ -161,14 +213,22 @@ contains
     do k=0,merge(0,extent(3),device_output)-1
     do j=0,extent(2)-1
     do i=0,extent(1)-1
-      n=n+1;local=first-origin+[i,j,k];xyz(:,n)=x(local(1),local(2),local(3),:)
+      n=n+1;local=first-origin+[i,j,k]
+      if(cartesian_support) then
+        do d=1,3
+          sample=min(max(local,0),cells);sample(d)=local(d)
+          xyz(d,n)=x(sample(1),sample(2),sample(3),d)
+        enddo
+      else
+        xyz(:,n)=x(local(1),local(2),local(3),:)
+      endif
     enddo
     enddo
     enddo
     neighborhood_bytes=int(nn,int64)*nraw*real_bytes
 #ifdef _CUDA
     if(gpu_fields) then
-      call allocate_index_slice_gpu(nn,nout,raw_ids(:nraw),definition%fields,weights,valid,device_geometry=device_output)
+      call allocate_index_slice_gpu(nn,nout,raw_ids(:nraw),definition%fields,weights,valid,device_geometry=geometry_output)
     else
 #endif
       allocate(neighborhood(nn,nraw),stat=status);valid=status==0
@@ -286,22 +346,25 @@ contains
       started=MPI_Wtime();phase_started=insitu_clock()
     endif
     if(gpu_fields.and..not.host_eval) then
-      call evaluate_index_slice_gpu(first,extent,box(1,:),shape,origin,intervals,periodic,source,count)
+      call evaluate_index_slice_gpu(first,extent,box(1,:),shape,origin,intervals,periodic,source,count,valid,cartesian_support)
       compute_seconds=real(MPI_Wtime()-started,real_kind)
       call report_insitu_timing('index_slice_diagnostics',phase_started,step)
       phase_started=insitu_clock()
-      valid=.true.
-      if(.not.device_output) call download_index_slice_gpu(values,valid)
+      download_bytes=0
+      if(valid.and..not.device_output) then
+        call download_index_slice_gpu(values,valid)
+        download_bytes=int(size(values),int64)*real_bytes
+      endif
+      if((wall_needed.or.vortex_mask/=0).and.nout>0) download_bytes=download_bytes+storage_size(0)/8
       call report_insitu_timing('index_slice_field_download',phase_started,step)
-      download_bytes=int(size(values),int64)*real_bytes
     else
 #endif
-      n=0
+      n=0;valid=.true.
       do k=0,extent(3)-1
       do j=0,extent(2)-1
       do i=0,extent(1)-1
         n=n+1;point=first+[i,j,k];local=point-origin
-        directional=0;gradient=0;density_gradient=0
+        directional=0;gradient=0;density_gradient=0;thermal=0;mu=0;kappa=0;shear=0;heat=0
         if(derived) then
           do d=1,3
             stencil(d)=slice_stencil_start(point(d),intervals(d),periodic(d))
@@ -313,23 +376,61 @@ contains
               pos=1+sample(1)+shape(1)*(sample(2)+shape(2)*sample(3))
               do m=1,nraw
                 field=raw_ids(m)
-                if(field>4) cycle
-                directional(field,d)=directional(field,d)+weights(s+1,offset(d))*neighborhood(pos,m)
+                c=field
+                if(field==6.and.thermal_needed) c=5
+                if(c>5.or.(c==5.and.field/=6)) cycle
+                directional(c,d)=directional(c,d)+weights(s+1,offset(d))*neighborhood(pos,m)
               enddo
             enddo
           enddo
+          if(cartesian_support) then
+            do c=1,3
+              sample=min(max(local,0),cells);sample(c)=local(c)
+              metric(c,:)=dxi(sample(1),sample(2),sample(3),c,:)
+            enddo
+          else
+            metric=dxi(local(1),local(2),local(3),:,:)
+          endif
           do d=1,3
             do c=1,3
-              gradient(c,d)=sum(directional(c+1,:)*dxi(local(1),local(2),local(3),:,d))
+              gradient(c,d)=sum(directional(c+1,:)*metric(:,d))
             enddo
-            density_gradient(d)=sum(directional(1,:)*dxi(local(1),local(2),local(3),:,d))
+            density_gradient(d)=sum(directional(1,:)*metric(:,d))
+            thermal(d)=sum(directional(5,:)*metric(:,d))
           enddo
         endif
-        call slice_diagnostics(gradient,density_gradient,diagnostic)
+        call slice_diagnostics(gradient,density_gradient,diagnostic(:15));diagnostic(16:18)=thermal
+        if(vortex_mask/=0) then
+          vortex_status=vortex_point(gradient,int(vortex_mask,c_int),vortex)
+          valid=valid.and.vortex_status==0
+        endif
         sample=point-box(1,:);pos=1+sample(1)+shape(1)*(sample(2)+shape(2)*sample(3))
+        if(wall_needed) then
+          slot=findloc(raw_ids(:nraw),6,dim=1);temperature=neighborhood(pos,slot)
+          call nonreacting_wall_material(temperature,nondimen,tempconst,tempconst1,reynolds,prandtl,const5,cp, &
+            any(definition%fields==33),mu,kappa,transport_ok)
+          valid=valid.and.transport_ok
+          if(transport_ok.and.any(definition%fields>=31.and.definition%fields<=33)) then
+            call wall_transport(mu,kappa,gradient,thermal,[0.e0_real_kind,1.e0_real_kind,0.e0_real_kind],shear,heat,transport_ok)
+            valid=valid.and.transport_ok
+          endif
+        endif
         do m=1,nfields
           field=definition%fields(m)
-          if(field>=13) then
+          if(wall_mean) then
+            slot=findloc(raw_ids(:nraw),field,dim=1)
+            values(n,m)=neighborhood(pos,slot)
+          elseif(field==31) then
+            values(n,m)=shear(1)
+          elseif(field==32) then
+            values(n,m)=shear(3)
+          elseif(field==33) then
+            values(n,m)=heat
+          elseif(field==34) then
+            values(n,m)=mu
+          elseif(field>=35) then
+            values(n,m)=vortex(field-34)
+          elseif(field>=13) then
             values(n,m)=diagnostic(field-12)
           elseif(source==0.and..not.host_eval) then
             values(n,m)=slice_source_value_cpu(local(1),local(2),local(3),field,source)
@@ -341,13 +442,13 @@ contains
       enddo
       enddo
       enddo
-      compute_seconds=real(MPI_Wtime()-started,real_kind);valid=.true.
+      compute_seconds=real(MPI_Wtime()-started,real_kind)
       call report_insitu_timing('index_slice_diagnostics',phase_started,step)
 #ifdef _CUDA
     endif
 #endif
     call agree_allocation(valid,ok)
-    if(.not.ok) message='cannot download selected slice fields'
+    if(.not.ok) message='invalid selected diagnostic state or slice transfer failure'
 900 continue
 #ifdef _CUDA
     ! A successful retained view is borrowed until the caller finishes rendering.

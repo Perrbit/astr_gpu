@@ -13,7 +13,7 @@ from PIL import Image
 from paraview import catalyst, servermanager
 from paraview import simple as pv
 from paraview.modules.vtkRemotingViews import vtkPVProcessWindow
-from vtkmodules.vtkCommonCore import vtkIntArray, vtkDoubleArray
+from vtkmodules.vtkCommonCore import vtkIntArray, vtkDoubleArray,vtkTypeInt64Array
 from vtkmodules.vtkCommonDataModel import vtkDataObject, vtkPolyData
 from vtkmodules.vtkCommonDataModel import vtkPlane
 from vtkmodules.vtkFiltersSources import vtkPlaneSource
@@ -207,14 +207,19 @@ def update_geometry(name, piece):
             item['legend'].CustomLabels = [selected[0]+(selected[1]-selected[0])*i/4 for i in range(5)]
             item['color_range'] = selected
             item['shared_device_geometry'] = bool(metadata(piece, 'shared_device_geometry'))
+    if runtime_handler is None:
+        item['coordinate_actual_bounds']=None
+        if not streamline_views and not item['coordinate_window_fixed']:
+            item['coordinate_actual_bounds']=global_device_bounds(piece,allow_planar=True,allow_empty=True,minimum_dimensions=0)
     return points, cells
 
 
-def global_device_bounds(piece, allow_planar=False, allow_empty=False):
+def global_device_bounds(piece, allow_planar=False, allow_empty=False,minimum_dimensions=2,
+                         count_name='device_points',bounds_prefix='bound'):
     local, total = vtkDoubleArray(), vtkDoubleArray()
-    points = int(metadata(piece, 'device_points'))
+    points = int(metadata(piece, count_name))
     for d in range(6):
-        value = metadata(piece, 'bound' + str(d)) if points else (float('inf') if d % 2 == 0 else -float('inf'))
+        value = metadata(piece, bounds_prefix + str(d)) if points else (float('inf') if d % 2 == 0 else -float('inf'))
         local.InsertNextValue(-value if d % 2 == 0 else value)
     total.SetNumberOfTuples(6)
     controller.AllReduce(local, total, vtkCommunicator.MAX_OP)
@@ -225,7 +230,7 @@ def global_device_bounds(piece, allow_planar=False, allow_empty=False):
     if not all(isfinite(value) for value in bounds) or any(
             bounds[2*d] > bounds[2*d+1] if allow_planar else bounds[2*d] >= bounds[2*d+1] for d in range(3)):
         raise RuntimeError('Invalid globally reduced device wall bounds')
-    if allow_planar and sum(bounds[2*d] < bounds[2*d+1] for d in range(3)) < 2:
+    if allow_planar and sum(bounds[2*d] < bounds[2*d+1] for d in range(3)) < minimum_dimensions:
         raise RuntimeError('Physical slice has no two-dimensional extent')
     return bounds
 
@@ -336,6 +341,9 @@ def setup_view(name, item, piece):
     client.GetRenderer().AddActor(item['actor'])
     client.SetMaxClipBounds(bounds)
     client.SetLockBounds(True)
+    item['coordinate_display_bounds']=list(bounds)
+    item['coordinate_planar']=is_two_dimensional_product(name,profile,bounds)
+    item['coordinate_window_fixed']=False
     selected_range=color_range
     if profile in ('channel_walls','curve_walls'):
         color=name
@@ -560,6 +568,9 @@ def setup_m12_view(name, item, piece, local_window=None):
     item.update(view=view, legend=legend, lut=lut, color=color, color_range=selected_range,
                 physical_bounds=bounds, image_size=size, label=label, window=local_window,
                 caption=caption, enhanced=enhanced)
+    item['coordinate_display_bounds']=list(bounds)
+    item['coordinate_planar']=planar
+    item['coordinate_window_fixed']=local_window is not None or base in ('spanwise_slice','instantaneous_streamlines')
 
 
 def capture_image(view, size=None):
@@ -667,6 +678,7 @@ def catalyst_execute(info):
                         continue
                 clone['mapper'].SetInputData(item['poly'])
                 clone['local_bounds'] = item['local_bounds']
+                clone['coordinate_actual_bounds']=item['coordinate_actual_bounds']
                 if 'actual_ranges' in item:
                     clone['actual_ranges'] = item['actual_ranges']
                 products[key] = render_product(key, clone, step, time, points, cells)
@@ -769,6 +781,9 @@ def render_streamline_candidate(first, step, time):
     view.CameraParallelScale = values[9]
     view.UpdateVTKObjects()
     view.GetClientSideObject().SetMaxClipBounds(values[10:16])
+    item['coordinate_display_bounds']=list(values[10:16])
+    item['coordinate_planar']=False
+    item['coordinate_window_fixed']=True
     item['mapper'].RemoveAllClippingPlanes()
     center=[.5*(values[10+2*d]+values[11+2*d]) for d in range(3)]
     for d in range(3):
@@ -857,6 +872,20 @@ def render_product(name, item, step, time, points, cells):
     os.environ['ASTR_INSITU_PIXEL_PRODUCT']=name
     os.environ['ASTR_INSITU_PIXEL_STEP']=str(step)
     view = item['view']
+    if runtime_handler is None:
+        local_count,total_count=vtkTypeInt64Array(),vtkTypeInt64Array()
+        local_count.InsertNextValue(cells);total_count.SetNumberOfTuples(1)
+        controller.AllReduce(local_count,total_count,vtkCommunicator.SUM_OP)
+        global_cells=int(total_count.GetValue(0))
+        bounds=item['coordinate_display_bounds']
+        scope='explicit physical display window'
+        if not item['coordinate_window_fixed'] and item['coordinate_actual_bounds'] is not None:
+            bounds=item['coordinate_actual_bounds']
+            scope='global physical product bounds before display clipping'
+        from render_coordinates import update_static_coordinates
+        dispatch.collective_call(controller,lambda:update_static_coordinates(item,ctypes.CDLL(None),bounds,
+            planar=item['coordinate_planar'],plane=item.get('plane'),empty=global_cells==0))
+        item['coordinate_annotation']['bounds_role']=scope
     output_directory = item.get('directory', output)
     frame_name = f'frame.step{step:012d}' if runtime_handler is not None else f'{name}.step{step:08d}'
     frame_eps = item.get('write_eps', write_eps)
@@ -974,12 +1003,8 @@ def render_product(name, item, step, time, points, cells):
         result['camera'] = dict(position=list(view.CameraPosition), focal_point=list(view.CameraFocalPoint),
                                 view_up=list(view.CameraViewUp), parallel_scale=float(view.CameraParallelScale))
     if profile == 'm12_diagnostics':
-        local, total = vtkIntArray(), vtkIntArray()
-        local.InsertNextValue(cells)
-        total.SetNumberOfTuples(1)
-        controller.AllReduce(local, total, vtkCommunicator.SUM_OP)
         result.update(image_size=size, jpeg_quality=95, dpi=300,
-                      global_cells=total.GetValue(0), empty=total.GetValue(0) == 0)
+                      global_cells=global_cells, empty=global_cells == 0)
         if write_eps:
             result['eps_source'] = 'original screenshot RGB'
         if 'presentation' in item:
@@ -1005,6 +1030,8 @@ def render_product(name, item, step, time, points, cells):
         result['field_unit']=({'pressure':'Pa','temperature':'K','vibrational_temperature':'K',
             'wall_shear_x':'Pa','wall_heat_into_gas':'W/m^2'}).get(field,'1')
         result['physical_bounds']=item['physical_bounds']
+    if runtime_handler is None:
+        result.update(coordinates=item['coordinate_annotation'],global_cells=global_cells,empty=global_cells==0)
     return result
 
 
@@ -1022,6 +1049,9 @@ def release_render_product(name, final=False):
         item['mapper'].ReleaseGraphicsResources(window)
     if view is not None and 'actor' in item:
         view.GetClientSideObject().GetRenderer().RemoveActor(item['actor'])
+        for actor in item.get('coordinate_actors', ()):
+            actor.ReleaseGraphicsResources(window)
+            view.GetClientSideObject().GetRenderer().RemoveViewProp(actor)
         for actor in item.get('context_actors', ()):
             actor.GetMapper().ReleaseGraphicsResources(window)
             view.GetClientSideObject().GetRenderer().RemoveActor(actor)

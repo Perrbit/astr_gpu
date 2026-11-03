@@ -2,6 +2,21 @@ message(STATUS "CMAKE_SOURCE_DIR: ${CMAKE_SOURCE_DIR}")
 message(STATUS "PROJECT_BINARY_DIR: ${PROJECT_BINARY_DIR}")
 
 enable_language(C)
+enable_language(CXX)
+add_library(astr_insitu_vortex STATIC insitu_vortex.cpp)
+set_target_properties(astr_insitu_vortex PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(astr_insitu_vortex PRIVATE -ffp-contract=off)
+endif()
+if(ASTR_WITH_CUDA)
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING "CUDA C++ compute capabilities")
+  endif()
+  enable_language(CUDA)
+  target_sources(astr_insitu_vortex PRIVATE ../src_gpu/insitu_vortex.cu)
+  set_target_properties(astr_insitu_vortex PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED YES)
+  target_compile_options(astr_insitu_vortex PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+endif()
 add_library(astr_catalog_json STATIC insitu_catalog_json.c vendor/yyjson/yyjson.c)
 set_target_properties(astr_catalog_json PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
 target_compile_definitions(astr_catalog_json PRIVATE YYJSON_DISABLE_FILE=1)
@@ -86,6 +101,10 @@ set(ASTR_SOURCES
   insitu_checkpoint_batch.F90
   insitu_time_integral.F90
   insitu_velocity_statistics.F90
+  insitu_sample_moments.F90
+  insitu_boundary_layer.F90
+  insitu_selected_statistics.F90
+  insitu_selected_runtime.F90
   insitu_wall_statistics.F90
   insitu_wall_separation.F90
   insitu_air5_statistics.F90
@@ -187,7 +206,8 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_products_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/output_derivatives_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_device_velocity.cuf
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_wall_fields_gpu.cuf)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_wall_fields_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_boundary_layer_gpu.cuf)
   if(BUILD_TESTING)
     list(APPEND ASTR_GPU_SOURCES
       ${CMAKE_CURRENT_SOURCE_DIR}/../tests/gpu_validation/nscbc_physics_probe.cuf)
@@ -196,6 +216,7 @@ endif()
 
 if(ASTR_WITH_CUDA)
   list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_statistics_gpu.cuf)
+  list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_sample_moments_gpu.cuf)
   list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_wall_statistics_gpu.cuf)
   list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_air5_statistics_gpu.cuf)
 endif()
@@ -276,6 +297,23 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_BINARY_DIR}/native_precision_modules")
   add_executable(native_precision_rk45_probe EXCLUDE_FROM_ALL
     ../tests/gpu_validation/native_precision_rk45_probe.cpp)
+  add_executable(insitu_wall_trace_probe EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/insitu_wall_trace_probe.cpp)
+  set_target_properties(insitu_wall_trace_probe PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+  target_include_directories(insitu_wall_trace_probe PRIVATE . ../src_gpu)
+  add_library(insitu_wall_trace_reference SHARED EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/insitu_wall_trace_reference.cpp)
+  set_target_properties(insitu_wall_trace_reference PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+  target_include_directories(insitu_wall_trace_reference PRIVATE . ../src_gpu)
+  add_library(insitu_vortex_math_cpu_probe SHARED EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/insitu_vortex_math_probe.cpp)
+  set_target_properties(insitu_vortex_math_cpu_probe PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+  target_include_directories(insitu_vortex_math_cpu_probe PRIVATE .)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(insitu_wall_trace_probe PRIVATE -ffp-contract=off)
+    target_compile_options(insitu_wall_trace_reference PRIVATE -ffp-contract=off)
+    target_compile_options(insitu_vortex_math_cpu_probe PRIVATE -ffp-contract=off)
+  endif()
   set_target_properties(native_precision_rk45_probe PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED YES)
   target_include_directories(native_precision_rk45_probe PRIVATE . ../src_gpu)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -312,7 +350,7 @@ if(BUILD_TESTING)
       "${CMAKE_CURRENT_BINARY_DIR}/wall_upload_probe_modules")
   endif()
 endif()
-target_link_libraries(astr PRIVATE astr_checkpoint_filesystem astr_catalog_json)
+target_link_libraries(astr PRIVATE astr_checkpoint_filesystem astr_catalog_json astr_insitu_vortex)
 set_target_properties(astr PROPERTIES LINKER_LANGUAGE Fortran)
 
 if(ASTR_WITH_CATALYST)
@@ -421,7 +459,7 @@ if(ASTR_WITH_CATALYST)
       CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
     target_include_directories(astr_insitu_device_products PRIVATE . ../src_gpu)
     target_compile_options(astr_insitu_device_products PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
-    target_link_libraries(astr_insitu_device_products PRIVATE astr_catalyst_adapter
+    target_link_libraries(astr_insitu_device_products PRIVATE astr_catalyst_adapter astr_catalog_json
       viskores::cont viskores::worklet viskores::cuda viskores::filter_core MPI::MPI_C)
     if(ASTR_WITH_INSITU_DEVICE_RENDERING)
       if(TARGET astr_insitu_surface_filters)
@@ -489,6 +527,15 @@ if(ASTR_WITH_CATALYST)
         ../tests/gpu_validation/insitu_device_rk45_probe.cu)
       add_executable(native_precision_rk45_gpu_probe EXCLUDE_FROM_ALL
         ../tests/gpu_validation/native_precision_rk45_probe.cu)
+      add_executable(insitu_wall_trace_gpu_probe EXCLUDE_FROM_ALL
+        ../tests/gpu_validation/insitu_wall_trace_probe.cu)
+      add_library(insitu_vortex_math_gpu_probe SHARED EXCLUDE_FROM_ALL
+        ../tests/gpu_validation/insitu_vortex_math_probe.cu)
+      set_target_properties(insitu_vortex_math_gpu_probe PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED YES
+        CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+      target_include_directories(insitu_vortex_math_gpu_probe PRIVATE .)
+      target_compile_options(insitu_vortex_math_gpu_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+      target_include_directories(insitu_wall_trace_gpu_probe PRIVATE . ../src_gpu)
       add_executable(insitu_device_trace_probe EXCLUDE_FROM_ALL
         ../tests/gpu_validation/insitu_device_trace_probe.cu)
       add_executable(insitu_device_peer_probe EXCLUDE_FROM_ALL
@@ -498,7 +545,7 @@ if(ASTR_WITH_CATALYST)
       target_include_directories(insitu_device_plane_probe PRIVATE . ../src_gpu)
       target_link_libraries(insitu_device_plane_probe PRIVATE MPI::MPI_C)
       target_include_directories(insitu_device_trace_probe PRIVATE . ../src_gpu)
-      foreach(probe insitu_device_compiler_probe insitu_device_rk45_probe native_precision_rk45_gpu_probe
+      foreach(probe insitu_device_compiler_probe insitu_device_rk45_probe native_precision_rk45_gpu_probe insitu_wall_trace_gpu_probe
           insitu_device_trace_probe insitu_device_peer_probe insitu_device_plane_probe)
         set_target_properties(${probe} PROPERTIES CUDA_STANDARD 17
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
@@ -543,6 +590,14 @@ if(ASTR_WITH_CATALYST)
         target_include_directories(insitu_viskores_rk45_probe PRIVATE . ../src_gpu)
         target_compile_options(insitu_viskores_rk45_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(insitu_viskores_rk45_probe PRIVATE viskores::cont viskores::worklet viskores::cuda)
+        add_executable(insitu_wall_trace_worklet_probe EXCLUDE_FROM_ALL
+          ../tests/gpu_validation/insitu_wall_trace_worklet_probe.cu)
+        set_target_properties(insitu_wall_trace_worklet_probe PROPERTIES CUDA_STANDARD 17
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+        target_include_directories(insitu_wall_trace_worklet_probe PRIVATE . ../src_gpu)
+        target_compile_options(insitu_wall_trace_worklet_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+        target_link_libraries(insitu_wall_trace_worklet_probe PRIVATE
+          viskores::cont viskores::worklet viskores::cuda MPI::MPI_C)
         add_executable(insitu_viskores_trace_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_viskores_trace_probe.cu)
         set_target_properties(insitu_viskores_trace_probe PROPERTIES CUDA_STANDARD 17
@@ -746,6 +801,45 @@ if(BUILD_TESTING)
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_spatial_modules")
   target_include_directories(insitu_spatial_statistics_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_spatial_modules")
   target_link_libraries(insitu_spatial_statistics_probe PRIVATE MPI::MPI_Fortran)
+
+  add_executable(insitu_sample_moments_probe EXCLUDE_FROM_ALL astr_precision.F90
+    insitu_time_integral.F90 insitu_velocity_statistics.F90 insitu_sample_moments.F90
+    ../tests/gpu_validation/insitu_sample_moments_probe.F90)
+  set_target_properties(insitu_sample_moments_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_sample_moments_modules")
+  target_include_directories(insitu_sample_moments_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/insitu_sample_moments_modules")
+  target_link_libraries(insitu_sample_moments_probe PRIVATE MPI::MPI_Fortran)
+  if(ASTR_WITH_CUDA)
+    target_sources(insitu_sample_moments_probe PRIVATE ../src_gpu/gpu_check.cuf
+      ../src_gpu/insitu_sample_moments_gpu.cuf)
+  endif()
+
+  add_executable(insitu_boundary_layer_probe EXCLUDE_FROM_ALL astr_precision.F90
+    insitu_time_integral.F90 insitu_boundary_layer.F90 index_slice_stencil.F90
+    ../tests/gpu_validation/insitu_boundary_layer_probe.F90)
+  set_target_properties(insitu_boundary_layer_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_boundary_layer_modules")
+  target_include_directories(insitu_boundary_layer_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/insitu_boundary_layer_modules")
+  target_link_libraries(insitu_boundary_layer_probe PRIVATE MPI::MPI_Fortran)
+  if(ASTR_WITH_CUDA)
+    target_sources(insitu_boundary_layer_probe PRIVATE ../src_gpu/gpu_check.cuf
+      ../src_gpu/insitu_boundary_layer_gpu.cuf)
+  endif()
+
+  add_executable(insitu_selected_statistics_probe EXCLUDE_FROM_ALL astr_precision.F90
+    insitu_schedule.F90 adaptive_output.F90 insitu_run_config.F90 index_slice_stencil.F90
+    insitu_time_integral.F90 insitu_velocity_statistics.F90 insitu_sample_moments.F90
+    insitu_selected_statistics.F90 ../tests/gpu_validation/insitu_selected_statistics_probe.F90)
+  set_target_properties(insitu_selected_statistics_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_selected_modules")
+  target_include_directories(insitu_selected_statistics_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_selected_modules")
+  target_link_libraries(insitu_selected_statistics_probe PRIVATE MPI::MPI_Fortran)
+  if(ASTR_WITH_CUDA)
+    target_sources(insitu_selected_statistics_probe PRIVATE ../src_gpu/gpu_check.cuf
+      ../src_gpu/insitu_sample_moments_gpu.cuf)
+  endif()
 
   add_executable(insitu_geometry_probe EXCLUDE_FROM_ALL
     insitu_geometry.F90 ../tests/gpu_validation/insitu_geometry_probe.F90)
@@ -1380,6 +1474,11 @@ install(FILES
   ../scripts/output/input.products.tgv.example.jsonl
   ../scripts/output/input.products.air5.example.jsonl
   ../scripts/output/input.products.tgv.images.example.jsonl
+  ../scripts/output/input.products.tgv.coordinates.example.jsonl
+  ../scripts/output/input.products.tgv.station.example.jsonl
+  ../scripts/output/input.products.wall.statistics.example.jsonl
+  ../scripts/output/input.products.wall.references.example.jsonl
+  ../scripts/output/input.products.wall.units.example.jsonl
   ../scripts/output/input.products.tgv.geometry.example.jsonl
   ../scripts/output/input.insitu.tgv.host.example
   ../scripts/output/input.products.channel.walls.example.jsonl
@@ -1409,7 +1508,8 @@ if(ASTR_WITH_CATALYST)
     DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu/presets/tgv32 COMPONENT InsituTools)
   if(ASTR_WITH_INSITU_DEVICE_RENDERING)
     install(FILES ../scripts/insitu/device_render_pipeline.py ../scripts/insitu/streamline_preview.py
-      ../scripts/insitu/runtime_products.py ../scripts/insitu/runtime_geometry.py ../scripts/insitu/sbli_products.py
+      ../scripts/insitu/runtime_products.py ../scripts/insitu/runtime_geometry.py ../scripts/insitu/render_coordinates.py
+      ../scripts/insitu/sbli_products.py
       DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu
       COMPONENT InsituTools)
   endif()
@@ -1451,6 +1551,9 @@ foreach(ASTR_TARGET IN LISTS ASTR_LOCAL_TARGETS)
     endif()
   endforeach()
   if(ASTR_TARGET_FORTRAN)
+    if("insitu_run_config.F90" IN_LIST ASTR_TARGET_SOURCES)
+      target_link_libraries(${ASTR_TARGET} PRIVATE astr_catalog_json)
+    endif()
     get_target_property(ASTR_TARGET_MODULES ${ASTR_TARGET} Fortran_MODULE_DIRECTORY)
     if(NOT ASTR_TARGET_MODULES AND NOT ASTR_TARGET STREQUAL "astr")
       set(ASTR_TARGET_MODULES "${CMAKE_CURRENT_BINARY_DIR}/${ASTR_TARGET}_modules")

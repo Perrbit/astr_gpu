@@ -1,0 +1,133 @@
+module insitu_boundary_layer_gpu
+  use astr_precision, only: real_kind
+  use iso_fortran_env, only: int64
+  use cudafor
+  use gpu_check, only: sync_after_kernel
+  use insitu_boundary_layer, only: wall_transport,wall_stencil_transport,cartesian_point
+  implicit none
+  private
+  public :: evaluate_wall_transport_gpu,evaluate_wall_stencils_gpu
+  public :: cartesian_block_axes_gpu
+contains
+  subroutine cartesian_block_axes_gpu(coordinates,cells,halo,axes,ok)
+    integer,intent(in) :: cells(3),halo
+    real(real_kind),device,intent(in) :: coordinates(-halo:,-halo:,-halo:,:)
+    real(real_kind),intent(out) :: axes(sum(cells)+3)
+    logical,intent(out) :: ok
+    real(real_kind),device,allocatable :: packet(:)
+    integer,device,allocatable :: invalid(:)
+    integer(int64) :: nodes
+    integer :: status,bad,n
+    n=size(axes);nodes=product(int(cells,int64)+1_int64);ok=.false.;axes=0
+    allocate(packet(n),invalid(1),stat=status)
+    if(status/=0) return
+    invalid=0
+    call cartesian_axes_kernel<<<int((max(nodes,int(n,int64))+511_int64)/512_int64),512>>>( &
+      coordinates,cells(1),cells(2),cells(3),halo,n,nodes,packet,invalid)
+    call sync_after_kernel('selected Cartesian geometry proof',force_sync=.true.)
+    axes=packet;bad=invalid(1);ok=bad==0
+  end subroutine
+
+  attributes(global) subroutine cartesian_axes_kernel(coordinates,im,jm,km,halo,n,nodes,packet,invalid)
+    integer,value :: im,jm,km,halo,n
+    integer(int64),value :: nodes
+    real(real_kind),device,intent(in) :: coordinates(-halo:im+halo,-halo:jm+halo,-halo:km+halo,3)
+    real(real_kind),device,intent(out) :: packet(n)
+    integer,device,intent(inout) :: invalid(*)
+    integer(int64) :: node,p,quotient
+    integer :: i,j,k,ignored
+    real(real_kind) :: point(3),reference(3)
+    node=int(blockidx%x-1,int64)*blockdim%x+threadidx%x
+    if(node<=n) then
+      if(node<=im+1) then
+        packet(node)=coordinates(node-1,0,0,1)
+      elseif(node<=im+jm+2) then
+        packet(node)=coordinates(0,node-im-2,0,2)
+      else
+        packet(node)=coordinates(0,0,node-im-jm-3,3)
+      endif
+    endif
+    if(node>nodes) return
+    p=node-1;quotient=p/(im+1);i=int(p-quotient*(im+1));p=quotient
+    quotient=p/(jm+1);j=int(p-quotient*(jm+1));k=int(quotient)
+    point=coordinates(i,j,k,:)
+    reference=[coordinates(i,0,0,1),coordinates(0,j,0,2),coordinates(0,0,k,3)]
+    if(.not.cartesian_point(point,reference)) ignored=atomicExch(invalid(1),1)
+  end subroutine
+
+  subroutine evaluate_wall_stencils_gpu(stencil,offsets,weights,metrics,mu,kappa,normal,values,invalid,ok)
+    real(real_kind),device,intent(in) :: stencil(:,:,:,:),weights(:,0:),metrics(:,:,:),mu(:),kappa(:)
+    integer,device,intent(in) :: offsets(:,:)
+    real(real_kind),intent(in) :: normal(3)
+    real(real_kind),device,intent(out) :: values(:,:)
+    integer,device,intent(inout) :: invalid(:)
+    logical,intent(out) :: ok
+    real(real_kind),device :: normal_d(3)
+    integer :: n,bad
+    n=size(mu);ok=.false.
+    if(size(kappa)/=n.or.any(shape(stencil)/=[4,7,3,n]).or.any(shape(metrics)/=[3,3,n]).or. &
+       any(shape(values)/=[4,n]).or.any(shape(offsets)/=[3,n]).or. &
+       any(shape(weights)/=[7,7]).or.size(invalid)/=1) return
+    if(n==0) then
+      ok=.true.;return
+    endif
+    normal_d=normal;invalid=0
+    call wall_stencils_kernel<<<(n+127)/128,128>>>(n,stencil,offsets,weights,metrics,mu,kappa,normal_d,values,invalid)
+    call sync_after_kernel('private sixth-order wall stencil diagnostic',force_sync=.true.)
+    bad=invalid(1);ok=bad==0
+  end subroutine
+
+  attributes(global) subroutine wall_stencils_kernel(n,stencil,offsets,weights,metrics,mu,kappa,normal,values,invalid)
+    integer,value :: n
+    real(real_kind),device,intent(in) :: stencil(4,7,3,n),weights(7,0:6),metrics(3,3,n),mu(n),kappa(n),normal(3)
+    integer,device,intent(in) :: offsets(3,n)
+    real(real_kind),device,intent(out) :: values(4,n)
+    integer,device,intent(inout) :: invalid(*)
+    real(real_kind) :: shear(3),heat,private_stencil(4,7,3),metric(3,3),direction(3),coefficients(7,0:6)
+    integer :: node,ignored,locations(3)
+    logical :: ok
+    node=(blockidx%x-1)*blockdim%x+threadidx%x
+    if(node>n) return
+    private_stencil=stencil(:,:,:,node);metric=metrics(:,:,node);direction=normal
+    locations=offsets(:,node);coefficients=weights
+    call wall_stencil_transport(private_stencil,locations,coefficients,metric,mu(node),kappa(node),direction,shear,heat,ok)
+    values(:,node)=[shear,heat]
+    if(.not.ok) ignored=atomicExch(invalid(1),1)
+  end subroutine
+
+  subroutine evaluate_wall_transport_gpu(mu,kappa,gradient,thermal,normal,values,invalid,ok)
+    real(real_kind),device,intent(in) :: mu(:),kappa(:),gradient(:,:,:),thermal(:,:)
+    real(real_kind),intent(in) :: normal(3)
+    real(real_kind),device,intent(out) :: values(:,:)
+    integer,device,intent(inout) :: invalid(:)
+    logical,intent(out) :: ok
+    real(real_kind),device :: normal_d(3)
+    integer :: n,bad
+    n=size(mu);ok=.false.
+    if(size(kappa)/=n.or.any(shape(gradient)/=[3,3,n]).or.any(shape(thermal)/=[3,n]).or. &
+       any(shape(values)/=[4,n]).or.size(invalid)/=1) return
+    if(n==0) then
+      ok=.true.;return
+    endif
+    normal_d=normal;invalid=0
+    call wall_transport_kernel<<<(n+255)/256,256>>>(n,mu,kappa,gradient,thermal,normal_d,values,invalid)
+    call sync_after_kernel('private complete wall stress and conduction',force_sync=.true.)
+    bad=invalid(1);ok=bad==0
+  end subroutine
+
+  attributes(global) subroutine wall_transport_kernel(n,mu,kappa,gradient,thermal,normal,values,invalid)
+    integer,value :: n
+    real(real_kind),device,intent(in) :: mu(n),kappa(n),gradient(3,3,n),thermal(3,n),normal(3)
+    real(real_kind),device,intent(out) :: values(4,n)
+    integer,device,intent(inout) :: invalid(*)
+    real(real_kind) :: shear(3),heat,g(3,3),t(3),direction(3)
+    integer :: node,ignored
+    logical :: ok
+    node=(blockidx%x-1)*blockdim%x+threadidx%x
+    if(node>n) return
+    g=gradient(:,:,node);t=thermal(:,node);direction=normal
+    call wall_transport(mu(node),kappa(node),g,t,direction,shear,heat,ok)
+    values(:,node)=[shear,heat]
+    if(.not.ok) ignored=atomicExch(invalid(1),1)
+  end subroutine
+end module

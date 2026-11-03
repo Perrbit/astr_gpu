@@ -54,6 +54,7 @@ struct RuntimeProductView {
 RuntimeProductView runtime_product_view(const char*,const char*,const char*,const char*,std::int64_t,
   const char*,const int*,const double*);
 DeviceMesh build_runtime_index_mesh(const RuntimeProductView&,int,Real,const int*,int,int,int,Real*,Real*,const Real*,int=0);
+DeviceMesh build_runtime_wall_glyph_mesh(const RuntimeProductView&,int,Real,const int*,int,int,int,Real*,Real*,const int*,const int*);
 void begin_runtime_index_group();
 void end_runtime_index_group();
 DeviceMesh build_runtime_physical_mesh(const RuntimeProductView&,int,Real,const int*,int,const int*,const int*,

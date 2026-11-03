@@ -35,6 +35,21 @@ PREVIEW_VIEWS = """&streamline_views
 
 
 @pytest.mark.skipif(not PROBE,reason='Set ASTR_INSITU_CONFIG_PROBE')
+def test_native_device_statistics_without_rendering(tmp_path):
+    text = """&insitu_run
+ enabled=t,statistics=t,render=f,products='catalog_stats',statistics_window=0,1,
+ processing_backend='device',derivative_backend='gpu',postprocess_transport='device-aware',
+ host_budget_bytes=67108864,device_budget_bytes=67108864,device_reserve_bytes=1073741824,
+ output_directory='outdat'
+/
+"""
+    path=tmp_path/'selected.nml';path.write_text(text)
+    result=subprocess.run([PROBE,str(path),'catalog'],capture_output=True,text=True)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'PASS: parsed in-situ run configuration' in result.stdout
+
+
+@pytest.mark.skipif(not PROBE,reason='Set ASTR_INSITU_CONFIG_PROBE')
 def test_native_catalog_does_not_require_a_second_common_clock(tmp_path):
     text=VALID.replace("schedule_mode='steps', step_interval=2,",'')
     path=tmp_path/'native.nml';path.write_text(text)

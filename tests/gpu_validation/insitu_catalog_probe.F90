@@ -25,12 +25,21 @@ program insitu_catalog_probe
     print '(a)','reason='//products(i)%error
     if(.not.products(i)%valid) cycle
     print '(a,a)','source=',products(i)%source
+    print '(a,l1)','fluctuation=',products(i)%fluctuation
     print '(a,i0)','request=',products(i)%enable_request
     print '(a,i0)','axis=',products(i)%axis
     print '(a,i0)','index=',products(i)%index
     print '(a,6(i0,1x))','ranges=',products(i)%ranges
     print '(a,i0)','steps=',products(i)%interval_steps
     print '(a,es24.16)','time=',products(i)%interval_time
+    print '(a,es24.16e3)','native_isovalue=',products(i)%view%isovalue
+    print '(a,2(i0,1x))','coordinate_flags=',products(i)%view%coordinate_flags
+    print '(a,7(es24.16,1x))','coordinate_values=',products(i)%view%coordinate_values
+    print '(a,2(i0,1x))','wall_reference_flags=',products(i)%wall_reference%flags
+    print '(a,es24.16)','wall_recovery_value=',products(i)%wall_reference%value
+    print '(a,a)','wall_units=',products(i)%wall_units
+    print '(a,2(i0,1x))','thickness_flags=',products(i)%thickness%flags
+    print '(a,2(i0,1x))','thickness_band=',products(i)%thickness%edge_band
     do j=1,size(products(i)%fields)
       print '(a,a)','field='//trim(catalog_field_names(products(i)%fields(j)))
     enddo

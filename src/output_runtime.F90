@@ -39,7 +39,7 @@ module output_runtime
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule, &
     write_schedule_state,restore_schedule_state
   use statistic, only: channel_driver_state,complete_mean_statistics_file,nsamples
-  use benchmark_runtime, only: benchmark_field_io_disabled
+  use benchmark_runtime, only: benchmark_field_io_disabled,insitu_clock,report_insitu_timing
 #ifdef ASTR_AIR5_CHEMISTRY
   use commarray, only: tve,spc
   use chemistry_compensation, only: air5_carry,air5_compensated
@@ -77,6 +77,7 @@ module output_runtime
   logical,save :: repartitioning=.false.
   logical,save :: restored_statistics_saved=.true.
   logical,save :: precision_changed=.false.
+  logical,save :: read_profile_geometry_verified=.false.
   ! Bounded x/z channel repartition passed the approved frozen-field matrix.
   logical,parameter :: channel_repartition_validated=.true.
   type(output_options),save :: options
@@ -363,12 +364,68 @@ contains
     if(trim(path)=='none in this run'.and.len_trim(options%restore_directory)>0) path=options%restore_directory
   end function
 
-  logical function extruded_profile_output_case()
-    extruded_profile_output_case=trim(flowtype)=='bl'.and..not.lreadgrid.and.ninit==2.and.nondimen.and. &
+  logical function profile_checkpoint_definition()
+    profile_checkpoint_definition=trim(flowtype)=='bl'.and.ninit==2.and.nondimen.and. &
       trim(conschm)=='743e'.and.(trim(difschm)=='643e'.or.trim(difschm)=='643c').and. &
       recon_schem==5.and.lchardecomp.and.trim(turbinf)=='prof'.and. &
       (all(bctype==[11,21,41,50,1,1]).or.all(bctype==[11,22,41,52,1,1]))
   end function
+
+  logical function extruded_profile_output_case()
+    extruded_profile_output_case=.not.lreadgrid.and.profile_checkpoint_definition()
+  end function
+
+  logical function read_profile_output_candidate()
+    read_profile_output_candidate=lreadgrid.and.profile_checkpoint_definition().and.real_bytes==8.and. &
+      ndims==3.and.numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb
+  end function
+
+  logical function read_profile_output_case()
+    read_profile_output_case=read_profile_output_candidate().and.read_profile_geometry_verified.and.wall_blowing_legacy_random
+  end function
+
+  subroutine verify_read_profile_geometry()
+    use insitu_boundary_layer, only: cartesian_block_axes,cartesian_axis_direction
+    real(real_kind),allocatable :: axes(:),local(:),global(:)
+    integer :: cells(3),intervals(3),origin(3),direction(3),n,nlocal,d,owned,lo,go,err
+    integer(int64) :: bytes
+    logical :: valid
+    real(8) :: started
+    if(read_profile_geometry_verified) return
+    started=insitu_clock()
+    cells=[im,jm,km];intervals=[ia,ja,ka];origin=[ig0,jg0,kg0]
+    n=sum(intervals)+3;nlocal=sum(cells)+3
+    bytes=(2_int64*n+nlocal)*real_bytes
+    call check(bytes<=options%host_budget_bytes,'read-profile Cartesian proof exceeds host budget')
+    allocate(axes(nlocal),local(n),global(n),stat=err)
+    call check(err==0,'read-profile Cartesian axis allocation')
+    ! The reader already populated host coordinates; no device array is downloaded.
+    call cartesian_block_axes(x,cells,hm,axes,valid)
+    call check(valid,'read-profile checkpoint requires finite axis-separable Cartesian coordinates')
+    local=0;lo=0;go=0
+    do d=1,3
+      if(all(pack(origin,[d/=1,d/=2,d/=3])==0)) then
+        owned=cells(d)
+        if(origin(d)+cells(d)==intervals(d)) owned=owned+1
+        local(go+origin(d)+1:go+origin(d)+owned)=axes(lo+1:lo+owned)
+      endif
+      lo=lo+cells(d)+1;go=go+intervals(d)+1
+    enddo
+    call MPI_Allreduce(local,global,n,mpi_real_type,MPI_SUM,MPI_COMM_WORLD,err)
+    call check(err==MPI_SUCCESS,'read-profile Cartesian axis reduction')
+    valid=.true.;lo=0;go=0
+    do d=1,3
+      direction(d)=cartesian_axis_direction(global(go+1:go+intervals(d)+1))
+      valid=valid.and.direction(d)==1
+      valid=valid.and.all(axes(lo+1:lo+cells(d)+1)==global(go+origin(d)+1:go+origin(d)+cells(d)+1))
+      lo=lo+cells(d)+1;go=go+intervals(d)+1
+    enddo
+    call check(valid,'read-profile checkpoint requires increasing Cartesian axes agreeing at MPI shared nodes')
+    read_profile_geometry_verified=.true.
+    write(*,'(a,i0,a,3(i0,1x),a,i0,a)') 'ASTR_OUTPUT_PROFILE_GRID rank=',mpirank, &
+      ' cartesian=T axis_directions=',direction,' temporary_host_bytes=',bytes,' geometry_d2h_bytes=0'
+    call report_insitu_timing('checkpoint_profile_cartesian_proof',started,nstep)
+  end subroutine
 
   logical function joint_sbli_output_case()
     use bc, only: nscbc_inviscid_incident_enabled
@@ -413,7 +470,7 @@ contains
         (high_order_adiabatic_wall_enabled.and.(all(bctype==[1,1,42,42,1,1]).or. &
           all(bctype==[1,1,421,421,1,1]))))).or. &
       (trim(flowtype)=='bl'.and.lreadgrid.and.(trim(turbinf)=='prof'.or.trim(turbinf)=='intp').and. &
-      all(bctype==[11,21,41,51,1,1])).or.extruded_profile_output_case().or. &
+      all(bctype==[11,21,41,51,1,1])).or.extruded_profile_output_case().or.read_profile_output_case().or. &
       (joint_sbli_output_case().and.lreadgrid)
 #ifdef ASTR_BUILD_TESTING
     ! This bounded RK probe has no output/restart contract to publish.
@@ -436,7 +493,7 @@ contains
       'new output admits TGV, bc41 or hermite7 channel, profile/dynamic flatplate or fixed AIR5 HBL/SBLI RK3')
     call check(.not.lcracon.or.(numq==5.and.num_species==0.and..not.lcomb), &
       'checkpoint crashfix supports only non-reacting five-variable flow')
-    if(extruded_profile_output_case().and.bctype(2)==22) then
+    if((extruded_profile_output_case().or.read_profile_output_case()).and.bctype(2)==22) then
       call check(.not.options%adaptive%enabled.and..not.lavg, &
         'profile joint NSCBC admits same-topology restart; means/adaptive not validated')
     endif
@@ -484,14 +541,15 @@ contains
     call load_output_options()
     if(.not.enabled) return
     if(len_trim(options%restore_directory)>0) then
-      if(extruded_profile_output_case()) &
+      if(extruded_profile_output_case().or.read_profile_output_candidate()) &
         call set_wall_resource_root(trim(options%restore_directory)//'/../../resources')
     endif
     if(trim(flowtype)=='bl'.and.bctype(3)==41) call configure_wall_blowing()
-    if(extruded_profile_output_case().and.len_trim(options%restore_directory)>0) &
+    if((extruded_profile_output_case().or.read_profile_output_candidate()).and.len_trim(options%restore_directory)>0) &
       call check(wall_blowing_legacy_random,'extruded profile restart requires legacy_random checkpoint')
     if(wall_blowing_legacy_random.and.(options%checkpoint%enabled.or.len_trim(options%restore_directory)>0)) then
-      call check(extruded_profile_output_case(), 'random wall checkpoint requires admitted extruded profile case')
+      call check(extruded_profile_output_case().or.read_profile_output_candidate(), &
+        'random wall checkpoint requires an extruded or Cartesian read-profile candidate')
       call check(.not.options%adaptive%enabled, 'random wall checkpoint adaptive scheduling is not admitted')
     endif
     if(ninit>=1.and.ninit<=3) then
@@ -546,6 +604,9 @@ contains
       options%slices%enabled=.false.
       if(mpirank==0) write(*,'(a)') 'ASTR_OUTPUT no-field-I/O overrides checkpoint, volume and slices'
     endif
+    if(read_profile_output_candidate().and.wall_blowing_legacy_random.and. &
+      (options%checkpoint%enabled.or.len_trim(options%restore_directory)>0)) &
+      call verify_read_profile_geometry()
     call check_capability()
     if(air5_output_case()) then
       value=''

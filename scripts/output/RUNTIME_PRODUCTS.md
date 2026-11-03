@@ -1,5 +1,126 @@
 # Runtime Postprocessing Products
 
+## Explicit Unlimited Accounting For Catalog Statistics
+
+For `products='catalog_stats'`, `host_budget_bytes=-1` and
+`device_budget_bytes=-1` explicitly disable those artificial quotas. Set
+`device_reserve_bytes=0` for no artificial free-memory headroom. This reuses the
+existing nonallocating unlimited sentinel; it does not allocate a sentinel-sized
+buffer. Monitoring and real allocation/representability errors remain active.
+Finite positive budgets are still enforced when explicitly requested.
+
+The same `-1` values are already supported by the separate `&output` I/O group.
+Its `buffer_bytes` controls a streaming chunk, not total allowed output/memory,
+and need not be expanded to an artificial maximum. Numerical tolerances,
+integration length/step counts, field validity and GPU-residency contracts are
+not resource quotas and are unchanged. Existing production defaults and frozen
+historical inputs are not rewritten by the current goal's unlimited policy.
+
+The local acceptance helper's `unrestricted=True` requests no external memory
+increment or wall-clock quota, records resource use, and writes unlimited I/O
+budgets. Pass explicit unlimited `input.insitu` fields as well; the helper does
+not silently replace a caller's declared in-situ quota. Python resource reports
+use null for unset increment/time limits. Four-rank shared-GPU accounting remains
+enabled without using the old 2/4-GiB or one-GiB-reserve admission thresholds.
+
+## Wall Shear Direction Glyphs
+
+For a fixed-j lower-wall image, `field: "wall_shear_vector"` requests the two
+complete tangent shear components. Choose `source: instantaneous`, or
+`source: reynolds` with `statistics_source: selected-time`. The latter displays
+the norm and direction of the averaged vector, not the mean instantaneous norm.
+This is not a wall-velocity streamline or a separation-line diagnostic.
+
+Explicit `extraction: {"stride":[8,4],"length":0.6}` specifies global i/k index
+intervals anchored at index zero and a fixed shaft length in native coordinate
+units. Sampling remains on actual grid nodes; the display interval is not a
+change to the CFD grid. Arrow shafts follow the signed physical tangent vector.
+Color represents its native norm. Exactly zero vectors are omitted without an
+epsilon threshold, including a valid empty geometry for an entirely zero field.
+Tiny nonzero vectors are retained; their directions may be noise-sensitive.
+No statistical convergence or separation is inferred from an arrow map.
+
+Shared nodes contribute once and periodic terminal aliases do not add arrows.
+The source coordinate frame still includes the selected periodic closure.
+Arrow point tiles can contain one local row/column, including an ROI ending
+exactly on an MPI interface. Original triangle surfaces retain their existing
+cell requirements. Explicit display stretching affects geometry only; the
+arrowhead is compensated for that linear transform so that it remains readable.
+It does not alter the physical shaft direction/length, shear or statistics.
+
+Both strict device pipelines are supported in the bounded FP64 nonreacting
+Cartesian lower-wall gate; host glyph construction is not implemented. Geometry
+stays on the device. Six coordinate-bound scalars (48 bytes for a nonempty FP64
+rank tile) are read back for the coordinate frame, in addition to small selection
+control reductions. These are not flow-field or final-geometry downloads.
+Per-frame receipts record glyph count, stride, native length and metadata scope.
+
+`input.products.sbli.wall-vectors.example.jsonl` is the small GRCBC example, with
+z display x20 and JPEG only. Its stride, length, camera and color range are
+explicit example choices. It uses the same `catalog_stats` configuration and
+budgets as the wall-footprint example. Changing display parameters does not reset
+matching mean history; exact continuation uses the saved typed product definition.
+
+## Two-Dimensional Complete Wall Footprints
+
+Fixed-j `grid_index` slices at j=0 can display instantaneous complete wall shear
+and Fourier heat flow, or their nodewise Reynolds selected-time means. The mean
+is accumulated from each instantaneous molecular quantity: it is not viscosity
+at the mean temperature multiplied by a mean velocity gradient. No spanwise
+reduction is performed. Native wall-shear signs are retained; positive
+`wall_heat_into_wall` denotes heat entering the solid.
+
+Mean wall packets support density, temperature, `wall_shear_x`, `wall_shear_z`,
+`wall_heat_into_wall` and `dynamic_viscosity`. Primitive pressure means remain
+available as a separate primitive slice; arbitrary mixed primitive-gradient/wall
+mean packets are not implemented. This path requires the admitted FP64
+nonreacting Cartesian lower wall. The first actual footprint matrix uses bc41;
+it does not verify every wall family or introduce wall glyphs/shear lines.
+
+`input.products.sbli.wall-footprints.example.jsonl` contains two JPEG-only means
+for the bounded 64x48x16 GRCBC fixture, with explicitly annotated z display x20.
+Its image scale, camera and color limits are examples, not production defaults.
+Both strict device pipelines consume the field/geometry without downloading
+them. Explicit HDF5 data slices remain a separate, opt-in two-dimensional archive.
+
+For GPU statistics without images, `products='catalog_stats',statistics=t,render=f`
+may explicitly use `processing_backend='device',derivative_backend='gpu',`
+`postprocess_transport='device-aware'`. This declares the independent transport
+to the existing pre-MPI CUDA binder and does not require Catalyst. A plain host
+configuration remains usable for CPU statistics. Currently, the GPU wall
+accumulator itself uses aware private exchanges even when image strips use
+pinned staging; these are distinct paths, not an implicit solver-halo change.
+No new sanitizer suppression or silent transport fallback is introduced.
+
+## Fixed-j Local Time-Mean Fluctuations
+
+`fluctuation: true` selects the completed-step instantaneous primitive minus its
+local accumulated mean, not a gradient or an RMS. It defaults to false. Use
+`source: reynolds` or `source: favre` with `statistics_source: selected-time`;
+these identify the mean reference. Only fixed-j `grid_index` slices are currently
+admitted. Velocity components support either reference; pressure and temperature
+support Reynolds fluctuations. A fluctuation of speed is not implicitly defined.
+Fields retain their native dimensional/nondimensional units; no wall-unit or
+amplitude normalization is introduced. Actual coverage is reported, and a mean
+from the future end of the requested window is never substituted.
+
+`input.products.tgv.fluctuations.example.jsonl` is a bounded 32-cubed TGV example,
+not a turbulent flat-plate production preset. Numerical slices can instead use
+`fields` and `output: {"channel":"data","format":"hdf5-xdmf"}` with no display.
+For images, use `products='catalog_stats'`, `statistics=t`, `render=t`,
+`processing_backend='device'`, `derivative_backend='gpu'`, an explicit private
+transport and `standard-device` or `direct-device`. Declare the common statistics
+window and existing host/device/reserve budgets. With `render=f`, the numerical
+mean/fluctuation channel continues without Catalyst. Image products themselves
+still require rendering to be enabled; they are not automatically converted to
+data products. The existing renderer and selected histories are reused.
+
+The first bounded gate covers CPU/GPU numeric TGV and GRCBC SBLI with NP=1/2/4,
+same-topology exact numeric continuation, and TGV device images through both
+strict pipelines. Images report the actual selected-time coverage and label
+Reynolds/Favre fluctuations. Device fields and geometry are not read back for
+these images. This is not statistical-convergence or production-layout approval.
+
 This interface is still under X2 integration. The complete capability and
 validation record is in `documents/ASTR_INSITU_RUNTIME_PRODUCT_CATALOG_PROGRESS.md`.
 Wall node and original SBLI physical-midspan curves support the subsets below.
@@ -17,8 +138,380 @@ budgets and `postprocess_transport` in the base in-situ file before starting.
 Use `standard-device` or `direct-device` for resident geometry, or explicitly
 select the compatible consumer below; select `pinned` or `device-aware`
 explicitly. A requested unavailable device transport does not fall back to host
-payloads. Mean products need the existing `velocity-time` accumulation enabled at
-startup; the product catalog never starts or resets it.
+payloads. Existing mean images need `velocity-time` accumulation enabled at
+startup; the product catalog does not start or reset that dense provider.
+The new `selected-time` provider is instead catalog-driven and currently serves
+numerical statistics through `products='catalog_stats'`, not mean images.
+
+## Selected-Time Station Profiles
+
+`input.products.tgv.station.example.jsonl` selects the global i=8 station of
+the 16-interval periodic TGV fixture. Use `products='catalog_stats'`,
+`statistics=t`, `render=f` and an explicit `statistics_window` in the base
+namelist. These are numerical-only FP64, nonreacting Cartesian products;
+this example does not admit CURVE, AIR5 or arbitrary production configurations.
+
+- `kind='station_profile'`, `output.channel='data'`, `output.format='csv'`.
+- `sampling.mode='station_span'` averages the specified k interval using
+  physical spanwise nodal length weights, including nonuniform spacing.
+- `sampling.mode='station_line'` selects exactly one k node and retains
+  pointwise temporal statistics along j. Separate lines need separate products.
+- Both use `axis='i'`, a global station `index` and inclusive j/k
+  `index_ranges`. The CSV records the actual physical x, y and span coordinates;
+  it does not interpolate to a requested physical station.
+- `source='reynolds'` or `'favre'` requires
+  `statistics_source='selected-time'`. Each product has its own output clock;
+  sampling still uses every eligible completed step, independent of that clock.
+
+Request primitive names in `fields`, not a display `field`. Density-only and
+pressure/temperature-only requests do not allocate velocity covariance state.
+Requesting any velocity component selects the full three-component velocity
+bundle: means, RMS and six covariance components in xx,xy,yy,xz,yz,zz order.
+`rho_time_mean` is always the ordinary time mean of density, including in a
+Favre profile. An explicit Favre-density request is unsupported, since it
+would need an additional density moment.
+
+Each local temporal mean/covariance is accumulated before the spatial
+combination. Reynolds quantities use physical length weights. Favre means
+combine `rho_time_mean * local_favre_mean`; Favre covariances combine local
+density-weighted temporal covariances and divide by the spanwise mean density.
+RMS is the square root of the combined diagonal covariance. Spatial variation
+of the local temporal means is not added to that covariance. CSV
+`rho_covariance_f_*` columns contain the positive-sign density-weighted
+covariance, not its negative in a mean momentum equation.
+
+Periodic terminal aliases and MPI shared nodes contribute only once. A full
+periodic j profile repeats the first value at the physical terminal coordinate
+for plotting. CPU/GPU use the same projection; on GPU, selected moments and
+the spanwise reduction remain on device. Only a compact one-dimensional
+weighted packet and one status integer are downloaded per reduction. Explicit
+diagnostic slice archives and checkpoint staging are separate transfers.
+
+Files are under `outdat/new/profile_products/ID/version.../segment.../`:
+the effective `definition.json` and independent `frame.stepNNN.csv` files.
+Metadata includes units, spatial measure, requested and actual statistical
+coverage, duration and sampling-segment count. Windows may contain gaps;
+duration, not just the envelope endpoints, describes the sampled coverage.
+Exact same-backend/same-topology checkpoints preserve the selected moments
+and previous endpoint in the existing statistics component. A failed product
+is disabled independently; any remaining consumer can keep shared history.
+
+### Traditional Wall-Unit Profiles
+
+This TB1 extension has completed the bounded procedural/read-Cartesian M12
+CPU/GPU topology matrices; the small GRCBC SBLI combination is covered below,
+separately from production physics. The read-Cartesian M12
+wall41/random-forcing checkpoint closure is described below.
+`input.products.wall.units.example.jsonl` supplies the bounded 64x32x24
+example: an explicit `wall_profile` with `wall_reference={}` and two
+`station_profile` consumers. Each station adds `"wall_units":"wall-reference"`
+to name that live wall product. It must contain the requested i station,
+use exactly the same k range, and pair `station_span` with `wall_span` or
+`station_line` with `wall_line`. No inlet scale, nearest station or alternate
+reference product is silently substituted.
+
+The original primitive means, RMS and covariance columns remain in the CSV.
+New columns use the same statistical wall scale described below:
+`y_plus=(y-y_wall)/viscous_length`, velocity and RMS divided by `u_tau`,
+covariance divided by `u_tau^2`, and `rho_covariance_f_*` divided by
+`rho_wall*u_tau^2`. The latter uses mean **wall** density, not each profile
+node's density. Covariance signs are retained; no minus sign is introduced.
+Pressure and temperature retain their original means and units; this option
+does not invent pressure/temperature wall scales. A scalar-only profile can
+therefore add y+ without allocating unused velocity covariance.
+
+The wall reference is evaluated from current accumulated quantities, not the
+last published CSV, so its output cadence may differ from the station's.
+Combination requires identical positive-weight sampling history, not just
+equal start/end times, duration or number of segments. The registry assigns
+the same integer identity only to updates with the same history prefix,
+completed step/time and exact quadrature weights. This is not a hash or a
+growing sample log; identity comparisons are meaningful within that registry,
+not between arbitrary independent jobs. A missing target, mismatched sampling
+history or unavailable friction scale leaves normalized values empty and
+reports the reason. Raw profiles and other products continue.
+
+Matching requests reuse their original field histories. Selected moments and
+large spatial reductions remain on GPU; normalization consumes only the
+approved one-dimensional station and wall results. The additional wall
+projection is a separate one-dimensional download and is included in timing,
+not described as zero transfer. Saved effective definitions retain the target
+ID after exact continuation. Selected-time statistics now store an explicit
+v2 component with the coverage identity/counter; v1 selected-time components
+do not contain that identity and are not accepted as exact v2 continuation.
+No new sidecar or top-level checkpoint file is introduced, and other statistics
+providers keep their existing formats.
+
+### Thickness And Edge References
+
+`input.products.wall.thickness.example.jsonl` adds the optional `thickness`
+object to a Favre `station_profile`. It requires `velocity_x`, `pressure` and
+`temperature` fields and a measured profile starting at the lower wall j=0:
+
+```json
+"thickness": {"edge_band": [24, 28], "explicit_upper": 21.234}
+```
+
+The integers are global j indices within that profile, strictly above the wall.
+The upper limit is an optional **native physical y coordinate**, not a grid
+index or distance from the wall. Omitting it requests only the delta99 integral
+family; supplying it additionally requests a separately named explicit-limit
+family. The numbers above belong only to the bounded M12 fixture. Choose an
+external plateau away from shocks and sponge layers for a real case. A positive
+mean velocity alone does not prove that a band is external.
+
+Edge rho, pressure and temperature are physical-y trapezoid length averages of
+their Reynolds means. Edge velocity is
+`U_e=sum(w*rho_time_mean*u_Favre)/sum(w*rho_time_mean)`. A single-node band uses
+that node directly. Edge viscosity is the case transport law evaluated at the
+Reynolds edge temperature, `mu(T_e)`, not the mean instantaneous viscosity.
+This local reference does not change the fixed freestream Cf/Cq denominators.
+
+With `f=rho_time_mean*u_Favre/(rho_e*U_e)`, displacement and momentum thickness
+integrands are `1-f` and `f*(1-u_Favre/U_e)`. Integrals use physical y, a wall
+origin, trapezoids and a linearly reconstructed partial last interval. They
+are second-order diagnostics, not sixth-order because the solver is high order.
+Delta99 is the inner edge of the >=0.99 U_e component connected to the whole
+declared edge band, found by linear interpolation. An internal overshoot is not
+selected in its place; the number of above-threshold components is recorded.
+
+The same CSV retains all raw mean/RMS/stress columns and adds
+`thickness_integrals_available,cumulative_displacement,cumulative_momentum`.
+Comment metadata `# thickness_NAME=VALUE` stores available edge rho/U/T/p/mu,
+delta99, displacement99, momentum99, H99 and Re_theta99, plus the explicitly
+named limit/integrals/H/Re_theta when requested. `H=displacement/momentum` and
+`Re_theta=rho_e*U_e*momentum/mu_e`. Thicknesses and cumulative integrals use
+native length; H and Re_theta are dimensionless. The availability header names
+its ordered flags. Undefined quantities have no numeric metadata entry; invalid
+cumulative cells are empty. A missing crossing or out-of-range explicit upper
+limit leaves other defined results and the original profile intact. No
+extrapolation, velocity clipping, reference maximum or empirical floor is used.
+
+The current acceptance scope is FP64 nonreacting axis-aligned Cartesian lower walls
+41/42/411/421, with +y pointing into fluid. Bounded M12 wall41 CPU/GPU seven-topology
+formula and exact same-backend continuation checks have passed for generated
+and read-Cartesian grids; the other wall families and production statistical
+convergence still need their own checks. The small Cartesian GRCBC SBLI
+combination below also passes its quantitative gate. Thickness uses the existing selected history and
+one-dimensional result, with no new three-dimensional/device state or checkpoint
+sidecar. Its options are broadcast, versioned and restored from the existing
+effective JSON definition. The extra one-dimensional workspace uses the existing
+resource budget; `station_thickness_diagnostic` timing includes its budget
+collectives as well as the local calculation.
+
+### Read-Cartesian Random-Wall Checkpoints
+
+The original random wall-forcing mode now has an explicitly validated FP64
+read-Cartesian M12 combination. The bounded gate uses 64x32x24, 743e MP7-LD,
+643e viscous derivatives, no filter, boundaries 11/21/41/50/1/1, `ninit=2`,
+`turbinf=prof`, `ASTR_WALL_BLOWING_MODE=legacy_random`, and ten steps at dt=.02.
+It is an I/O/continuation gate, not a physical or statistical convergence claim.
+
+The two-dimensional extruded input still freezes `grid.2d`. For `lreadgrid=t`,
+the actual three-dimensional input is frozen as `resources/grid.h5`, together
+with the original inlet profile, `wallbs.dat` and initial field. Restore uses
+these resources even if the newly prepared working directory has none of its
+original grid/profile/forcing/initial-field copies. Exact state/metric and
+statistics restoration keep their existing files and options; use
+`exact_restart=t` for the bitwise continuation contract. Default output settings
+and ordinary non-exact restart behavior are not changed by this increment.
+
+Before accepting this new combination, a one-time initialization check uses
+the physical coordinates already present on the host: x/y/z must be
+axis-separable, strictly increasing and agree across MPI shared axis nodes.
+This check precedes the first RK step and checkpoint publication and is rebuilt
+at each startup. Its small axis workspace uses the configured host budget;
+`ASTR_OUTPUT_PROFILE_GRID` records bytes and `checkpoint_profile_cartesian_proof`
+records initialization time. It neither downloads geometry nor adds a checksum
+or checkpoint sidecar. It does not admit rotated or curved random-wall grids.
+
+The RNG draw algorithm, rank-local order, first-call state, runtime signature
+and topology checks are unchanged. They remain in the existing
+`control.bin` ASTROC09/ASTRWR02 payload. CPU/GPU NP1, NP2 x/y/z and three NP4
+mixed decompositions pass exact same-backend 5+5 continuation for full state,
+statistics, control/RNG bytes and matching continuation CSVs. Statistics can
+also be disabled without changing the authoritative field or preventing this
+checkpoint path. Repartitioning, cross-backend exact RNG continuation, FP32,
+read-grid NSCBC 22/52, compact-viscous combinations and other wall families are
+not newly verified by this matrix.
+
+### Small GRCBC SBLI Quantitative Gate
+
+`input.products.sbli.statistics.example.jsonl` is for the existing 64x48x16
+Cartesian incident-shock fixture, not a production default. It uses Ma=2,
+Re=296000, reference temperature 148.9 K, Tw/T_ref=.8, a 32.6-degree shock,
+743e MP7-LD convection, 643e viscous derivatives, no filter, and boundaries
+11/22/41/52/1/1 with the complete-RHS GRCBC upper boundary. The field is
+initialized with the oblique jump. The bounded gate is twelve steps at
+dt=2.5e-4, statistics over [0.000125,0.002875], all products emitted every step.
+It validates interfaces and numerical definitions, not developed SBLI or
+statistically converged turbulence.
+
+Wall transport/time means, fixed-freestream Cf/Cq, statistical Stanton number,
+wall/grid units, Reynolds/Favre velocity moments, pressure/temperature means
+and the two thickness families pass CPU/GPU NP1, NP2 x/y/z and NP4 xy/xz/yz.
+The example's Tr=1.72 is an explicit test reference, not an automatic recovery
+temperature model. Its station i=24 is at x=3.125; its external band is j=40..44
+and its optional upper integration coordinate is y=.6. Choose these values
+again for a different case rather than reusing the fixture numbers blindly.
+
+GPU **selected wall statistics currently require CUDA-aware MPI for their
+private stencil exchange**, independently of the solver halo backend. The
+solver may remain pinned. A launcher that explicitly disables CUDA buffers
+cannot provide these wall means; no host fallback is silently selected. The
+bounded regression enables the MPI device-buffer capability and UCX while
+keeping `ASTR_GPU_HALO_TRANSPORT=pinned`. With that capability disabled, only
+the wall histories fail, dependent wall-unit cells are empty, and other valid
+products and the main solver continue. Record the actual launcher/backend
+configuration when reproducing the case.
+
+Both new profile CSV writers now use an explicit three-digit exponent,
+including for near-zero covariance. A value such as `1.843...E-110` remains
+finite and readable by ordinary CSV tools; it is not replaced with zero.
+This is a serialization correction, not a change to the moment algorithm.
+The real-flow checks compare every native frame for portable finite values,
+and compare RMS through variance while reporting the raw RMS difference.
+
+## Complete Molecular Wall Quantities
+
+The FP64, nonreacting Cartesian lower-wall path now has distinct fields
+`wall_shear_x`, `wall_shear_z`, `wall_heat_into_wall`, `dynamic_viscosity` and
+`temperature_gradient_x/y/z`. The thermal derivatives use the same private
+seven-node sixth-order operator and physical metric projection as velocity
+gradients, not saved RK gradients. This increment does not admit new AIR5,
+CURVE or FP32 diagnostics. The tested real case is the existing 64x32x24,
+ten-step M12 interface fixture; this is not turbulent/production acceptance.
+Procedural Cartesian grids keep their existing admission. Read grids can use
+these new fields with active `catalog_stats` after a one-time proof of finite,
+globally consistent, axis-separable Cartesian coordinates and strictly monotone
+physical axes. The complete lower-wall stress/heat path currently requires
+inward normal +y; viscosity alone has no wall-orientation restriction.
+Rotated/curvilinear grids are not admitted by this proof. An ordinary read-grid
+request without the selected-statistics proof still needs separate admission.
+Dimensional transport has operator checks, not this increment's real-flow validation.
+
+Wall x/z shear uses the complete molecular Newtonian stress projected onto
+the physical lower wall, including `mu*(du/dy+dv/dx)` and
+`mu*(dw/dy+dv/dz)`. Heat is Fourier conduction `kappa*dT/dy`, positive into
+the solid, not the older `wall_heat_into_gas` convention. Blowing enthalpy,
+kinetic energy and viscous work are not part of this field. Material properties
+use the case's current perfect-gas transport parameters and solver units.
+The default nondimensional Sutherland reference currently uses 110.3 K;
+the dimensional air formula uses its existing 110.4 K constant. No material
+law or solver boundary is changed by these diagnostics.
+In nondimensional output, `dynamic_viscosity` means
+`mu_phys/(rho_ref*U_ref*L_ref) = (mu_phys/mu_ref)/Re`, including the `1/Re`
+factor. It is not just `mu_phys/mu_ref`. Dimensional output uses Pa s.
+The nondimensional conduction coefficient is `(mu_effective/Pr)/const5`,
+with `const5=(gamma-1)*Mach^2`; dimensional conduction uses `cp*mu/Pr`.
+
+Instantaneous numerical wall fields use an ordinary `slice`, `grid_index`,
+`axis='j'`, `index=0` record. The wall fields select a physical bottom wall
+with bc41/42/411/421; only bc41 has this increment's real-flow matrix.
+Molecular properties do not include an unrequested turbulence closure.
+Images using these new fields have not yet received a dedicated rendering gate.
+
+For temporal wall curves use `kind='wall_profile'`, `source='reynolds'`,
+`statistics_source='selected-time'` and CSV output. The
+`input.products.wall.statistics.example.jsonl` indices refer to the bounded
+M12 fixture, not a production mesh. Enable `products='catalog_stats'`,
+`statistics=t`, `render=f` and an explicit `statistics_window` in the base
+namelist. `wall_span` selects physical spanwise-length averaging;
+`wall_line` selects exactly one k index without that average. Both select
+global j=0 and explicit inclusive i/k ranges. Fields are density, temperature
+and the four molecular quantities above; density is an implicit ordinary
+time mean. Wall profiles are Reynolds averages of already computed
+instantaneous quantities, not Favre averages or fluxes of primitive means.
+
+The effective viscosity, complete stress and heat are computed first, then
+accumulated every eligible completed step. Product CSV clocks are independent.
+Periodic terminal selections map to unique physical nodes; a wrapped range is
+sampled as its canonical pieces, without expanding across the unrequested gap.
+Time endpoints, gaps, coverage, failures and exact same-topology continuation
+reuse the selected-statistics registry and existing statistics checkpoint.
+
+On GPU the stencil packets, molecular quantities and cumulative states stay
+on device. Private stencil communication currently uses CUDA-aware MPI;
+there is no application-side host payload fallback if it is unavailable.
+The solver halo backend is a separate setting. This does not claim that MPI
+internally performs no staging. Only status integers and final one-dimensional
+weighted curve results are downloaded. Explicit diagnostic HDF5 sections and
+checkpoint staging are separate, requested I/O paths.
+Unused device coordinate packing is skipped for wall statistics.
+
+CSV files are in `outdat/new/wall_profile_products/ID/version.../segment...`.
+They preserve actual x/y/span, units, requested and actual time coverage,
+duration, segment count and the full-stress/conduction definitions.
+
+### Wall Reference Scales And Coefficients
+
+An optional `wall_reference` object on `wall_profile` enables local statistical
+wall scales and fixed-free-stream coefficients. The example
+`input.products.wall.references.example.jsonl` uses the same bounded M12
+indices as the raw wall example; its recovery inputs are examples, not
+recommended production values.
+
+```json
+"wall_reference": {}
+"wall_reference": {"recovery_temperature": 26.92}
+"wall_reference": {"recovery_factor": 0.9}
+```
+
+These are alternative object values, not three entries in one product.
+An absent object preserves the original raw CSV. An empty object adds
+`u_tau`, `nu_wall`, `viscous_length`, signed `Cf` and `Cq_inf`, but no Stanton
+column. The calculation uses the time/span-averaged wall shear vector,
+density and effective viscosity: `u_tau=sqrt(|mean(tau_wall)|/mean(rho_wall))`,
+`nu_wall=mean(mu_effective)/mean(rho_wall)` and
+`viscous_length=nu_wall/u_tau`. It does not average instantaneous friction
+velocities or instantaneous shear magnitudes.
+
+`Cf=2*mean(tau_x)/(rho_inf*U_inf^2)` and
+`Cq_inf=mean(q_into_wall)/(rho_inf*U_inf^3)` use the fixed case reference
+state, with `U_inf` the magnitude of its velocity vector and x the Cartesian
+streamwise direction. They do not substitute a local edge state.
+Recovery temperature must be positive and in the case's native temperature
+units. Alternatively, an explicit nonnegative recovery factor sets
+`Tr=T_inf*[1+r*(gamma-1)*Mach_inf^2/2]`. Zero is permitted; no empirical
+factor or layer classification is inferred. The two inputs are mutually
+exclusive. Only with one of them does the table add
+`St_stat=mean(q_into_wall)/[rho_inf*U_inf*cp_inf*(Tr-mean(Tw))]`.
+This is a ratio of compatible means, not `mean(St_instantaneous)`.
+In nondimensional cases `cp_inf=1/[(gamma-1)*Mach_inf^2]`; dimensional
+cases use the case's cp in native units.
+
+The reference request automatically accumulates temperature, both shear
+components, conduction and effective viscosity together, with density
+implicit, even if the explicit field list is shorter. Those raw means remain
+in the CSV. Matching requests share the existing histories; changing only a
+recovery input changes the product version, not the sampled field history.
+The saved effective definition restores these inputs on exact continuation.
+Unavailable derived values are empty CSV cells with explicit
+`wall_scale_available`, `cf_available`, `cq_available` and, when requested,
+`stanton_available` flags. Exact zero shear or recovery-wall temperature
+difference is not replaced by a floor. Other quantities and products continue.
+
+The same table also contains traditional grid wall units, using the row's
+statistical `viscous_length` rather than an instantaneous or inlet scale:
+
+- `y_first_plus`: distance between physical j=0 and the first off-wall node.
+- `dx_minus_plus`, `dx_plus_plus`: adjacent physical cell lengths in decreasing
+  and increasing global i, respectively. Nonperiodic missing neighbors are
+  empty cells; periodic endpoints use the corresponding actual terminal cell.
+- `dz_min_plus`, `dz_max_plus`: minimum and maximum physical cell lengths
+  contained in the selected k span. A `wall_line` instead uses the cell(s)
+  incident on its node, including the periodic seam when applicable.
+
+Lengths are positive physical distances; the nondimensional columns have unit
+one. They are not nominal uniform-grid intervals or a complete-domain y+
+coordinate. If the common wall scale or an individual ratio is unrepresentable,
+the corresponding cells remain empty. Geometry comes from small one-dimensional
+host coordinate axes; these columns add no device field or geometry downloads.
+Reference-table examples enable these columns with no additional switch.
+
+The profile interface above has its own matching-history and validation scope;
+the scalar/grid tables alone do not enable it. Boundary-layer integral product
+output still needs integration.
 
 ## Publish The Complete List
 
@@ -65,6 +558,76 @@ The example uses only JPEG. Each product has its own definition version, output
 segment and cadence. A pure cadence change retains its definition version and
 anchors the next output to the last successful output. Rendering images does
 not enable three-dimensional archives or checkpoints.
+
+## Coordinate Axes And Display Scale
+
+Dynamic slice, Q-surface and streamline images now show native physical
+coordinate axes by default, with gridlines off. Native SI coordinates use m;
+dimensionless coordinates use 1. The coordinate annotation is independent of
+the color-field normalization. See `input.products.tgv.coordinates.example.jsonl`.
+
+The normal coordinate axis is hidden for an axis-aligned plane. VTK's special
+2D text placement assumes world X/Y axes, so it is used only for XY planes;
+XZ/YZ planes use the existing three-dimensional camera followers with the
+normal axis hidden. This prevents Z titles/ticks from overlapping the image.
+It does not change the source geometry, coordinate ranges or display scale.
+
+An image's optional `display.coordinates` object accepts:
+
+```json
+"coordinates": {
+  "visible": true,
+  "reference_length": 2.0,
+  "origin": [1.0, 0.0, 0.0],
+  "display_scale": [1.0, 2.0, 1.0]
+}
+```
+
+Omit `reference_length` for native ticks. Supplying a positive fixed length
+changes ticks to `(coordinate-origin)/reference_length` without changing the
+data or geometry; `origin` requires that length. Display scale is a positive
+three-component actor transform, not a data filter. Its default is `[1,1,1]`.
+Nonunit factors are printed on the image, and ticks retain their native or
+explicitly normalized meaning. Camera position/focal point and up direction
+follow the display map, but `parallel_scale` remains the explicitly supplied
+display framing height; choose it to fit the exaggerated view.
+
+Axes use actual product bounds. An axis-aligned plane shows its two varying
+physical axes. An oblique plane retains a physical x/y/z bounding box; no local
+plane-coordinate basis is implied. A logical grid-index surface is treated as
+physically planar only when its corresponding physical coordinate is constant.
+Very short projected axes put their named numerical ranges in the image note
+instead of overlapping labels. This is text layout, not data resampling.
+
+The native and normalized examples have identical geometry. Field values,
+gradient definitions, streamlines and numerical archives are not transformed.
+An unrepresentable display transformation disables only that optional product;
+other products and the main simulation continue.
+
+Formal simulation images come only from the dynamic product catalog; the old
+fixed-preset production entry remains closed. Read-only streamline preview now
+also has native-coordinate annotations. These use the existing physical display
+window when one is explicit, otherwise the current globally reduced geometry
+bounds. Axis-aligned planes retain their physical plane position and hide the
+normal axis. Oblique planes retain global Cartesian axes, not an inferred local
+basis. An empty rank does not hide a globally nonempty product; a globally empty
+product hides its annotations. Only scalar counts and bounding boxes are
+reduced; no geometry arrays are downloaded for the annotation. Existing camera
+and clipping settings remain unchanged. The configurable display object above
+still belongs to dynamic catalog products, not to a new preview option.
+
+No-render VTK component checks and real 32-cubed TGV read-only previews pass for
+NP1/2 standard-device. Two candidates change camera/window/line width while
+reusing trajectories; source files and GPU flow/statistics remain unchanged.
+The direct-device mapper does not support the preview's display clipping planes
+and is not newly admitted here; direct-device dynamic-catalog images are a
+separate path. Production-resolution text layout and new FP32/AIR5/CURVE
+annotation acceptance are not claimed by these bounded checks.
+
+First device-image checks use 32-cubed FP64 TGV, NP1/2 standard-device, NP2
+direct-device and NP4 `2x2x1` standard-device with pinned private transport.
+The NP4 shared-device fixture uses explicit configuration budgets and normal
+resource monitoring. It does not admit arbitrary new topologies or cases.
 
 ## Current Numerical Evidence
 
@@ -341,3 +904,70 @@ existing absolute threshold, and same-backend 10 versus 5+5 restoration preserve
 the state and image pixels. This is software integration, not turbulent or
 statistically stationary validation. Private postprocessing transport was pinned;
 no M12 device-aware production result is claimed here.
+
+## Instantaneous And Mean Wall-Shear Lines
+
+`input.products.sbli.wall-shear-lines.example.jsonl` selects
+`kind="slice",field="wall_shear_lines"` on fixed global `j=0`.
+Here `slice` identifies the two-dimensional wall support; the extractor traces
+curves tangent to the wall shear, not a velocity streamline on a no-slip wall.
+
+The implementation uses FP64, five-variable nonreacting states on increasing,
+separable Cartesian x/z axes with the bottom-wall inward normal along +y.
+It inherits the existing molecular-wall inputs for 41/42/411/421; this new
+product's real-flow matrix specifically verifies the small bc41 GRCBC fixture.
+Neither CURVE, AIR5 nor native FP32 is admitted by this extension.
+Select `standard-device` or `direct-device`, not host/compatible processing.
+
+Required `extraction` keys:
+
+| Key | Meaning |
+| --- | --- |
+| `seeds` | Ordered global zero-based `[i,k]` node pairs, inside the sampling ranges. Order defines stable seed IDs. No automatic stride or seed placement. |
+| `integrator` | `rk45`, using the existing Cash–Karp coefficients with wall-specific strict error acceptance. |
+| `direction` | `forward`, `backward` or `both` along the selected shear vector. Both directions share the same seed order. |
+| `initial_step`, `minimum_step`, `maximum_step` | Positive physical arc-length increments in the input coordinate units, with minimum <= initial <= maximum. |
+| `maximum_error` | Positive local integration error control; this is not a spatial interpolation accuracy claim. |
+| `maximum_length` | Requested physical arc length per direction, not a display-space distance. |
+| `maximum_steps` | Positive representable accepted-step count. It is a numerical termination setting, not a resource/time quota. |
+
+Select `source="instantaneous"`, or `source="reynolds"` with
+`statistics_source="selected-time"`. The latter averages the instantaneous
+complete viscous wall-stress components at each wall node. It does not use
+mean viscosity times a mean gradient, average vector norms, or spanwise-reduced
+stress. Components are bilinearly interpolated on actual x/z cells and only
+then normalized for arc-length integration. Color is the norm of that displayed
+interpolated vector. Physical integration remains unchanged by display scaling.
+
+No empirical near-zero stress threshold is used. Exact seed/accepted-point zero,
+trial-stage zero, accuracy-limited termination, accepted-step limit, requested
+length, physical exit and sampling-region exit are distinguished. Failed trial
+points are not committed. The short final remainder must also pass the error
+test. There is no periodic wrap and no extrapolated exact boundary endpoint.
+Insufficient local interpolation support fails the product instead of reporting
+a false physical exit. The real fixture uses three private support layers.
+
+The ordinary fluid tracer's min-step policy is unchanged. Wall arrays and line
+geometry stay on the GPU, with only seed/bounds/current-particle control packets
+read back. Pinned private MPI staging is reported separately, as for other
+native products. Empty wall ranks participate; source/geometry bulk-download
+counters remain zero on both device pipelines. Terminal seeds without accepted
+line cells are metadata, not fabricated line segments.
+
+Camera/line-width changes reuse the same frozen-frame integration. Changing the
+seed list or integration settings reintegrates. Geometry is regenerated for each
+new complete step. The effective JSON seed definition is restored through the
+existing catalog checkpoint record, without another sidecar.
+Selected-time history is independent of image cadence: a continuing consumer
+preserves it, while actual gaps after removing all consumers remain excluded.
+
+JPEG receipts contain `wall_trace`, including termination counts and the small
+final particle packet. Traffic counters describe this product's integration;
+reused views report zero new integration/control reads. This metadata is not a
+host copy of the accepted trajectory. Formal numerical archives and checkpoint
+statistics retain their separate I/O contracts.
+
+The shipped example's 64x48x16 indices, three seeds, length 2, color range and
+z display factor 20 are the local fixture settings. Change them explicitly for
+another case; they are not automatic production defaults. Evidence and exact
+scope are in `ASTR_INSITU_TURBULENT_BOUNDARY_LAYER_PRODUCTS_PROGRESS.md`.

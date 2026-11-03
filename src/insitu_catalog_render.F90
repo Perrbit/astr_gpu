@@ -3,8 +3,11 @@ module insitu_catalog_render
   use iso_fortran_env, only: int64,real64
   use iso_c_binding, only: c_int,c_int64_t,c_char,c_double,c_null_char
   use astr_precision, only: real_kind,c_real_kind,real_bytes
-  use commvar, only: use_gpu,uinf,pinf,tinf,ia,ja,ka,lreadgrid,flowtype
-  use insitu_run_config, only: insitu_options,pack_catalog_render,catalog_product
+  use astr_precision_mpi, only: mpi_real_type
+  use commvar, only: use_gpu,uinf,pinf,tinf,ia,ja,ka,im,jm,km,lihomo,ljhomo,lkhomo,lreadgrid,flowtype
+  use parallel, only: ig0,jg0,kg0
+  use commarray, only: x
+  use insitu_run_config, only: insitu_options,pack_catalog_render,catalog_product,catalog_field_names,catalog_field_id
   use insitu_session, only: catalog_render_options,begin_catalog_renderer
   use insitu_product_schedule, only: runtime_product_state,runtime_catalog_count,runtime_catalog_state, &
     runtime_catalog_due,runtime_catalog_success,runtime_catalog_wait,runtime_catalog_disable,runtime_catalog_reject, &
@@ -41,11 +44,12 @@ contains
     integer(int64) :: count,workspace,download,exchange
     integer(int64) :: retained
     integer(int64) :: private_download,private_upload
-    integer :: p,q,source,first(3),extent(3),axes(2),d,n,status,rank,err,old_status
+    integer :: p,q,source,first(3),extent(3),axes(2),d,n,status,rank,err,old_status,unique_upper(3),display_field
     character(:),allocatable :: directory
     character(16) :: input_transport
     character(512) :: message,input_message
-    logical :: available,ready,ok,dirty,input_ok,requested(27),physical,retire_needed,lines,curve,host
+    logical :: available,ready,ok,dirty,input_ok,requested(size(catalog_field_names)),physical,retire_needed,lines,curve,host,glyphs,wall_lines
+    real(real_kind) :: local_bounds(6),wall_bounds(6)
     logical,allocatable :: group(:)
 #if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
     character(32) :: labels(11)
@@ -73,13 +77,13 @@ contains
       end subroutine
       integer(c_int) function render(pipeline,backend,script,comm,step,t,id,source,definition,directory,version, &
           labels,words,settings,field_ids,nfields,width,height,coordinates,values,references,provider,statistics,samples, &
-          selected_field,host_budget) &
+          selected_field,host_budget,first,unique_upper) &
           bind(C,name='astr_insitu_render_index_product')
         import c_int,c_char,c_int64_t,c_double,c_real_kind,c_devptr
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*),id(*),source(*),definition(*),directory(*),labels(*)
         integer(c_int),value :: comm,step,nfields,width,height,provider,selected_field
         integer(c_int64_t),value :: version,samples,host_budget
-        integer(c_int),intent(in) :: words(7),field_ids(*)
+        integer(c_int),intent(in) :: words(7),field_ids(*),first(3),unique_upper(3)
         real(c_double),intent(in) :: settings(31)
         real(c_real_kind),value :: t
         real(c_real_kind),intent(in) :: references(3),statistics(3)
@@ -123,6 +127,23 @@ contains
         import c_int
         integer(c_int),value :: begin
       end subroutine
+      subroutine wall_line_group(begin) bind(C,name='astr_insitu_runtime_wall_line_group')
+        import c_int
+        integer(c_int),value :: begin
+      end subroutine
+      integer(c_int) function render_wall_lines(pipeline,backend,script,comm,step,t,id,source,definition,directory,version, &
+          labels,words,settings,field_ids,nfields,width,height,coordinates,values,first,origin,cells,ranges,physical_bounds, &
+          provider,statistics,samples,host_budget) bind(C,name='astr_insitu_render_wall_trace_product')
+        import c_int,c_char,c_int64_t,c_double,c_real_kind,c_devptr
+        character(c_char),intent(in) :: pipeline(*),backend(*),script(*),id(*),source(*),definition(*),directory(*),labels(*)
+        integer(c_int),value :: comm,step,nfields,width,height,provider
+        integer(c_int64_t),value :: version,samples,host_budget
+        integer(c_int),intent(in) :: words(7),field_ids(*),first(3),origin(3),cells(3),ranges(2,3)
+        real(c_double),intent(in) :: settings(31)
+        real(c_real_kind),value :: t
+        real(c_real_kind),intent(in) :: physical_bounds(6),statistics(3)
+        type(c_devptr),value :: coordinates,values
+      end function
       integer(c_int) function line_metadata(source,labels,words,settings,comm) bind(C,name='astr_insitu_runtime_line_metadata')
         import c_int,c_char,c_double
         character(c_char),intent(in) :: source(*),labels(*)
@@ -170,14 +191,22 @@ contains
         message='image rendering was not enabled in the startup backend configuration'
       elseif(.not.use_gpu) then
         message='runtime image backend is not yet implemented for this source/processing pipeline'
+      elseif(state%definition%view%field=='wall_shear_vector'.and.(host.or.options%rendering_pipeline=='compatible')) then
+        message='wall shear glyphs require a strict device geometry/rendering pipeline'
+      elseif(state%definition%view%field=='wall_shear_lines'.and.(host.or.options%rendering_pipeline=='compatible')) then
+        message='wall shear lines require a strict device geometry/rendering pipeline'
+      elseif((state%definition%view%kind=='lambda2_surface'.or.state%definition%view%kind=='lambda_ci_surface').and. &
+          (host.or.options%rendering_pipeline=='compatible')) then
+        message='instantaneous vortex surfaces currently require a strict device geometry/rendering pipeline'
       elseif(host.and.options%rendering_pipeline/='compatible') then
         message='host processing requires the explicitly selected compatible renderer'
       elseif(state%definition%view%channel=='geometry'.and.options%rendering_pipeline/='compatible') then
         message='geometry export requires explicit compatible processing; resident pipelines do not download geometry'
       elseif(.not.((state%definition%view%kind=='slice'.and. &
           (state%definition%view%sampling=='grid_index'.or.state%definition%view%sampling=='physical_plane')).or. &
-          ((state%definition%view%kind=='q_surface'.or.state%definition%view%kind=='streamlines').and. &
-           state%definition%view%sampling=='volume'))) then
+          ((state%definition%view%kind=='q_surface'.or.state%definition%view%kind=='streamlines'.or. &
+            state%definition%view%kind=='lambda2_surface'.or.state%definition%view%kind=='lambda_ci_surface').and. &
+           (state%definition%view%sampling=='volume'.or.state%definition%view%sampling=='volume_index')))) then
         message='runtime image producer is not yet implemented for this kind/sampling mode'
       elseif(state%definition%view%kind=='streamlines'.and. &
           any(state%definition%fields<2.or.state%definition%fields>4)) then
@@ -210,6 +239,8 @@ contains
     do p=1,size(frames)
       if(.not.frames(p)%selected) cycle
       sample_definition=frames(p)%state%definition
+      glyphs=sample_definition%view%field=='wall_shear_vector'
+      wall_lines=sample_definition%view%field=='wall_shear_lines'
       requested=.false.;group=.false.
       do q=p,size(frames)
         if(.not.frames(q)%selected) cycle
@@ -219,16 +250,26 @@ contains
       if(sample_definition%view%kind=='q_surface') requested(22)=.true.
       lines=sample_definition%view%kind=='streamlines'
       if(lines) requested(2:4)=.true.
-      sample_definition%fields=pack([(d,d=1,27)],requested)
-      physical=sample_definition%view%sampling=='physical_plane'.or.sample_definition%view%kind=='q_surface'.or.lines
+      sample_definition%fields=pack([(d,d=1,size(requested))],requested)
+      physical=sample_definition%view%sampling=='physical_plane'.or.sample_definition%view%kind=='q_surface'.or.lines.or. &
+        sample_definition%view%kind=='lambda2_surface'.or.sample_definition%view%kind=='lambda_ci_surface'
       curve=lreadgrid.or.trim(flowtype)/='tgv'.or.any([ia,ja,ka]/=ia)
       if(physical) then
         sample_definition%axis=0
-        sample_definition%ranges(1,:)=0;sample_definition%ranges(2,:)=[ia,ja,ka]
+        if(sample_definition%view%sampling/='volume_index') then
+          sample_definition%ranges(1,:)=0;sample_definition%ranges(2,:)=[ia,ja,ka]
+        endif
       endif
-      call prepare_index_slice(sample_definition,frames(p)%source,frames(p)%samples,values,xyz,first,extent,input_ok,input_message, &
+      input_ok=.true.
+      if(sample_definition%statistics_source=='selected-time') then
+        ! Discovery activates other histories; bind this packet's exact support before sampling.
+        call slice_source_info(sample_definition,source,ready,input_ok,window,measure,count,input_message)
+        input_ok=input_ok.and.ready
+      endif
+      if(input_ok) call prepare_index_slice(sample_definition,frames(p)%source,frames(p)%samples,values,xyz,first,extent,input_ok,input_message, &
         workspace,download,exchange,seconds,include_cell_endpoints=.true.,retain_device=.not.host, &
         transport=trim(input_transport),host_diagnostics=host.and.options%derivative_backend=='cpu', &
+        point_geometry=glyphs.or.wall_lines,plane_support=merge(3,0,wall_lines), &
         staging_download=private_download,staging_upload=private_upload)
       if(input_ok) write(*,'(a,i0,a,a,a,i0,a,i0,a,i0,a,i0)') 'ASTR_RUNTIME_INPUT rank=',rank,' id=',sample_definition%id, &
         ' step=',identity%step,' selected_field_d2h_bytes=',download,' private_exchange_bytes=',exchange, &
@@ -268,6 +309,12 @@ contains
               group(q)=.false.;frames(q)%selected=.false.;dirty=.true.;retire_needed=.true.
             enddo
           endif
+        elseif(wall_lines) then
+          call wall_line_group(1_c_int)
+          local_bounds=[x(0,0,0,1),-x(im,jm,km,1),x(0,0,0,2),-x(im,jm,km,2),x(0,0,0,3),-x(im,jm,km,3)]
+          call MPI_Allreduce(local_bounds,wall_bounds,6,mpi_real_type,MPI_MIN,MPI_COMM_WORLD,err)
+          call require_mpi(err)
+          wall_bounds(2:6:2)=-wall_bounds(2:6:2)
         elseif(physical) then
           call physical_group(1_c_int)
         else
@@ -280,6 +327,9 @@ contains
         if(.not.group(q)) cycle
         frames(q)%selected=.false.
         state=frames(q)%state;ok=input_ok;message=input_message
+        display_field=state%definition%fields(1)
+        if(state%definition%view%kind=='lambda2_surface'.or.state%definition%view%kind=='lambda_ci_surface') &
+          display_field=catalog_field_id(state%definition%view%field)
         if(ok) call runtime_product_segment(q,state,directory,ok,message)
 #if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
         if(ok) then
@@ -301,6 +351,14 @@ contains
             directory//c_null_char,int(state%version,c_int64_t),labels,words,settings,int([ia,ja,ka],c_int), &
             int(extent-1,c_int),int(first,c_int),merge(1_c_int,0_c_int,curve),line_velocity,line_coordinates,device_coordinates, &
             references,int(frames(q)%source,c_int),statistics,int(frames(q)%samples,c_int64_t),int(options%host_budget_bytes,c_int64_t))
+        elseif(wall_lines) then
+          status=render_wall_lines(trim(options%rendering_pipeline)//c_null_char,trim(options%implementation_path)//c_null_char, &
+            trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int),identity%time, &
+            state%definition%id//c_null_char,state%definition%source//c_null_char,state%definition%record//c_null_char, &
+            directory//c_null_char,int(state%version,c_int64_t),labels,words,settings,int(sample_definition%fields,c_int), &
+            int(size(sample_definition%fields),c_int),int(extent(1),c_int),int(extent(3),c_int),device_coordinates,device_values, &
+            int(first,c_int),int([ig0,jg0,kg0],c_int),int([im,jm,km],c_int),int(sample_definition%ranges,c_int),wall_bounds, &
+            int(frames(q)%source,c_int),statistics,int(frames(q)%samples,c_int64_t),int(options%host_budget_bytes,c_int64_t))
         elseif(physical) then
           retained=workspace+product(int(extent,int64))*(3+size(sample_definition%fields))*real_bytes
           status=render_physical(trim(options%rendering_pipeline)//c_null_char,trim(options%implementation_path)//c_null_char, &
@@ -309,7 +367,7 @@ contains
             directory//c_null_char,int(state%version,c_int64_t),labels,words,settings,int(sample_definition%fields,c_int), &
             int(size(sample_definition%fields),c_int),int([ia,ja,ka],c_int),int(extent,c_int),int(first,c_int), &
             device_coordinates,device_values,references,int(frames(q)%source,c_int),statistics,int(frames(q)%samples,c_int64_t), &
-            int(state%definition%fields(1),c_int),int(options%device_budget_bytes,c_int64_t),int(retained,c_int64_t), &
+            int(display_field,c_int),int(options%device_budget_bytes,c_int64_t),int(retained,c_int64_t), &
             int(options%host_budget_bytes,c_int64_t))
         else
         n=0
@@ -317,13 +375,17 @@ contains
           if(d==state%definition%axis) cycle
           n=n+1;axes(n)=d
         enddo
+        unique_upper=[ig0+im,jg0+jm,kg0+km]-1
+        where([ig0+im,jg0+jm,kg0+km]==[ia,ja,ka].and..not.[lihomo,ljhomo,lkhomo]) &
+          unique_upper=unique_upper+1
         status=render(trim(options%rendering_pipeline)//c_null_char,trim(options%implementation_path)//c_null_char, &
           trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int),identity%time, &
           state%definition%id//c_null_char,state%definition%source//c_null_char,state%definition%record//c_null_char, &
           directory//c_null_char,int(state%version,c_int64_t),labels,words,settings,int(sample_definition%fields,c_int), &
           int(size(sample_definition%fields),c_int),int(extent(axes(1)),c_int),int(extent(axes(2)),c_int), &
           device_coordinates,device_values,references,int(frames(q)%source,c_int),statistics,int(frames(q)%samples,c_int64_t), &
-          int(state%definition%fields(1),c_int),int(options%host_budget_bytes,c_int64_t))
+          int(state%definition%fields(1),c_int),int(options%host_budget_bytes,c_int64_t), &
+          int(first,c_int),int(unique_upper,c_int))
         endif
         ok=status==0
         if(.not.ok) then
@@ -357,6 +419,8 @@ contains
           call host_group(0_c_int)
         elseif(lines) then
           call line_group(0_c_int)
+        elseif(wall_lines) then
+          call wall_line_group(0_c_int)
         elseif(physical) then
           call physical_group(0_c_int)
         else
@@ -379,10 +443,20 @@ contains
   logical function same_sample(a,b) result(same)
     type(catalog_product),intent(in) :: a,b
     same=a%source==b%source.and.a%statistics_source==b%statistics_source.and. &
-      a%view%kind==b%view%kind.and.a%view%sampling==b%view%sampling.and. &
+      (a%fluctuation.eqv.b%fluctuation).and. &
+      ((a%view%field=='wall_shear_vector').eqv.(b%view%field=='wall_shear_vector')).and. &
+      ((a%view%field=='wall_shear_lines').eqv.(b%view%field=='wall_shear_lines')).and. &
+      (a%view%kind==b%view%kind.or. &
+       ((a%view%kind=='lambda2_surface'.or.a%view%kind=='lambda_ci_surface').and. &
+        (b%view%kind=='lambda2_surface'.or.b%view%kind=='lambda_ci_surface'))).and. &
+      a%view%sampling==b%view%sampling.and. &
       a%axis==b%axis.and.a%index==b%index.and.all(a%ranges==b%ranges)
     if(same.and.a%view%sampling=='physical_plane') same=all(a%view%origin==b%view%origin).and. &
       all(a%view%normal==b%view%normal).and.all(a%view%bounds==b%view%bounds)
+    if(same.and.a%statistics_source=='selected-time') then
+      same=size(a%fields)==size(b%fields)
+      if(same) same=all(a%fields==b%fields)
+    endif
   end function
 
   subroutine require_mpi(status)

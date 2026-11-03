@@ -130,7 +130,7 @@ def source_snapshot(root):
     return result
 
 
-def prepare_native_preview(tmp_path, ranks, means, views=None):
+def prepare_native_preview(tmp_path, ranks, means, views=None, *, write_eps=True):
     sources = Path(os.environ.get("ASTR_INSITU_PREVIEW_SOURCE_ROOT", ROOT /
         "tests/gpu_validation/out/insitu_is8_matched_qualified_20261006")).resolve(strict=True)
     source_case = sources / f"gpu_np{ranks}_timing_pinned"
@@ -182,7 +182,7 @@ def prepare_native_preview(tmp_path, ranks, means, views=None):
     for key in ("DISPLAY", "PYTHONPATH", "CATALYST_IMPLEMENTATION_PREFER_ENV", "VTK_EGL_DEVICE_INDEX"):
         env.pop(key, None)
     env.update(ASTR_FORCE_MPI_TOPOLOGY=f"{ranks},1,1", ASTR_GPU_SYNC_MODE="explicit",
-        ASTR_INSITU_WRITE_EPS="1",  # Historical preview regressions check both formats explicitly.
+        ASTR_INSITU_WRITE_EPS="1" if write_eps else "0",  # Historical regressions explicitly check both formats.
         ASTR_GPU_HALO_TRANSPORT="pinned", ASTR_GPU_PRECISION_MODE="fp64",
         ASTR_GPU_FILTER_WORKSPACE="scalar", ASTR_INSITU_CONFIG="datin/input.insitu",
         ASTR_INSITU_TEST_PREVIEW_ISOLATION="1",
@@ -190,6 +190,68 @@ def prepare_native_preview(tmp_path, ranks, means, views=None):
         ASTR_INSITU_TIMING="1", OMPI_MCA_pml="ob1", OMPI_MCA_btl="self,tcp",
         OMPI_MCA_osc="pt2pt", OMPI_MCA_opal_cuda_support="false", OMPI_MCA_coll_ucc_enable="0")
     return source_root, bundle, executable, launcher, env, output
+
+
+@pytest.mark.parametrize('ranks', [1,2])
+def test_preview_coordinate_frames_reuse_unchanged_trajectories(tmp_path,ranks,record_property):
+    if os.environ.get('ASTR_INSITU_PREVIEW_CANDIDATE') != '1':
+        pytest.skip('Select the approved read-only preview check')
+    from PIL import Image
+    import numpy as np
+    views="""&streamline_views
+candidate_ids='native','zoom',velocity='instantaneous','instantaneous',
+seeds='line16','line16',color_field='u','u',line_width=2.,3.,
+camera_position(:,1)=3.14,3.14,12.,camera_position(:,2)=11.,9.,10.,
+focal_point(:,1)=3.14,3.14,3.14,focal_point(:,2)=3.14,3.14,3.14,
+view_up(:,1)=0.,1.,0.,view_up(:,2)=0.,0.,1.,parallel_scale=4.,6.5,
+display_bounds(:,1)=0.,6.283185307179586,0.,6.283185307179586,0.,6.283185307179586,
+display_bounds(:,2)=1.,5.,1.,5.,0.,6.283185307179586,
+color_range(:,1)=-1.,1.,color_range(:,2)=-1.,1.
+/
+"""
+    source,bundle,executable,launcher,env,output=prepare_native_preview(
+        tmp_path,ranks,False,views,write_eps=False)
+    before=source_snapshot(source)
+    started=monotonic()
+    try:
+        with (tmp_path/'run.log').open('w') as log:
+            result=subprocess.run([str(launcher),'--mca','coll_hcoll_enable','0','-np',str(ranks),str(executable),
+                                   'insitu-preview','datin/input.tgv'],cwd=tmp_path,env=env,
+                                  stdout=log,stderr=subprocess.STDOUT,timeout=300)
+        text=(tmp_path/'run.log').read_text()
+        assert result.returncode==0,text[-6000:]
+    finally:
+        assert source_snapshot(source)==before,'preview modified the sealed source'
+    assert 'advances=0' in text
+    assert text.count('flow_mismatches=0 statistics_mismatches=0')==ranks
+    assert not list(output.glob('*.eps')) and len(list(output.glob('*.jpeg')))==2
+    assert not (tmp_path/'outdat/new').exists() and not list(tmp_path.rglob('*.h5'))
+    for rank in range(ranks):
+        integrated=re.findall(r'ASTR_INSITU_PREVIEW_CACHE rank='+str(rank)+
+                              r' .*?integrated=(\d+)',text)
+        assert integrated==['1','0'],'camera/bounds/width changes must not reintegrate'
+        for name in ('native','zoom'):
+            receipt=json.loads((output/f'preview.{name}.step00000004.rank{rank:08d}.json').read_text())
+            assert receipt['geometry_host_bytes']==0
+            product=receipt['rendering'];model=product['coordinates']
+            assert product['image']=='published' and product['image_formats']==['jpeg']
+            assert model['visible'] and model['native_coordinate_unit']=='1'
+            assert model['axis_visible']==[True,True,True] and not model['gridlines']
+            assert model['physical_bounds']==receipt['physical_display_bounds']==model['display_bounds']
+            assert model['bounds_role']=='explicit physical display window'
+            assert model['display_scale']==[1.,1.,1.] and not model['normalized']
+        with (output/f'resources.rank{rank:08d}.csv').open() as stream:
+            next(stream);resources=list(csv.DictReader(stream))
+        assert resources[-1]['stage']=='session_released'
+        for row in resources:
+            assert int(row['host_increment_bytes'])<=4*1024**3
+            assert int(row['device_increment_bytes'])<=2*1024**3
+            assert int(row['device_free_bytes'])>=1024**3
+    for path in output.glob('*.jpeg'):
+        with Image.open(path) as image:
+            assert image.size==(800,600) and np.any(np.asarray(image.convert('RGB'))<230)
+    record_property('elapsed_seconds',monotonic()-started)
+    record_property('source_bundle',str(bundle))
 
 
 @pytest.mark.parametrize("ranks", [1, 2])

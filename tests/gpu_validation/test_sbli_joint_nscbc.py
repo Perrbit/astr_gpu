@@ -23,7 +23,7 @@ pytestmark=pytest.mark.skipif(not EXE,reason='Set ASTR_SBLI_JOINT_EXE to the roo
 
 
 def prepare(case,backend,scheme,steps,restore=None,checkpoint=True,outlet_pressure=PRESSURE_RATIO,backflow_mach=None,
-            km=16):
+            km=16,unrestricted=False):
     subprocess.run([sys.executable,str(ROOT/'tests/gpu_validation/prepare_s1_flatplate_case.py'),
         '--dst-case',str(case),'--use-gpu','t' if backend=='gpu' else 'f',
         '--im','64','--jm','48','--km',str(km),'--conschm',scheme,
@@ -55,7 +55,7 @@ def prepare(case,backend,scheme,steps,restore=None,checkpoint=True,outlet_pressu
     (case/'outdat/new').mkdir(parents=True)
     (case/'datin/input.output').write_text(f"""&output
  directory='outdat/new',restore_directory='{restore or ''}',restart_output='saved',exact_restart=t,
- host_budget_bytes=134217728,device_budget_bytes=134217728,buffer_bytes=4194304,device_reserve_bytes=0
+ host_budget_bytes={-1 if unrestricted else 134217728},device_budget_bytes={-1 if unrestricted else 134217728},buffer_bytes=4194304,device_reserve_bytes=0
 /
 &checkpoint
  enabled={'t' if checkpoint else 'f'},interval_steps=5,keep=2,initial_frame=f

@@ -1,0 +1,2 @@
+{"catalog_schema":"astr-insitu-products-v1"}
+{"id":"pressure-temperature-mean","kind":"slice","enable_request":1,"source":"reynolds","statistics_source":"selected-time","fields":["pressure","temperature"],"sampling":{"mode":"grid_index","axis":"k","index":8,"index_ranges":{"i":[0,16],"j":[0,16]}},"output":{"channel":"data","format":"hdf5-xdmf"},"schedule":{"mode":"steps","interval":4}}
