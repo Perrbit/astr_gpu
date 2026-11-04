@@ -1,0 +1,3 @@
+{"catalog_schema":"astr-insitu-products-v1"}
+{"id":"near-wall-streamwise-history","kind":"time_space","source":"instantaneous","enable_request":1,"fields":["velocity_x","pressure"],"sampling":{"mode":"grid_index","axis":"j","index":1,"index_ranges":{"i":[0,64],"k":[8,8]}},"temporal":{"sample_steps":1,"block_samples":16},"output":{"channel":"data","format":"csv"},"schedule":{"mode":"steps","interval":3}}
+{"id":"near-wall-spanwise-history","kind":"time_space","source":"instantaneous","enable_request":1,"fields":["velocity_x","pressure"],"sampling":{"mode":"grid_index","axis":"j","index":1,"index_ranges":{"i":[32,32],"k":[0,16]}},"temporal":{"sample_steps":1,"block_samples":16},"output":{"channel":"data","format":"csv"},"schedule":{"mode":"steps","interval":3}}

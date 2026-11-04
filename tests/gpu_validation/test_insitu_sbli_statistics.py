@@ -52,7 +52,7 @@ def definitions():
 
 def launch(case,backend,topology,*,steps=12,restore=None,checkpoint=False,records=None,statistics=True,
            monitor=False,resource_baseline=None,private_transport='device-aware',insitu_config=None,executable=None,memcheck=False,
-           unrestricted=False,catalog_replay=None):
+           unrestricted=False,catalog_replay=None,timing=True):
     if memcheck and (monitor or backend!='gpu'):
         raise ValueError('memory checking requires a separate GPU run')
     assert not case.exists(),'the preparer must never replace an existing evidence directory'
@@ -78,7 +78,7 @@ def launch(case,backend,topology,*,steps=12,restore=None,checkpoint=False,record
         for key in ('DISPLAY','PYTHONPATH','CATALYST_IMPLEMENTATION_PREFER_ENV','VTK_EGL_DEVICE_INDEX'):
             env.pop(key,None)
     env.pop('ASTR_WALL_BLOWING_MODE',None)
-    env.update(ASTR_GPU_MP_POSITIVITY='off',ASTR_GPU_MP_SPLIT_CACHE='off',ASTR_INSITU_TIMING='1',
+    env.update(ASTR_GPU_MP_POSITIVITY='off',ASTR_GPU_MP_SPLIT_CACHE='off',ASTR_INSITU_TIMING='1' if timing else '0',
                ASTR_NSCBC_FARFIELD_MODE='sbli_grcbc',ASTR_NSCBC_FARFIELD_SHOCK_X='1',
                ASTR_NSCBC_FARFIELD_SHOCK_ANGLE_DEG='32.6',ASTR_NSCBC_FARFIELD_RHO='1',
                ASTR_NSCBC_FARFIELD_U='1',ASTR_NSCBC_FARFIELD_V='0',ASTR_NSCBC_FARFIELD_W='0',

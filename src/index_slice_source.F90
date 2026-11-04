@@ -20,6 +20,11 @@ contains
     logical :: active,covered,formal_available,legacy_available,wants_favre
     integer :: fields(size(definition%fields)),i
     source=0;ready=.false.;ok=.false.;window=0;measure=0;count=0;message=''
+    if(definition%view%kind=='time_space'.or.definition%view%kind=='probe_spectrum') then
+      if(numq/=5.or.lcomb.or..not.selected_runtime_cartesian().or.real_bytes/=8) then
+        message='new temporal products currently require FP64 nonreacting Cartesian states';return
+      endif
+    endif
     if(.not.(numq==5.and.num_species==0.and..not.lcomb)) then
 #ifdef ASTR_AIR5_CHEMISTRY
       if(.not.(numq==11.and.num_species==5.and.num_modequ==1.and.lcomb)) then

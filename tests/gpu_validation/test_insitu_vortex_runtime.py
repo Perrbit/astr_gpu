@@ -11,7 +11,7 @@ from test_index_slice_runtime import product,segments,frames
 from test_insitu_sbli_statistics import launch,TOPOLOGIES
 from test_insitu_selected_runtime import configuration
 from test_insitu_vortex_math import evaluate
-from test_runtime_catalog_images import q_product,image_segments,arguments as image_arguments
+from test_runtime_catalog_images import q_product,image_segments,arguments as image_arguments,catalog_replay_library
 from test_insitu_device_products import resident_configuration
 from run_output_restart_validation import run_case,compare_fields
 from test_index_slice_runtime import ROOT
@@ -143,15 +143,39 @@ def test_vortex_surfaces_exact_restart_and_output_switch(tmp_path):
     prefix=launch(tmp_path/'prefix','gpu',(2,1,1),steps=5,records=rows,insitu_config=config,checkpoint=True,unrestricted=True)
     resumed=launch(tmp_path/'tail','gpu',(2,1,1),restore=prefix/'outdat/new/checkpoints/step000000000005',
         records=rows,insitu_config=config,checkpoint=True,unrestricted=True)
-    off=launch(tmp_path/'off','gpu',(2,1,1),records=[],insitu_config=config.replace('render=.true.','render=.false.'),
+    off=launch(tmp_path/'off','gpu',(2,1,1),records=[],insitu_config=config,
         checkpoint=True,unrestricted=True)
     final='outdat/new/checkpoints/step000000000012'
-    compare_fields(full/final/'state.h5',off/final/'state.h5')
-    compare_fields(full/final/'state.h5',resumed/final/'state.h5')
+    for filename in ('state.h5','statistics.h5'):
+        compare_fields(full/final/filename,off/final/filename)
+        compare_fields(full/final/filename,resumed/final/filename)
     reference={p.parent.parent.name:p for p in image_segments(full)}
     for segment in image_segments(resumed):
         for path in segment.glob('*.jpeg'):
             assert path.read_bytes()==(reference[segment.parent.parent.name]/path.name).read_bytes()
+
+
+def test_vortex_surfaces_dynamic_join_repair_and_removal(tmp_path,catalog_replay_library):
+    from copy import deepcopy
+    rows=surface_definitions(True)
+    invalid=deepcopy(rows[1]);invalid['extraction']={}
+    publications={4:rows[:1],6:[rows[0],invalid],8:rows,10:rows[1:]}
+    common=dict(insitu_config=render_configuration('standard-device'),checkpoint=True,unrestricted=True)
+    baseline=launch(tmp_path/'off','gpu',(1,1,2),records=[],**common)
+    case=launch(tmp_path/'dynamic','gpu',(1,1,2),records=[],
+        catalog_replay=(catalog_replay_library,publications),**common)
+    ending='outdat/new/checkpoints/step000000000012'
+    for filename in ('state.h5','statistics.h5'):
+        compare_fields(baseline/ending/filename,case/ending/filename)
+    state={row['id']:row for row in json.loads((case/'outdat/new/products.status.json').read_text())['products']}
+    assert state['lambda2_surface']['state']=='not-in-catalog',state
+    assert state['lambda_ci_surface']['state']=='active',state
+    output={segment.parent.parent.name:segment for segment in image_segments(case)}
+    assert set(output)=={'lambda2_surface','lambda_ci_surface'}
+    for name,expected in [('lambda2_surface',range(3,9)),('lambda_ci_surface',range(7,13))]:
+        receipts=[json.loads(path.read_text()) for path in output[name].glob('frame.*.rank00000000.json')]
+        assert sorted(row['step'] for row in receipts)==list(expected),receipts
+        assert all(row['field_d2h_bytes']==row['geometry_d2h_bytes']==row['geometry_host_bytes']==0 for row in receipts)
 
 
 def test_vortex_device_memcheck(tmp_path):

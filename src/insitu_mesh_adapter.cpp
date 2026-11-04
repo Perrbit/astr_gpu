@@ -647,17 +647,10 @@ extern "C" void astr_insitu_retire_resident_views() {
   resident_inputs_detached=true;
 }
 
-int astr_insitu::render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,
-    std::int64_t step,Real time,const char* profile,std::vector<DeviceMesh> products,bool covered,bool complete,
-    const RuntimeProductView* runtime)
-try {
+static int initialize_resident_renderer(const char* pipeline,const char* backend,const char* script,int fcomm,
+    const char* profile) {
   const auto comm=MPI_Comm_f2c(fcomm);
-  const std::string route=pipeline?pipeline:"";
-  if(runtime) {runtime_context=runtime_descriptor(runtime);runtime_result=0;runtime_error.clear();}
-  if(!native || !backend || !script || !profile || products.empty() ||
-      (route!="standard-device" && route!="direct-device") ||
-      (active && (selected_profile!=8 || resident_pipeline!=route)))
-    return allocation_failure("resident products","invalid renderer session",comm);
+  const std::string route=pipeline;
   if(!active) {
     if(setenv("ASTR_VTK_STRICT_DEVICE_ACCESS","1",1))
       return allocation_failure("resident products","cannot enable strict CPU-access guard",comm);
@@ -693,6 +686,21 @@ try {
     selected_profile=8;active=true;resident_pipeline=route;
     astr_insitu_resource_check("initialized");
   }
+  return 0;
+}
+
+int astr_insitu::render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,
+    std::int64_t step,Real time,const char* profile,std::vector<DeviceMesh> products,bool covered,bool complete,
+    const RuntimeProductView* runtime)
+try {
+  const auto comm=MPI_Comm_f2c(fcomm);
+  const std::string route=pipeline?pipeline:"";
+  if(runtime) {runtime_context=runtime_descriptor(runtime);runtime_result=0;runtime_error.clear();}
+  if(!native || !backend || !script || !profile || products.empty() ||
+      (route!="standard-device" && route!="direct-device") ||
+      (active && (selected_profile!=8 || resident_pipeline!=route)))
+    return allocation_failure("resident products","invalid renderer session",comm);
+  if(int result=initialize_resident_renderer(pipeline,backend,script,fcomm,profile)) return result;
   if(!resident_frame_open) {
     resident_frame_open=true;resident_frame_step=step;resident_frame_time=time;
     resident_frame_groups=0;resident_execute_seconds=0.;
@@ -830,6 +838,57 @@ extern "C" int astr_insitu_runtime_host_begin(const char* backend,const char* sc
   return 0;
 } catch(const std::exception& error) {
   return allocation_failure("host product initialization",error.what(),MPI_Comm_f2c(fcomm));
+}
+
+namespace {
+struct TemporalPlotInput {
+  int nodes=0,rows=0,axis=0;
+  const Real *coordinates=nullptr,*times=nullptr,*values=nullptr;
+  const int *gaps=nullptr;
+} temporal_plot_input;
+}
+
+extern "C" const Real* astr_insitu_runtime_temporal_data(int which,int* nodes,int* rows,int* axis,int* bytes) {
+  *nodes=temporal_plot_input.nodes;*rows=temporal_plot_input.rows;*axis=temporal_plot_input.axis;*bytes=sizeof(Real);
+  if(which==0) return temporal_plot_input.coordinates;
+  if(which==1) return temporal_plot_input.times;
+  return temporal_plot_input.values;
+}
+extern "C" const int* astr_insitu_runtime_temporal_gaps() {return temporal_plot_input.gaps;}
+
+extern "C" int astr_insitu_render_temporal_product(const char* pipeline,const char* backend,const char* script,
+    int fcomm,std::int64_t step,Real time,const char* id,const char* source,const char* definition,const char* directory,
+    std::int64_t version,const char* labels,const int* words,const double* settings,int nodes,int rows,int axis,
+    const Real* coordinates,const Real* times,const Real* values,const int* gaps) {
+  const auto comm=MPI_Comm_f2c(fcomm);
+  std::string error;
+  astr_insitu::RuntimeProductView view;
+  try {
+    view=astr_insitu::runtime_product_view(id,source,definition,directory,version,labels,words,settings);
+    const std::string route=pipeline;
+    if(!native || (route!="compatible" && route!="standard-device" && route!="direct-device"))
+      throw std::logic_error("Temporal chart requires the configured Catalyst renderer");
+    if(route=="compatible") {
+      if(astr_insitu_runtime_host_begin(backend,script,fcomm,step,time)) return 1;
+    } else {
+      if(active && (selected_profile!=8 || resident_pipeline!=route))
+        throw std::logic_error("Temporal chart cannot change the active rendering pipeline");
+      if(initialize_resident_renderer(pipeline,backend,script,fcomm,"runtime_catalog")) return 1;
+    }
+  } catch(const std::exception& caught) {error=caught.what();}
+  if(astr_insitu::consensus_product_failure(comm,error)) {astr_insitu_runtime_failure(error.c_str());return 1;}
+  runtime_context=runtime_descriptor(&view,true);runtime_result=0;runtime_error.clear();
+  temporal_plot_input={nodes,rows,axis,coordinates,times,values,gaps};
+  auto params=conduit_node_create();
+  conduit_node_set_path_int64(params,"catalyst/state/timestep",step);
+  conduit_node_set_path_double(params,"catalyst/state/time",time);
+  astr_insitu_resource_check("frame_before");
+  try {check(catalyst_execute(params));}
+  catch(const std::exception& caught) {error=caught.what();}
+  conduit_node_destroy(params);temporal_plot_input={};runtime_context.clear();
+  astr_insitu_resource_check("frame_after");
+  if(astr_insitu::consensus_product_failure(comm,error)) {astr_insitu_runtime_failure(error.c_str());return 1;}
+  return runtime_result;
 }
 #endif
 

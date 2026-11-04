@@ -189,6 +189,7 @@ contains
     allocate(frames(runtime_catalog_count()),group(runtime_catalog_count()))
     do p=1,runtime_catalog_count()
       call runtime_catalog_state(p,state)
+      if(state%definition%view%kind=='time_space'.or.state%definition%view%kind=='probe_spectrum') cycle
       if(state%definition%view%channel/='image'.and.state%definition%view%channel/='geometry') cycle
       if(state%definition%view%kind=='wall_curve') cycle
       if(state%status/=runtime_active.and.state%status/=runtime_waiting) cycle

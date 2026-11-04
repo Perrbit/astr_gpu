@@ -95,6 +95,95 @@ Current evidence and remaining coverage are recorded in
 `documents/ASTR_INSITU_TURBULENT_BOUNDARY_LAYER_PRODUCTS_PROGRESS.md`.
 These gates do not close wall-vector/shear-line TB2.2/3 or TB3/TB4.
 
+## TB3 Instantaneous Vortex Criteria
+
+`test_insitu_vortex_runtime.py` checks the current complete-step private gradients,
+lambda2/lambda_ci, index ROI, strict device surfaces, exact 5+7 continuation,
+dynamic catalog changes, output isolation, real four-rank memcheck and a short
+resource/cost pair. Set `ASTR_SELECTED_RUNTIME_EXE` to the root FP64 CUDA/Catalyst
+solver. Set `ASTR_VORTEX_CPU_PROBE` and `ASTR_VORTEX_GPU_PROBE` to the root-built
+`libinsitu_vortex_math_{cpu,gpu}_probe.so` libraries for the same-gradient oracle.
+No artificial resource/timeout ceilings are imposed by these cases.
+
+The same-state operator gate is a maximum scaled difference of 2e-10. Compare
+the actual gradients across CFD backends separately: near repeated eigenvalues,
+roundoff-perturbed trajectories can have a larger lambda_ci difference without
+an operator disagreement. Do not clip small imaginary parts to force agreement.
+The two same-ROI surface products share one input packet and release the nine
+temporary gradients after evaluation. Receipts distinguish field/final-geometry
+readback from allowed small controls and private MPI staging.
+
+`test_insitu_catalog_products.py -k vortex` includes `volume_index` control-state
+round trips and the shipped `scripts/output/input.products.tgv.vortex.example.jsonl`.
+The example uses a 32-cubed TGV ROI, fixed native thresholds and JPEG-only output.
+It requires a strict `standard-device` or `direct-device` rendering session.
+These gates do not admit CURVE, AIR5, FP32 or production-scale physical claims.
+
+## TB4 Temporal Products
+
+Build `insitu_temporal_analysis_probe` through the root CMake and set
+`ASTR_TEMPORAL_ANALYSIS_PROBE` to that executable for
+`test_insitu_temporal_analysis.py`. This component uses the existing unitary
+Singleton FFT with an explicit length factor in the power-density scaling,
+periodic Hann, per-segment demeaning and 50% overlap. Segment lengths are even
+and at least two; they need not be powers of two. An incomplete final segment
+does not become a shorter or zero-padded estimate.
+
+Tests compare explicit SciPy window-array references and windowed-energy
+normalisation, save/restore partial segments and overlap, and distinguish a
+sampling gap from a changed fixed physical spacing. Automatic/variable-time
+samples produce no Welch estimate; no resampling is performed. Storage is
+proportional to segment length and channel count, not total run duration.
+These remain mathematical component gates, not substitutes for the real
+runtime checks below.
+
+`test_insitu_temporal_catalog.py` uses `ASTR_CATALOG_PROBE` and
+`ASTR_CATALOG_STATE_PROBE` for explicit line/probe definitions, sampling stride,
+optional raw probe archives and word-exact temporal collection restoration.
+`test_insitu_temporal_runtime.py` uses `ASTR_SELECTED_RUNTIME_EXE` for the real
+FP64 CPU/GPU complete-step path: seven small flat-plate/SBLI topologies, shared
+node ownership, endpoint field/geometry oracles, Welch reference and 5+7 exact
+continuation. `analyse_matrix` reuses its saved results to report per-field
+scaled/absolute errors and final-state positivity without rerunning CFD.
+An additional spanwise line crosses the NP2 z partition: all 17 actual z nodes,
+field values reconstructed from the final conserved state, CPU/GPU equality and
+the counted one-dimensional transfer are checked. A six-step chart check uses
+the z coordinate rather than relabelling an x line; it writes no field/checkpoint
+HDF5. The streamwise/spanwise template indices are fixture settings, not a
+universal near-wall y-plus prescription.
+
+The two strict Catalyst pipelines also have temporal-image and exact image
+continuation tests. They consume reduced one-dimensional host histories, not a
+volume channel; the actual chart consumer is Matplotlib. It does not replace
+the device renderer for three-dimensional products. Partial numeric snapshots
+are coalesced by `scripts/insitu/temporal_archive.py`, not concatenated blindly.
+Dynamic missing/shared sampling, actual variable-step histories, late activation,
+different integer sampling phases, cold restoration while a product is absent,
+live block/segment changes and temporal restoration have runtime tests.
+`ASTR_CATALOG_MPI_PROBE` with `ASTR_CATALOG_MPIEXEC` checks temporal metadata
+broadcast/restoration on NP1/2/4. For the publication-failure and explicit
+reactivation gate, build `insitu_temporal_fault_preload` through root CMake and
+select `ASTR_TEMPORAL_FAULT_LIBRARY`; the preload injects EIO into one test product
+only. There is no production retry hook. Separate cost and memcheck runs do not
+write field/checkpoint HDF5; diagnostic logging on/off has an equivalence check.
+
+See `scripts/output/TEMPORAL_PRODUCTS.md` for schema/examples and the progress
+record for individual XML receipts and measured costs. Omitted checkpoint
+statistics have a CPU/GPU fresh-history test, not a claim of statistical exact
+continuation. Real Reynolds/Favre mean/fluctuation numerical lines have an
+independent clipped-trapezoid endpoint reference and per-sample mean coverage,
+including word-exact field/statistics and history continuation. Their compact
+optional coverage arrays live in the time-block `ASTRTB02` subrecord; instantaneous
+blocks do not allocate these arrays. The approved common-window Welch path admits
+only actual complete-step endpoints inside the closed statistics interval, while
+raw probe/time-space storage retains its original enabled coverage. Current
+`ASTRTH03` counters distinguish those histories. Window-edge, pre/in/post-window
+restoration and real/shared gaps have explicit runtime cases; their latest
+receipts belong in the progress record. Mean-history PSD/images and broader dynamic mean identities are
+not qualified by the numerical line test. The current window and integration
+receipts close the approved first local TB4 scope, not production physics or
+additional AIR5/CURVE/FP32 combinations.
+
 ## TB1 Selected Statistics
 
 ### Coordinate Component Checks Without CFD

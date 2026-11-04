@@ -6,6 +6,7 @@ program insitu_catalog_state_probe
   use insitu_product_schedule
   use adaptive_output, only: adaptive_config,adaptive_shared_config,configure_adaptive,observe_adaptive
   use astr_precision, only: real_kind
+  use insitu_temporal_history
   implicit none
   type(catalog_product),allocatable :: definitions(:),empty(:),expanded(:)
   type(runtime_product_state) :: state,saved
@@ -57,6 +58,59 @@ program insitu_catalog_state_probe
   call require(runtime_catalog_due(1,10_int64,.01_real64),'first frame must be due')
   call runtime_catalog_success(1,10_int64,.01_real64)
   select case(trim(scenario))
+  case('temporal-history')
+    block
+      real(real_kind),allocatable :: coordinates(:,:),values(:,:)
+      integer(int64),allocatable :: before(:),after(:)
+      integer :: nodes,p,c
+      nodes=1
+      if(definitions(1)%view%kind=='time_space') nodes=9
+      allocate(coordinates(3,nodes),values(nodes,size(definitions(1)%fields)))
+      coordinates=0
+      do p=1,nodes
+        coordinates(1,p)=real(p-1,real_kind)/8
+      enddo
+      call require(len(definitions(1)%record)>0,'empty input definition text')
+      call runtime_catalog_state(1,state)
+      call initialize_temporal_history(1,state%definition,coordinates,10_int64,ok)
+      call require(ok,'cannot initialize temporal history')
+      call require(histories(1)%definition%record==definitions(1)%record,'initial temporal definition text changed')
+      call check_temporal_text(histories(1),definitions(1)%record)
+      allocate(expanded(2));expanded(1)=definitions(1);expanded(2)=definitions(1);expanded(2)%id='second'
+      call runtime_catalog_apply(expanded,10_int64,.01_real64)
+      call initialize_temporal_history(2,expanded(2),coordinates,10_int64,ok)
+      call require(ok,'cannot add the second temporal history')
+      call require(len(histories(1)%definition%record)>0,'growing histories lost first definition text')
+      call require(len(histories(2)%definition%record)>0,'growing histories lost second definition text')
+      call check_temporal_text(histories(1),definitions(1)%record)
+      do p=10,15
+        histories(1)%definition=state%definition
+        call require(len(histories(1)%definition%record)>0,'empty temporal definition after reassignment')
+        call observe_temporal_clock(int(p,int64),.001_real_kind,.true.)
+        do c=1,size(values,2)
+          values(:,c)=sin(coordinates(1,:)+real(p,real_kind)*.001_real_kind)+c
+        enddo
+        call push_temporal_history(histories(1),int(p,int64),real(p,real_kind)*.001_real_kind, &
+          .001_real_kind,.true.,values,.true.,ok)
+        call require(ok,'cannot append temporal sample')
+        call require(histories(1)%definition%record==definitions(1)%record,'sample changed temporal definition text')
+      enddo
+      call pack_temporal_histories(15_int64,.015_real_kind,before,ok)
+      call require(ok,'cannot pack temporal history')
+      definitions(1)%view%camera(1)=42
+      definitions(1)%interval_steps=20
+      call require(temporal_sampling_same(histories(1),definitions(1)),'display/cadence reset the sampling identity')
+      call runtime_catalog_apply(definitions,15_int64,.015_real64)
+      call reset_temporal_histories()
+      call unpack_temporal_histories(before,15_int64,.015_real_kind,ok)
+      call require(ok,'cannot restore temporal history')
+      call require(histories(1)%definition%record==definitions(1)%record,'restore changed temporal definition text')
+      call pack_temporal_histories(15_int64,.015_real_kind,after,ok)
+      call require(ok.and.size(before)==size(after),'temporal payload length changed')
+      call require(all(before==after),'temporal payload changed on restore')
+      definitions(1)%temporal%sample_steps=2
+      call require(.not.temporal_sampling_same(histories(1),definitions(1)),'sampling change reused the old history')
+    end block
   case('typed-fields')
     fields=native_fields(1_c_int,dummy_id,dummy_name,0_c_int)
     call require(fields==size(definitions(1)%fields),'field query count differs')
@@ -217,6 +271,17 @@ program insitu_catalog_state_probe
   end select
   print '(a)','PASS: runtime catalog '//trim(scenario)
 contains
+  subroutine check_temporal_text(item,expected)
+    type(temporal_history),intent(in) :: item
+    character(*),intent(in) :: expected
+    integer :: unit
+    character(4096) :: text
+    open(newunit=unit,status='scratch',form='formatted')
+    write(unit,'(a)') '# definition='//item%definition%record
+    rewind(unit);read(unit,'(a)') text;close(unit)
+    call require(trim(text)=='# definition='//expected,'formatted temporal definition was truncated')
+  end subroutine
+
   subroutine require(condition,message)
     logical,intent(in) :: condition
     character(*),intent(in) :: message

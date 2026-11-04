@@ -29,6 +29,44 @@ program insitu_catalog_mpi_probe
   call poll_catalog_watch(1_int64,.001_real64,[2250,260,480],5,MPI_COMM_WORLD,updated,message)
   call require(updated,'initial file was not applied')
   call runtime_catalog_state(1,state)
+  if(mode=='temporal') then
+    call require(state%definition%temporal%sample_steps==3.and.state%definition%temporal%segment_length==4.and. &
+      state%definition%temporal%block_samples==4.and.state%definition%temporal%archive_samples, &
+      'initial temporal parameters differ across ranks')
+    if(rank==0) then
+      status=rename_file(trim(candidate)//c_null_char,trim(formal)//c_null_char)
+      call require(status==0,'cannot publish temporal update')
+    endif
+    call MPI_Barrier(MPI_COMM_WORLD,err)
+    call poll_catalog_watch(11_int64,.011_real64,[2250,260,480],5,MPI_COMM_WORLD,updated,message)
+    call runtime_catalog_state(1,state)
+    call require(updated.and.state%version==2,'temporal update version differs')
+    call require(state%definition%temporal%sample_steps==5.and.state%definition%temporal%segment_length==6.and. &
+      state%definition%temporal%block_samples==0.and..not.state%definition%temporal%archive_samples, &
+      'updated temporal parameters differ across ranks')
+    open(newunit=unit,status='scratch',access='stream',form='unformatted')
+    call catalog_watch_state_file(unit,.true.,11_int64,.011_real64,MPI_COMM_WORLD,ok)
+    call require(ok,'cannot save temporal catalog')
+    rewind(unit)
+    call catalog_watch_state_file(unit,.false.,11_int64,.011_real64,MPI_COMM_WORLD,ok)
+    call require(ok,'cannot restore temporal catalog')
+    close(unit)
+    if(rank==0) then
+      status=rename_file(trim(repeat_candidate)//c_null_char,trim(formal)//c_null_char)
+      call require(status==0,'cannot republish unchanged temporal definition')
+    endif
+    call MPI_Barrier(MPI_COMM_WORLD,err)
+    call poll_catalog_watch(21_int64,.021_real64,[2250,260,480],5,MPI_COMM_WORLD,updated,message)
+    call runtime_catalog_state(1,state)
+    call require(updated.and.state%version==2,'unchanged post-restore temporal definition changed version')
+    call require(state%definition%temporal%sample_steps==5.and.state%definition%temporal%segment_length==6, &
+      'restored temporal counts differ')
+    call catalog_watch_counts(reads,checks)
+    if(rank/=0) call require(reads==0.and.checks==0,'nonroot read temporal configuration')
+    print '(a,i0,a)','RANK ',rank,' TEMPORAL_OK'
+    call MPI_Finalize(err)
+    stop
+  endif
   if(mode=='wall-seeds') then
     call require(state%version==1.and.size(state%definition%wall_seeds,2)==3,'initial wall seed count differs')
     call require(all(state%definition%wall_seeds==reshape([8_int64,4_int64,24_int64,8_int64,40_int64,12_int64],[2,3])), &

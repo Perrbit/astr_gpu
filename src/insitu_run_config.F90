@@ -17,6 +17,7 @@ module insitu_run_config
   public :: catalog_wall_mean
   public :: read_catalog_wall_glyph
   public :: read_catalog_wall_seeds
+  public :: catalog_temporal,read_catalog_temporal
   character(32),parameter :: catalog_field_names(36)=[character(32) :: &
     'density','velocity_x','velocity_y','velocity_z','pressure','temperature', &
     'vibrational_temperature','mass_fraction_N2','mass_fraction_O2','mass_fraction_N', &
@@ -48,6 +49,10 @@ module insitu_run_config
     integer(int64) :: edge_band(2)=0
     real(real64) :: explicit_upper=0
   end type
+  type :: catalog_temporal
+    integer(int64) :: sample_steps=1,segment_length=0,block_samples=0
+    logical :: archive_samples=.false.
+  end type
   type :: catalog_product
     character(:),allocatable :: id,source,statistics_source,record,error,wall_units
     character(:),allocatable :: event_ids(:),window_ids(:)
@@ -62,6 +67,7 @@ module insitu_run_config
     type(catalog_render) :: view
     type(catalog_wall_reference) :: wall_reference
     type(catalog_thickness) :: thickness
+    type(catalog_temporal) :: temporal
   end type
   integer,parameter :: insitu_max_products=64
   integer,parameter :: insitu_max_views=6
@@ -130,6 +136,38 @@ contains
     end interface
     status=decode(record//c_null_char,len(record,kind=c_size_t),steps,native_length,error,size(error,kind=c_size_t))
     stride=int(steps);length=real(native_length,real64);ok=status==1;message=''
+    if(.not.ok) then
+      do i=1,size(error)
+        if(error(i)==c_null_char) exit
+        message=message//error(i)
+      enddo
+    endif
+  end subroutine
+
+  subroutine read_catalog_temporal(record,options,ok,message)
+    use iso_c_binding, only: c_int,c_int64_t,c_char,c_size_t,c_null_char
+    character(*),intent(in) :: record
+    type(catalog_temporal),intent(out) :: options
+    logical,intent(out) :: ok
+    character(:),allocatable,intent(out) :: message
+    integer(c_int64_t) :: counts(3)
+    integer(c_int) :: archive,status
+    character(c_char) :: error(512)
+    integer :: i
+    interface
+      integer(c_int) function decode(text,n,counts,archive,error,capacity) bind(C,name='astr_catalog_temporal')
+        import c_int,c_int64_t,c_char,c_size_t
+        character(c_char),intent(in) :: text(*)
+        integer(c_size_t),value :: n,capacity
+        integer(c_int64_t),intent(out) :: counts(3)
+        integer(c_int),intent(out) :: archive
+        character(c_char),intent(out) :: error(*)
+      end function
+    end interface
+    status=decode(record,len(record,kind=c_size_t),counts,archive,error,size(error,kind=c_size_t))
+    ok=status==1;message=''
+    options%sample_steps=counts(1);options%segment_length=counts(2);options%block_samples=counts(3)
+    options%archive_samples=archive==1
     if(.not.ok) then
       do i=1,size(error)
         if(error(i)==c_null_char) exit
@@ -385,6 +423,10 @@ contains
     integer :: integers_a(7),integers_b(7),seeds_a,seeds_b
     real(real64) :: reals_a(31),reals_b(31)
     same=.false.
+    if(a%temporal%sample_steps/=b%temporal%sample_steps.or. &
+       a%temporal%segment_length/=b%temporal%segment_length.or. &
+       a%temporal%block_samples/=b%temporal%block_samples.or. &
+       (a%temporal%archive_samples.neqv.b%temporal%archive_samples)) return
     if(a%fluctuation.neqv.b%fluctuation) return
     if(any(a%glyph_stride/=b%glyph_stride).or.a%glyph_length/=b%glyph_length) return
     seeds_a=0;seeds_b=0

@@ -362,7 +362,8 @@ contains
       ok=.true.;return
     endif
     if(definition%view%kind/='slice'.and.definition%view%kind/='probe'.and. &
-       definition%view%kind/='station_profile') return
+       definition%view%kind/='station_profile'.and.definition%view%kind/='time_space'.and. &
+       definition%view%kind/='probe_spectrum') return
     if(definition%view%kind=='station_profile'.and.any(definition%fields>6)) return
     do m=1,size(definition%fields)
       field=definition%fields(m)

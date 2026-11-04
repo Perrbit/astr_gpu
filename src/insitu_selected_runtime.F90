@@ -10,6 +10,8 @@ module insitu_selected_runtime
   use benchmark_runtime, only: insitu_clock,report_insitu_timing
   use insitu_product_schedule, only: runtime_product_state,runtime_catalog_count,runtime_catalog_state, &
     runtime_active,runtime_waiting,runtime_catalog_disable,runtime_catalog_status
+  use insitu_temporal_history, only: reset_temporal_histories,temporal_catalog_present, &
+    pack_temporal_histories,unpack_temporal_histories
 #ifdef _CUDA
   use cudafor
   use iso_c_binding, only: c_char,c_int,c_size_t
@@ -411,8 +413,9 @@ contains
     type(checkpoint_state_identity),intent(in) :: identity
     integer(int64),intent(in) :: budget
     type(checkpoint_state_identity) :: stored
-    integer(int64),allocatable :: words(:)
+    integer(int64),allocatable :: words(:),temporal(:),combined(:)
     integer(int64) :: host_bytes,device_bytes,temporary
+    integer :: selected_count,status
     logical :: ok,permit
     permit=.false.
     if(present(allow_repartition)) permit=allow_repartition
@@ -421,15 +424,37 @@ contains
     if(writing) then
       call series%pack(identity%step,identity%time,budget,words,ok)
       call checkpoint_state_require(ok,MPI_COMM_WORLD,'cannot pack selected statistics within checkpoint buffer budget')
+      if(temporal_catalog_present()) then
+        call pack_temporal_histories(identity%step,identity%time,temporal,ok)
+        call checkpoint_state_require(ok,MPI_COMM_WORLD,'cannot pack temporal product histories')
+        call checkpoint_state_require(size(words,kind=int64)+size(temporal,kind=int64)+2<=budget/8, &
+          MPI_COMM_WORLD,'temporal and selected statistics exceed checkpoint buffer budget')
+        selected_count=size(words)
+        allocate(combined(size(words,kind=int64)+size(temporal,kind=int64)+2),stat=status)
+        call checkpoint_state_require(status==0,MPI_COMM_WORLD,'cannot allocate temporal checkpoint payload')
+        combined(:selected_count)=words
+        combined(selected_count+1:size(combined)-2)=temporal
+        combined(size(combined)-1:)=[int(selected_count,int64),int(z'4153545254503031',int64)]
+        call move_alloc(combined,words)
+      endif
     endif
     stored=identity
     call checkpoint_rank_words(path,writing,series%intervals+1,stored,words,budget,MPI_COMM_WORLD)
     if(writing) return
-    call series%restore_bytes(identity%step,identity%time,budget,words,host_bytes,device_bytes,temporary,ok)
+    selected_count=size(words)
+    if(temporal_catalog_present()) then
+      call checkpoint_state_require(size(words)>=24,MPI_COMM_WORLD,'missing temporal checkpoint payload')
+      call checkpoint_state_require(words(size(words))==int(z'4153545254503031',int64).and. &
+        words(size(words)-1)>=22.and.words(size(words)-1)<size(words)-2,MPI_COMM_WORLD,'invalid temporal checkpoint tail')
+      selected_count=int(words(size(words)-1))
+      call unpack_temporal_histories(words(selected_count+1:size(words)-2),identity%step,identity%time,ok)
+      call checkpoint_state_require(ok,MPI_COMM_WORLD,'invalid temporal sample/overlap/block history')
+    endif
+    call series%restore_bytes(identity%step,identity%time,budget,words(:selected_count),host_bytes,device_bytes,temporary,ok)
     call checkpoint_state_require(ok,MPI_COMM_WORLD,'selected statistics layout/clock/window/backend mismatch')
     call approve_allocation(host_bytes+temporary,device_bytes,device_bytes,ok)
     call checkpoint_state_require(ok,MPI_COMM_WORLD,'selected statistics restore resource budget')
-    call series%restore(identity%step,identity%time,budget,words,ok)
+    call series%restore(identity%step,identity%time,budget,words(:selected_count),ok)
     call checkpoint_state_require(ok,MPI_COMM_WORLD,'cannot restore selected statistics state')
     first_observation=.true.;selected_group=0
     geometry_checked=.false.;geometry_valid=.false.;geometry_rejected=.false.;geometry_direction=0;geometry_message=''
@@ -448,6 +473,7 @@ contains
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     logical,intent(out) :: ok
     real(real_kind) :: velocity(3),speed,cp_reference
+    call reset_temporal_histories()
     call series%configure(window,[ia,ja,ka],[ig0,jg0,kg0],[im,jm,km],[lihomo,ljhomo,lkhomo],use_gpu,ok)
     host_limit=host_budget;device_limit=device_budget;device_reserve=reserve
     velocity=[uinf,vinf,winf];speed=maxval(abs(velocity))
@@ -665,6 +691,7 @@ contains
 #endif
     endif
     call series%release();selected_group=0;first_observation=.true.
+    call reset_temporal_histories()
     geometry_checked=.false.;geometry_valid=.false.;geometry_rejected=.false.;geometry_direction=0;geometry_message=''
     if(allocated(active_consumers)) deallocate(active_consumers)
   end subroutine

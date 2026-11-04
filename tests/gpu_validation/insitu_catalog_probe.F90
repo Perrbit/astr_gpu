@@ -33,6 +33,8 @@ program insitu_catalog_probe
     print '(a,i0)','steps=',products(i)%interval_steps
     print '(a,es24.16)','time=',products(i)%interval_time
     print '(a,es24.16e3)','native_isovalue=',products(i)%view%isovalue
+    print '(a,3(i0,1x),l1)','temporal=',products(i)%temporal%sample_steps, &
+      products(i)%temporal%segment_length,products(i)%temporal%block_samples,products(i)%temporal%archive_samples
     print '(a,2(i0,1x))','coordinate_flags=',products(i)%view%coordinate_flags
     print '(a,7(es24.16,1x))','coordinate_values=',products(i)%view%coordinate_values
     print '(a,2(i0,1x))','wall_reference_flags=',products(i)%wall_reference%flags

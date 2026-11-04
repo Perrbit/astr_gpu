@@ -26,6 +26,13 @@ def test_shipped_tgv_fluctuation_example(tmp_path):
     assert result.stdout.count('valid=T')==2 and result.stdout.count('fluctuation=T')==2,result.stdout
 
 
+def test_shipped_tgv_vortex_example(tmp_path):
+    path=Path(__file__).resolve().parents[2]/'scripts/output/input.products.tgv.vortex.example.jsonl'
+    result=run(tmp_path,path.read_text().splitlines())
+    assert result.returncode==0,result.stdout+result.stderr
+    assert result.stdout.count('valid=T')==2 and 'valid=F' not in result.stdout,result.stdout
+
+
 def test_shipped_mean_wall_footprint_example(tmp_path):
     path=Path(__file__).resolve().parents[2]/'scripts/output/input.products.sbli.wall-footprints.example.jsonl'
     result=run(tmp_path,path.read_text().splitlines())
@@ -117,6 +124,21 @@ def test_vortex_surface_explicit_index_region(tmp_path,kind,field,level,scaled):
     assert 'field='+field in result.stdout
     native=float(next(line.split('=')[1] for line in result.stdout.splitlines() if line.startswith('native_isovalue=')))
     assert native==level*(3**(2 if field=='lambda2' else 1) if scaled else 1)
+
+
+@pytest.mark.skipif(not os.environ.get('ASTR_CATALOG_STATE_PROBE'),reason='Select the root control probe')
+@pytest.mark.parametrize('kind,level',[('lambda2_surface',-.25),('lambda_ci_surface',.5)])
+def test_vortex_index_region_checkpoint_roundtrip(tmp_path,kind,level):
+    item=visual_product('q_surface');item['kind']=kind
+    item['sampling']=dict(mode='volume_index',bounds=[0,300,0,35,0,90],
+        index_ranges=dict(i=[16,64],j=[0,24],k=[4,20]))
+    item['extraction']=dict(isovalue=level,reference_length=2.,reference_velocity=6.)
+    path=tmp_path/'vortex.jsonl'
+    path.write_text('\n'.join(json.dumps(row) for row in [HEADER,item])+'\n')
+    result=subprocess.run([os.environ['ASTR_CATALOG_STATE_PROBE'],str(path),'visual-checkpoint'],
+                          capture_output=True,text=True)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'PASS: runtime catalog visual-checkpoint' in result.stdout
 
 
 @pytest.mark.parametrize('change',['missing_level','missing_velocity','mean','empty_roi','negative_roi'])

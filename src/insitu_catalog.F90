@@ -5,7 +5,8 @@ module insitu_catalog
   use iso_c_binding, only: c_ptr,c_int,c_int64_t,c_double,c_size_t,c_char,c_null_char,c_associated,c_f_pointer
   use insitu_run_config, only: catalog_product,catalog_field_id,catalog_field_names,pack_catalog_render,unpack_catalog_render, &
     read_catalog_wall_reference,read_catalog_wall_units,read_catalog_thickness, &
-    read_catalog_coordinates,read_catalog_fluctuation,catalog_wall_mean,read_catalog_wall_glyph,read_catalog_wall_seeds
+    read_catalog_coordinates,read_catalog_fluctuation,catalog_wall_mean,read_catalog_wall_glyph,read_catalog_wall_seeds, &
+    read_catalog_temporal
   use insitu_product_schedule, only: runtime_catalog_apply,runtime_catalog_count,runtime_catalog_state, &
     runtime_product_state,runtime_catalog_state_file,runtime_active,runtime_bad_config,runtime_waiting, &
     runtime_resource_disabled,runtime_absent
@@ -14,6 +15,7 @@ module insitu_catalog
   public :: read_product_catalog,parse_catalog_product,validate_catalog_grid
   public :: configure_catalog_watch,poll_catalog_watch,catalog_watch_counts,rebase_catalog_watch
   public :: catalog_watch_state_file,write_catalog_status
+  public :: quote_catalog_text
   character(:),allocatable,save :: watched_path,watch_error
   integer(int64),save :: watch_interval=10,watch_next_step=0,watch_reads=0,watch_checks=0
   integer(int64),save :: watch_signature(8)=0
@@ -384,19 +386,21 @@ contains
     type(catalog_product),intent(inout) :: entry
     integer,intent(in) :: rank,comm
     integer :: header(4),err,nseeds
-    integer(int64) :: words(10)
+    integer(int64) :: words(14)
     real(real64) :: periods(2)
     character(32) :: labels(11)
     integer :: view_words(7)
     real(real64) :: view_reals(31)
     if(rank==0) then
       header=[merge(1,0,entry%valid),entry%line,entry%axis,size(entry%fields)]
-      words=[entry%index,reshape(entry%ranges,[6]),entry%enable_request,entry%interval_steps,entry%dense_interval_steps]
+      words=[entry%index,reshape(entry%ranges,[6]),entry%enable_request,entry%interval_steps,entry%dense_interval_steps, &
+        entry%temporal%sample_steps,entry%temporal%segment_length,entry%temporal%block_samples, &
+        int(merge(1,0,entry%temporal%archive_samples),int64)]
       periods=[entry%interval_time,entry%dense_interval_time]
     endif
     call MPI_Bcast(header,4,MPI_INTEGER,0,comm,err)
     call require_catalog_mpi(err,comm)
-    call MPI_Bcast(words,10,MPI_INTEGER8,0,comm,err)
+    call MPI_Bcast(words,size(words),MPI_INTEGER8,0,comm,err)
     call require_catalog_mpi(err,comm)
     call MPI_Bcast(periods,2,MPI_DOUBLE_PRECISION,0,comm,err)
     call require_catalog_mpi(err,comm)
@@ -405,6 +409,8 @@ contains
       allocate(entry%fields(header(4)))
       entry%index=words(1);entry%ranges=reshape(words(2:7),[2,3]);entry%enable_request=words(8)
       entry%interval_steps=words(9);entry%dense_interval_steps=words(10)
+      entry%temporal%sample_steps=words(11);entry%temporal%segment_length=words(12)
+      entry%temporal%block_samples=words(13);entry%temporal%archive_samples=words(14)==1
       entry%interval_time=periods(1);entry%dense_interval_time=periods(2)
     endif
     call MPI_Bcast(entry%fields,header(4),MPI_INTEGER,0,comm,err)
@@ -725,12 +731,17 @@ contains
       endif
       ok=.true.;error='';return
     case('grid_index')
-      if(entry%view%kind/='slice') then
+      if(entry%view%kind/='slice'.and.entry%view%kind/='time_space') then
         error='grid_index sampling requires a slice';return
       endif
-      ok=read_index_sampling(sampling,entry,error);return
+      ok=read_index_sampling(sampling,entry,error)
+      if(.not.ok) return
+      if(entry%view%kind=='time_space'.and.count(entry%ranges(2,:)>entry%ranges(1,:))/=1) then
+        ok=.false.;error='time_space requires exactly one varying global index range';return
+      endif
+      return
     case('grid_node')
-      if(entry%view%kind/='probe') then
+      if(entry%view%kind/='probe'.and.entry%view%kind/='probe_spectrum') then
         error='grid_node sampling requires a probe';return
       endif
       if(.not.keys_allowed(sampling,[character(16)::'mode','indices'],error)) return
@@ -820,7 +831,15 @@ contains
     integer(int64) :: pixels(2),number
     integer :: i,boolean
     ok=.false.;display=json_get(root,'display'//c_null_char);output=json_get(root,'output'//c_null_char)
-    if(entry%view%kind=='wall_curve') then
+    if(entry%view%kind=='time_space') then
+      if(.not.keys_allowed(display,[character(16)::'color_map','color_range','coordinates'],error)) return
+      if(.not.read_choice(display,'color_map',[character(24)::'diverging_blue_red','grayscale'], &
+        entry%view%color_map,error)) return
+      if(.not.read_vector(display,'color_range',entry%view%color_range,error)) return
+      if(entry%view%color_range(1)>=entry%view%color_range(2)) then
+        error='time_space color_range must be strictly increasing';return
+      endif
+    elseif(entry%view%kind=='wall_curve'.or.entry%view%kind=='probe_spectrum') then
       if(.not.keys_allowed(display,[character(16)::'y_range','line_width'],error)) return
       if(.not.read_vector(display,'y_range',entry%view%color_range,error)) return
       if(entry%view%color_range(1)>=entry%view%color_range(2)) then
@@ -985,7 +1004,7 @@ contains
     integer :: id,i
     ok=.false.;output=json_get(root,'output'//c_null_char);sampling=json_get(root,'sampling'//c_null_char)
     if(.not.read_choice(root,'kind',[character(32)::'slice','probe','wall_curve','q_surface','streamlines','station_profile','wall_profile', &
-      'lambda2_surface','lambda_ci_surface'], &
+      'lambda2_surface','lambda_ci_surface','time_space','probe_spectrum'], &
       entry%view%kind,error)) return
     if(.not.read_choice(output,'channel',[character(8)::'data','image','geometry'],entry%view%channel,error)) return
     if((entry%view%kind=='station_profile'.or.entry%view%kind=='wall_profile').and.entry%view%channel/='data') then
@@ -998,7 +1017,8 @@ contains
         error='data products do not use display parameters';return
       endif
     elseif(entry%view%channel=='geometry') then
-      if(entry%view%kind=='probe'.or.entry%view%kind=='wall_curve') then
+      if(entry%view%kind=='probe'.or.entry%view%kind=='wall_curve'.or. &
+         entry%view%kind=='time_space'.or.entry%view%kind=='probe_spectrum') then
         error='existing geometry export applies to slices, Q surfaces and streamlines';return
       endif
       if(.not.keys_allowed(output,[character(8)::'channel','format'],error)) return
@@ -1017,7 +1037,13 @@ contains
     if(entry%view%channel=='geometry') then
       ok=read_visual_extraction(root,entry,error);return
     endif
-    if(entry%view%channel=='data'.and.entry%view%kind=='slice') then
+    if(entry%view%channel=='data'.and. &
+       (entry%view%kind=='time_space'.or.entry%view%kind=='probe_spectrum')) then
+      if(entry%view%format/='csv') then
+        error='temporal numerical output requires csv';return
+      endif
+      if(.not.read_catalog_fields(root,entry,error)) return
+    elseif(entry%view%channel=='data'.and.entry%view%kind=='slice') then
       if(entry%view%format/='hdf5-xdmf'.or.entry%view%sampling/='grid_index') then
         error='data slices require hdf5-xdmf and grid_index';return
       endif
@@ -1130,7 +1156,7 @@ contains
     validation: block
       if(.not.keys_allowed(root,[character(24)::'id','kind','enable_request','source', &
           'statistics_source','fields','field','sampling','display','extraction','output','schedule', &
-          'wall_reference','wall_units','thickness','fluctuation'],error)) exit validation
+          'wall_reference','wall_units','thickness','fluctuation','temporal'],error)) exit validation
       if(.not.read_text(root,'id',entry%id,error)) exit validation
       if(entry%id=='.'.or.entry%id=='..'.or.index(entry%id,'/')>0.or.index(entry%id,achar(92))>0) then
         error='id must be a single product name, not a path'
@@ -1157,6 +1183,8 @@ contains
         endif
       endif
       if(.not.read_catalog_body(root,entry,error)) exit validation
+      call read_catalog_temporal(entry%record,entry%temporal,good,error)
+      if(.not.good) exit validation
       call read_catalog_wall_glyph(entry%record,entry%glyph_stride,entry%glyph_length,good,error)
       if(.not.good) exit validation
       call read_catalog_wall_seeds(entry%record,entry%wall_seeds,good,error)
@@ -1179,7 +1207,8 @@ contains
       call read_catalog_fluctuation(entry%record,entry%fluctuation,good,error)
       if(.not.good) exit validation
       if(entry%fluctuation) then
-        if(entry%view%kind/='slice'.or.entry%view%sampling/='grid_index'.or.entry%axis/=2.or. &
+        if((entry%view%kind/='slice'.and.entry%view%kind/='time_space').or. &
+           entry%view%sampling/='grid_index'.or.entry%axis/=2.or. &
            entry%statistics_source/='selected-time'.or.entry%source=='instantaneous') then
           error='fluctuation requires a fixed-j slice with Reynolds/Favre selected-time means';exit validation
         endif

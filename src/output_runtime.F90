@@ -33,6 +33,7 @@ module output_runtime
   use output_config_collective, only: read_output_options_collective
   use output_archive, only: configure_archives,begin_archives,observe_archives,archive_control_file,archives_enabled
   use index_slice_archive, only: configure_index_slices,observe_index_slices
+  use insitu_temporal_runtime, only: observe_temporal_products
   use insitu_catalog_render, only: observe_catalog_images
   use insitu_catalog_wall, only: observe_catalog_walls
   use checkpoint_state_io
@@ -1864,6 +1865,7 @@ contains
     call complete_output_insitu(nstep,time,run_is_finished(int(nstep,int64),time))
     if(archives_enabled()) call observe_archives(identity,run_is_finished(int(nstep,int64),time))
     call observe_index_slices(identity)
+    call observe_temporal_products(identity)
     call observe_catalog_walls(identity)
     call observe_catalog_images(identity)
     if (.not.options%checkpoint%enabled) return

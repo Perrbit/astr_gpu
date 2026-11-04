@@ -22,6 +22,7 @@ int astr_catalog_display_coordinates(const char *, size_t, int *, double *, char
 int astr_catalog_wall_reference(const char *, size_t, int *, double *, char *, size_t);
 int astr_catalog_wall_units(const char *, size_t, char *, size_t, char *, size_t);
 int astr_catalog_fluctuation(const char *, size_t, int *, char *, size_t);
+int astr_catalog_temporal(const char *, size_t, int64_t[3], int *, char *, size_t);
 int astr_catalog_wall_glyph(const char *, size_t, int[2], double *, char *, size_t);
 int astr_catalog_wall_trace_seeds(const char *, size_t, int64_t *, size_t, int64_t *, char *, size_t);
 int astr_catalog_thickness(const char *, size_t, int *, int64_t *, double *, char *, size_t);

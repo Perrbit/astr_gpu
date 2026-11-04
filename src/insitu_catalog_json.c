@@ -357,6 +357,50 @@ int astr_catalog_fluctuation(const char *text, size_t length, int *flag,
     return 1;
 }
 
+int astr_catalog_temporal(const char *text, size_t length, int64_t parameters[3], int *archive,
+                          char *message, size_t capacity) {
+    parameters[0]=1;parameters[1]=parameters[2]=0;*archive=0;
+    yyjson_doc *doc=astr_catalog_json_read(text,length,message,capacity);
+    if (!doc) return 0;
+    const yyjson_val *root=yyjson_doc_get_root(doc),*options=yyjson_obj_get(root,"temporal");
+    const char *kind=yyjson_get_str(yyjson_obj_get(root,"kind")),*error=NULL;
+    const int line=kind && !strcmp(kind,"time_space"),spectrum=kind && !strcmp(kind,"probe_spectrum");
+    if (line || spectrum) {
+        if (!yyjson_is_obj(options)) error="temporal products require a temporal object";
+        else {
+            yyjson_obj_iter iter=yyjson_obj_iter_with(options);yyjson_val *key;
+            while ((key=yyjson_obj_iter_next(&iter))) {
+                const char *name=yyjson_get_str(key);
+                if (strcmp(name,"sample_steps") && strcmp(name,"segment_length") &&
+                    strcmp(name,"block_samples") && strcmp(name,"archive_samples")) {
+                    error="unknown temporal parameter";break;
+                }
+            }
+        }
+        const char *names[]={"sample_steps","segment_length","block_samples"};
+        for (int i=0;i<3 && !error;++i) {
+            const yyjson_val *value=yyjson_obj_get(options,names[i]);
+            if (value && (!astr_catalog_json_integer(value,parameters+i) || parameters[i]<1 ||
+                (i>0 && parameters[i]>INT_MAX))) error="temporal counts must be positive representable integers";
+        }
+        const yyjson_val *value=yyjson_obj_get(options,"archive_samples");
+        if (!error && value) {
+            if (!yyjson_is_bool(value)) error="archive_samples must be a boolean";
+            else *archive=yyjson_get_bool(value);
+        }
+        if (!error && line && (parameters[2]<1 || parameters[1]!=0 || value))
+            error="time_space requires block_samples; all line history is archived without segment_length/archive_samples";
+        if (!error && spectrum && (parameters[1]<2 || parameters[1]%2))
+            error="probe_spectrum requires an even segment_length of at least two";
+        if (!error && spectrum && ((*archive && parameters[2]<1) || (!*archive && parameters[2]!=0)))
+            error="probe block_samples is required exactly when archive_samples is true";
+    } else if (options) error="temporal options require time_space or probe_spectrum";
+    yyjson_doc_free(doc);
+    if (error) {snprintf(message,capacity,"%s",error);return 0;}
+    if (capacity) message[0]='\0';
+    return 1;
+}
+
 int astr_catalog_wall_glyph(const char *text, size_t length, int stride[2], double *native_length,
                              char *message, size_t capacity) {
     stride[0]=stride[1]=0; *native_length=0.;

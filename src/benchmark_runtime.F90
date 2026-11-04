@@ -5,7 +5,7 @@ module benchmark_runtime
   private
   public :: configure_benchmark_runtime,benchmark_field_io_disabled, &
             benchmark_cpu_rk_timing_enabled,begin_complete_step_timing,end_complete_step_timing, &
-            configure_insitu_timing,insitu_clock,report_insitu_timing,benchmark_buffered_output_enabled
+            configure_insitu_timing,insitu_clock,report_insitu_timing,benchmark_buffered_output_enabled,insitu_timing_active
   logical,save :: configured=.false.,field_io_disabled=.false.
   logical,save :: cpu_rk_timing_enabled_flag=.false.
   logical,save :: complete_step_timing_enabled=.false.
@@ -34,6 +34,10 @@ contains
   real(8) function insitu_clock()
     insitu_clock=0.d0
     if(insitu_timing_enabled) insitu_clock=MPI_Wtime()
+  end function
+
+  logical function insitu_timing_active()
+    insitu_timing_active=insitu_timing_enabled
   end function
 
   subroutine report_insitu_timing(stage,started,step)

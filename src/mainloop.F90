@@ -324,6 +324,10 @@ module mainloop
     !
     time_total=ptime()-time_start
     phase_started=insitu_clock()
+    block
+      use insitu_temporal_runtime, only: finish_temporal_products
+      call finish_temporal_products()
+    end block
     call finish_insitu()
     call statout(finishing=.true.)
 #ifdef COMB

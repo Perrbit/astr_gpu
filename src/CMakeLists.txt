@@ -106,6 +106,8 @@ set(ASTR_SOURCES
   insitu_product_schedule.F90
   insitu_checkpoint_batch.F90
   insitu_time_integral.F90
+  insitu_temporal_analysis.F90
+  insitu_temporal_history.F90
   insitu_velocity_statistics.F90
   insitu_sample_moments.F90
   insitu_boundary_layer.F90
@@ -124,6 +126,7 @@ set(ASTR_SOURCES
   index_slice_source.F90
   index_slice_provider.F90
   index_slice_archive.F90
+  insitu_temporal_runtime.F90
   insitu_catalog_render.F90
   insitu_catalog_wall.F90
   output_lineage.F90
@@ -271,6 +274,15 @@ if(ASTR_WITH_CUDA AND ASTR_CUDA_LINEINFO AND CMAKE_Fortran_COMPILER_ID MATCHES "
 endif()
 if(BUILD_TESTING)
   enable_language(CXX)
+  add_library(insitu_temporal_fault_preload SHARED EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/insitu_temporal_fault_preload.c)
+  target_link_libraries(insitu_temporal_fault_preload PRIVATE ${CMAKE_DL_LIBS})
+  add_executable(insitu_temporal_analysis_probe EXCLUDE_FROM_ALL astr_precision.F90 singleton.F90
+    insitu_temporal_analysis.F90 ../tests/gpu_validation/insitu_temporal_analysis_probe.F90)
+  set_target_properties(insitu_temporal_analysis_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_temporal_analysis_modules")
+  target_include_directories(insitu_temporal_analysis_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/insitu_temporal_analysis_modules")
   add_executable(insitu_catalog_probe EXCLUDE_FROM_ALL astr_precision.F90
     insitu_schedule.F90 adaptive_output.F90 insitu_run_config.F90 insitu_catalog.F90 insitu_product_schedule.F90
     ../tests/gpu_validation/insitu_catalog_probe.F90)
@@ -280,6 +292,7 @@ if(BUILD_TESTING)
   target_link_libraries(insitu_catalog_probe PRIVATE astr_catalog_json)
   add_executable(insitu_catalog_state_probe EXCLUDE_FROM_ALL astr_precision.F90
     insitu_schedule.F90 adaptive_output.F90 insitu_run_config.F90 insitu_catalog.F90 insitu_product_schedule.F90
+    singleton.F90 insitu_temporal_analysis.F90 insitu_temporal_history.F90
     ../tests/gpu_validation/insitu_catalog_state_probe.F90)
   set_target_properties(insitu_catalog_state_probe PROPERTIES
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_catalog_state_modules")

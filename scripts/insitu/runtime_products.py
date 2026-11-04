@@ -107,6 +107,9 @@ class RuntimeProducts:
         dispatch = namespace['dispatch']
         failed = False
         try:
+            if context['labels'][0] in ('time_space','probe_spectrum'):
+                self.execute_temporal(info,context,namespace)
+                return
             if context['labels'][0]=='wall_curve':
                 self.execute_wall(info,context,namespace)
                 return
@@ -244,6 +247,66 @@ class RuntimeProducts:
         if failed:
             self.retire(name, namespace)
         self.current = None
+
+    def execute_temporal(self,info,context,namespace):
+        import numpy as np
+        from image_publication import publish_pair
+        from render_coordinates import native_options,native_unit
+        from sbli_products import curve_image_bytes
+        from temporal_products import time_space_image_bytes
+        dispatch=namespace['dispatch'];step,time=int(info.timestep),float(info.time)
+        failed=False
+        try:
+            def publish():
+                if namespace['rank']!=0: return
+                function=self.native.astr_insitu_runtime_temporal_data
+                function.argtypes=[ctypes.c_int,*[ctypes.POINTER(ctypes.c_int)]*4]
+                function.restype=ctypes.c_void_p
+                nodes,rows,axis,width=ctypes.c_int(),ctypes.c_int(),ctypes.c_int(),ctypes.c_int()
+                def array(which,count):
+                    address=function(which,ctypes.byref(nodes),ctypes.byref(rows),ctypes.byref(axis),ctypes.byref(width))
+                    scalar={4:ctypes.c_float,8:ctypes.c_double}[width.value]
+                    return np.ctypeslib.as_array(ctypes.cast(address,ctypes.POINTER(scalar)),shape=(count(),))
+                coordinate=array(0,lambda:nodes.value*(3 if axis.value else 1))
+                times=array(1,lambda:rows.value)
+                values=array(2,lambda:nodes.value*rows.value).reshape(rows.value,nodes.value)
+                gap_function=self.native.astr_insitu_runtime_temporal_gaps
+                gap_function.argtypes=[];gap_function.restype=ctypes.POINTER(ctypes.c_int)
+                gaps=np.ctypeslib.as_array(gap_function(),shape=(rows.value,))
+                words,settings=context['integers'],context['reals']
+                common=dict(image_size=words[:2],dpi=words[3],jpeg_quality=words[2],write_eps=bool(words[4]&2))
+                if context['labels'][0]=='time_space':
+                    flags,scales=native_options(self.native,context['definition'])
+                    jpeg,eps=time_space_image_bytes(coordinate.reshape(-1,3),times,values,gaps,axis=axis.value-1,
+                        unit=native_unit(self.native),flags=flags,coordinate_values=scales,
+                        quantity=context['labels'][4],
+                        color_map=context['labels'][6],color_range=settings[22:24],**common)
+                else:
+                    jpeg,eps=curve_image_bytes(coordinate,values[0],'PSD',x_range=(float(coordinate[0]),float(coordinate[-1])),
+                        y_range=settings[22:24],line_width=settings[24],x_label='$f$',**common)
+                directory=Path(context['directory'])
+                failure=publish_pair(directory/f'frame.step{step:012d}.jpeg',jpeg,eps)
+                if failure: raise OSError(failure['errno'],failure['reason'])
+                record=dict(id=context['id'],definition_version=context['version'],step=step,time=time,
+                    phase='completed_step',definition=json.loads(context['definition']),source=context['source'],
+                    rendering_pipeline=namespace['pipeline'],chart_backend='existing-host-matplotlib',
+                    transfer_scope='reduced one-dimensional samples only; no volume/final-geometry download',
+                    host_temporal_bytes=coordinate.nbytes+times.nbytes+values.nbytes+gaps.nbytes,
+                    sample_times=times.tolist(),gaps_before=np.flatnonzero(gaps).tolist(),
+                    nodes=nodes.value,rows=rows.value,source_bytes=width.value,
+                    product=dict(image_formats=['jpeg']+(['eps'] if eps else []),image_size=words[:2],lighting_enabled=False))
+                try:
+                    (directory/f'frame.step{step:012d}.rank00000000.json').write_text(json.dumps(record,indent=2))
+                except OSError as exc:
+                    print('ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED '+str(exc),flush=True)
+            dispatch.collective_call(namespace['controller'],publish)
+            namespace['frames'].append((step,time))
+        except dispatch.ProductFailure as exc:
+            failed=True
+            self.native.astr_insitu_runtime_failure(str(exc).encode('utf-8'))
+        finally:
+            if failed: self.retire(context['id'],namespace)
+            self.current=None
 
     def execute_wall(self,info,context,namespace):
         import numpy as np

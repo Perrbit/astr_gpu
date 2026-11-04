@@ -7,7 +7,7 @@ module insitu_product_schedule
   use insitu_run_config, only: insitu_options,insitu_max_products,catalog_product,catalog_definition_equal,catalog_field_names, &
     read_catalog_wall_reference,read_catalog_wall_units,read_catalog_thickness,read_catalog_fluctuation,read_catalog_wall_glyph, &
     read_catalog_wall_seeds, &
-    pack_catalog_render,unpack_catalog_render,read_catalog_coordinates
+    pack_catalog_render,unpack_catalog_render,read_catalog_coordinates,read_catalog_temporal
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule,write_schedule_state, &
     restore_schedule_state,resume_schedule,schedule_next_target
   use adaptive_output, only: adaptive_clock,adaptive_binding_equal,adaptive_dependencies_reset, &
@@ -261,6 +261,10 @@ contains
       if(.not.coordinates_ok) then
         status=1;return
       endif
+      call read_catalog_temporal(entry%record,entry%temporal,coordinates_ok,coordinates_error)
+      if(.not.coordinates_ok) then
+        status=1;return
+      endif
       entry%wall_units=''
       if(entry%valid) then
         call read_catalog_wall_units(entry%record,entry%wall_units,coordinates_ok,coordinates_error)
@@ -364,7 +368,7 @@ contains
       if(any(state%definition%ranges(:,state%definition%axis)/=state%definition%index)) return
     case('grid_node')
       if(any(state%definition%ranges(1,:)/=state%definition%ranges(2,:))) return
-    case('physical_plane','volume')
+    case('physical_plane','volume','volume_index')
       if(state%definition%axis/=0) return
     case('wall','wall_midspan')
       if(state%definition%axis<1.or.state%definition%axis>3) return

@@ -990,6 +990,56 @@ CURVE 使用现有网格度量；不调用求解器梯度或为每个截面建�
 [固定索引截面说明](scripts/output/INDEX_SLICE_ARCHIVES.md)，验证状态见
 [执行记录](documents/ASTR_INDEX_SLICE_ARCHIVE_PROGRESS.md)。
 
+**瞬时 lambda2/lambda_ci 等值面**
+
+动态清单可选 `kind='lambda2_surface'` 或 `kind='lambda_ci_surface'`。
+两者使用当前完整步的私有六阶物理速度梯度，不读取 RK 阶段缓存。
+lambda2 为 $S^2+\Omega^2$ 的中间特征值，lambda_ci 为速度梯度特征值的
+非负虚部幅值，量纲分别为速度梯度的平方和一次方。
+`sampling.mode='volume_index'` 用三轴 `index_ranges` 指定提取前区域，
+求导仍读取区域外所需模板，不把选区边框当作物理边界。
+
+`extraction.isovalue` 是必填固定阈值。若同时给出正的
+`reference_length/reference_velocity`，输入阈值分别对应
+`lambda2*(L/U)^2` 或 `lambda_ci*L/U`；不同时更新为局部边界层尺度。
+着色字段由 `field` 独立选择，阈值字段不等同于着色字段。
+两产品的状态/区域相同时共享采样，九分量梯度只作临时工作区。
+
+首轮已验证非反应 FP64 笛卡尔 TGV 和小型平板/SBLI，NP1、NP2 x/y/z
+及 NP4 混合分解。图像使用 `standard-device` 或 `direct-device`，场和
+最终几何不回读；不提供本产品的主机兼容渲染准入或 CURVE/AIR5/FP32
+专项资格。真实内存检查、连续/重启和动态清单结果见
+[专项进展](documents/ASTR_INSITU_TURBULENT_BOUNDARY_LAYER_PRODUCTS_PROGRESS.md)。
+32³ TGV 的两产品 JPEG 示例为
+`scripts/output/input.products.tgv.vortex.example.jsonl`；按实际网格调整
+索引、物理范围和阈值，并使用启用设备处理及 GPU 导数的合法渲染会话。
+
+**索引线时空图与探针频谱**
+
+动态清单支持 `kind='time_space'` 和 `kind='probe_spectrum'`，需要启用
+`statistics=t, products='catalog_stats'` 的原位会话。数值 CSV 不依赖
+Catalyst；图片使用既有 Catalyst 管线。首轮验证范围为非反应 FP64 笛卡尔
+网格，不因此增加 AIR5、CURVE 或 FP32 专项资格。
+
+时空图用 `sampling.mode='grid_index'` 指定恰好一个方向变化的全局网格线；
+探针用 `grid_node` 指定单个全局节点。`temporal.sample_steps` 控制完整步
+采样间隔，`schedule` 只控制结果发布，两者独立。时空线按
+`temporal.block_samples` 分块保存启用期间的全部数值历史。探针默认只保留
+流式频谱所需历史；完整原始序列须显式设置 `temporal.archive_samples=true`。
+
+Welch 采用偶数段长、周期 Hann 窗、逐段去均值和 50% 重叠，仅使用
+`statistics_window` 闭区间内的实际完整步样本，不插值补边界、不补齐未完成
+段。自动变步长保存真实时间戳及值，但不生成首版 Welch 估计。窗口结束后
+谱停止累计，已有估计仍可按产品周期发布；原始探针存档和时空历史不因此
+裁剪。谱文件分别记录原始采样及窗内输入的数量/起止身份。
+
+数值均值/脉动索引线另外保存每个样本的实际均值覆盖。统计块、Welch
+重叠和累计谱沿用 `checkpoint_statistics` 的保存选择，不新增附属文件。
+没有保存统计时，从恢复状态建立新历史，不能称为旧统计的精确续接。
+部分时间块可能与续算完整块重叠，须使用随库读取器合并，不直接拼接 CSV。
+配置、示例及读取方法见[时域产品说明](scripts/output/TEMPORAL_PRODUCTS.md)，
+当前数值/生命周期范围见[专项进展](documents/ASTR_INSITU_TURBULENT_BOUNDARY_LAYER_PRODUCTS_PROGRESS.md)。
+
 **既有三维场归档**
 
 以下整组字段、资源选项及父链说明针对原生 volume 路径，不代表新截面仍使用旧组级配置。

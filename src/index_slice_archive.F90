@@ -256,6 +256,8 @@ contains
     write(version,'("version",i12.12)') state%version
     root=archive_root//'/'//state%definition%id//'/'//trim(version)
     if(state%definition%view%kind=='probe') root=status_root//'/monitor_products/'//state%definition%id//'/'//trim(version)
+    if(state%definition%view%kind=='time_space'.or.state%definition%view%kind=='probe_spectrum') &
+      root=status_root//'/temporal_products/'//state%definition%id//'/'//trim(version)
     if(state%definition%view%kind=='station_profile') &
       root=status_root//'/profile_products/'//state%definition%id//'/'//trim(version)
     if(state%definition%view%kind=='wall_profile') &
