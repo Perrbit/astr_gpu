@@ -17,6 +17,7 @@ from generate_compressible_blasius_profile import (
     GAMMA, oblique_shock_ratios, sutherland_ratio, write_profile, write_similarity_initial_field,
 )
 from prepare_s1_flatplate_case import write_controller, write_input
+from named_fixture import prepare_named_run
 
 
 MACH = 7.0
@@ -304,7 +305,7 @@ def prepare_case(destination: Path, use_gpu: str = "t", im: int = 1024,
         initial_plane = {name: handle[name][0] for name in ("ro", "u1", "u2", "u3", "t")}
     diagnostics = initial_grid_diagnostics(parameters, xline, yline, zline, initial_plane, inlet_utau)
     dt = diagnostics["selected_dt"]
-    # ASTR starts at nstep=0 and advances while nstep<=maxstep.
+    # Positional editing fixtures retain maxstep; conversion emits the complete-step count.
     write_controller(datin / "controller", COMPLETE_STEPS - 1, 10, dt)
     parameters["static_diagnostics"] = diagnostics
     (datin / "input.output").write_text(
@@ -326,7 +327,9 @@ def prepare_case(destination: Path, use_gpu: str = "t", im: int = 1024,
         "".join(f"export {key}={value}\n" for key, value in runtime.items()), encoding="ascii",
     )
     parameters["status"] = "PREPARED_FOR_REVIEW_NOT_RUN"
-    parameters["input"] = "datin/input.hcw"
+    parameters["input"] = prepare_named_run(destination, "datin/input.hcw",
+        {key: str(value) for key, value in runtime.items()})
+    parameters["runtime_input"] = "datin/input.run"
     parameters["grid"] = {"astr_intervals": [im, jm, km], "nodes": [im + 1, jm + 1, km + 1],
                           "dx_m": float(xline[1] - xline[0]), "dy_wall_m": float(yline[1]),
                           "y_sinh_stretch": Y_STRETCH, "dz_m": float(zline[1] - zline[0]),

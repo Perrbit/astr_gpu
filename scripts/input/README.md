@@ -56,13 +56,41 @@ decomposition, `bfacmpld=0.3` and `shkcrt=0.05`. An enabled filter still require
 `alfa_filter`; enabled FFT filtering requires `kcutoff`. These input defaults
 do not expand the solver's numerical-method or boundary capability.
 
-## Development Status
+## Current Input Interface
 
-The named core reader and CPU/GPU TGV path have passed local short checks.
-The recognized physical/numerical environment entries now read from the groups
-below. Migration of all repository case generators is still in progress. Do not
-assume an unchanged historical launch script is already migrated. Invalid or ambiguous old files must be reviewed;
-the converter does not invent missing reference values or reinterpret units.
+The maintained solver accepts named inputs only. CPU/GPU explicit and compact
+TGV, qualified wall/flatplate, CURVE, AIR5 and native-FP32 representatives have
+local short-run evidence in `documents/ASTR_ADAPTIVE_TIMESTEP_PLAN.md`.
+The physical/numerical entries below come from named groups, not environment
+overrides. Invalid or ambiguous old files must be reviewed; conversion does not
+invent reference values, reinterpret units or extend a case's numerical support.
+
+## Maintained Launchers And Historical Tools
+
+- `examples/GPU_Quickstart` and `scripts/insitu` use named templates directly.
+- Current TGV/compact, M12, high-order boundary, native-precision, completed-step
+  restart and selected-product validation launchers explicitly convert their
+  editable positional fixtures at the last edit boundary through
+  `tests/gpu_validation/named_fixture.py`. The solver never reads those fixtures
+  or their `controller`. Runtime model settings are removed from the child
+  environment after being written into the case input; execution settings stay.
+- `prepare_hcw_laminar_sbli_case.py` emits named case/run files and identifies
+  them in its manifest. Its positional files and `runtime.env` remain conversion
+  records for existing fixture editing, not alternative runtime configuration.
+- Historical scripts that restore `outdat/flowfield.h5` plus `auxiliary.txt`,
+  use the retired paired-batch protocol, or compare the removed legacy field
+  writer are frozen-version tools. They are not launchers for the current solver.
+  Preserve their matching old program and inputs when reproducing old evidence;
+  changing input syntax alone cannot restore their removed I/O protocols.
+  Current restart checks use `run_output_restart_validation.py` or
+  `run_output_air5_restart_validation.py`; variable-time in-situ statistics use
+  `run_adaptive_insitu_gate.py`.
+
+Similar launcher migrations are verified through representative cases and
+static call-site checks, not separate CFD runs for every historical script.
+Private old diagnostic binary headers are not the new checkpoint/archive ABI;
+their 32-bit limits do not apply to the maintained 64-bit step identities, and
+their upgrade is not claimed here.
 
 ## Physical And Numerical Options
 

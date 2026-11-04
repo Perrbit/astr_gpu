@@ -122,3 +122,16 @@ def test_prepared_case_has_joint_nscbc_and_unshocked_developing_blasius(tmp_path
         "# maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg\n", 1)[1].split(",", 1)[0])
     assert controller_maxstep == manifest["run_plan"]["controller_maxstep"] == 29999
     assert manifest["run_plan"]["complete_steps"] == 30000
+    assert manifest["input"] == "datin/input.case"
+    assert manifest["runtime_input"] == "datin/input.run"
+    named = (datin / "input.case").read_text()
+    runtime = (datin / "input.run").read_text()
+    assert "conschm = '743e'" in named
+    assert "difschm = '643e'" in named
+    assert "nscbc_farfield_mode = 'sbli_grcbc'" in named
+    assert "perfect_gas_prandtl = 0.72" in named
+    assert "sutherland_temperature_k = 110.3" in named
+    assert "max_steps = 30000" in runtime
+    assert "mode = 'fixed'" in runtime
+    fixed_dt=float(runtime.split('fixed_dt = ',1)[1].splitlines()[0])
+    assert fixed_dt == controller_dt
