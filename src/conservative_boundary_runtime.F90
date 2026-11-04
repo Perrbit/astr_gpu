@@ -1,4 +1,5 @@
 module conservative_boundary_runtime
+  use case_model_options, only: get_case_option
   use astr_precision, only: real_kind
   use astr_precision_mpi, only: mpi_real_type
   use conservative_boundary_config, only: conservative_boundary_settings,read_conservative_boundary_config
@@ -19,12 +20,12 @@ contains
     state_ready=.false.
     status=0
     if(mpirank==0) then
-      call get_environment_variable('ASTR_CONSERVATIVE_BOUNDARY_FILE',length=length,status=env_status)
+      call get_case_option('conservative_boundary_file',length=length,status=env_status)
       if(env_status/=0.and.env_status/=1) then
         status=1
       elseif(env_status==0.and.length>0) then
         allocate(character(len=length) :: filename)
-        call get_environment_variable('ASTR_CONSERVATIVE_BOUNDARY_FILE',value=filename,status=env_status)
+        call get_case_option('conservative_boundary_file',value=filename,status=env_status)
         if(env_status/=0.or.len_trim(filename)==0) then
           status=1
         else

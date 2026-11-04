@@ -1,4 +1,5 @@
 module precision_mode_gpu
+  use case_model_options, only: get_case_option
   use astr_precision, only: numerical_precision
   implicit none
   private :: numerical_precision
@@ -15,7 +16,7 @@ contains
 
     if(gpu_precision_mode_configured) return
     value=''
-    call get_environment_variable('ASTR_GPU_PRECISION_MODE',value,status=status)
+    call get_case_option('gpu_precision_mode',value,status=status)
     choice=-1
     if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=GPU_PRECISION_NATIVE
     if(status==0) then

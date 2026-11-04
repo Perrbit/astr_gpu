@@ -87,7 +87,9 @@ def test_staged_nscbc_repairs_before_rhs(tmp_path, ranks, filtered):
                ASTR_NSCBC_FARFIELD_V='0', ASTR_NSCBC_FARFIELD_W='0', ASTR_NSCBC_FARFIELD_T='1',
                ASTR_VALIDATION_PROFILE_STAGE_STATE='1', ASTR_VALIDATION_RHS_PREFIX='diagnostics/state',
                ASTR_VALIDATION_RHS_STEP='0', ASTR_VALIDATION_RHS_STEP_END='5')
-    command = [*mpi_command(MPIEXEC, ranks, 'pinned'), str(Path(EXE).resolve()), 'run', 'datin/input.dat']
+    from named_fixture import prepare_named_run
+    command = [*mpi_command(MPIEXEC, ranks, 'pinned'), str(Path(EXE).resolve()), 'run',
+               prepare_named_run(case,'datin/input.dat',env)]
     result = subprocess.run(command, cwd=case, env=env, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
     (case/'run.log').write_text(result.stdout)
@@ -126,7 +128,9 @@ def test_staged_rhs_is_rebuilt_after_late_repair(tmp_path, ranks):
                ASTR_NSCBC_FARFIELD_V='0', ASTR_NSCBC_FARFIELD_W='0', ASTR_NSCBC_FARFIELD_T='1',
                ASTR_VALIDATION_PROFILE_STAGE_STATE='1', ASTR_VALIDATION_RHS_PREFIX='diagnostics/state',
                ASTR_VALIDATION_RHS_STEP='0', ASTR_VALIDATION_RHS_STEP_END='2')
-    command = [*mpi_command(MPIEXEC, ranks, 'pinned'), str(Path(EXE).resolve()), 'run', 'datin/input.dat']
+    from named_fixture import prepare_named_run
+    command = [*mpi_command(MPIEXEC, ranks, 'pinned'), str(Path(EXE).resolve()), 'run',
+               prepare_named_run(case,'datin/input.dat',env)]
     result = subprocess.run(command, cwd=case, env=env, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
     (case/'run.log').write_text(result.stdout)

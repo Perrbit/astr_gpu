@@ -105,8 +105,10 @@ def run_case(case: Path, executable: Path, gpu: bool, topology: tuple, precision
     command = ["mpirun", "--bind-to", "none", "-np", str(np.prod(topology))]
     if sanitizer:
         command += ["compute-sanitizer", "--tool", sanitizer, "--leak-check", "full", "--error-exitcode", "91"]
+    from named_fixture import prepare_named_run
+    primary=prepare_named_run(case,'datin/input.tgv',env)
     with (case / "run.log").open("w") as log:
-        subprocess.run([*command, str(executable.resolve()), "run", "datin/input.tgv"], cwd=case, env=env,
+        subprocess.run([*command, str(executable.resolve()), "run", primary], cwd=case, env=env,
             stdout=log, stderr=subprocess.STDOUT, check=True)
     output = (case / "run.log").read_text()
     if [int(n) for n in re.findall(r"ASTR_CFL complete_step=(\d+)", output)] != list(range(4)):

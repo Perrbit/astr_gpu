@@ -63,7 +63,7 @@ contains
     use insitu_sbli_gpu, only: capture_sbli_wall_curves_gpu
 #endif
     character(*),intent(in) :: mode
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     real(real_kind),allocatable,intent(out) :: values(:,:)
@@ -270,7 +270,7 @@ contains
     use mpi
     use parallel, only: mpirank
     use insitu_device_velocity, only: end_velocity_transport_gpu,velocity_transport_usage_gpu
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     integer(int64) :: host_bytes,device_bytes,download,upload,exchanges
     integer :: generation
     if(catalog_transport_open) then
@@ -378,7 +378,7 @@ contains
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
 #endif
     character(*),intent(in) :: mode,pipeline,backend,script
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t,origin(3),normal(3)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
@@ -397,7 +397,8 @@ contains
           origin,normal,budget,reserve,retained,host) bind(C,name='astr_insitu_device_render_plane')
         import c_int,c_real_kind,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*)
-        integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm,nx,ny,nz,ox,oy,oz
         real(c_real_kind),value :: t
         real(c_real_kind),intent(in) :: origin(3),normal(3)
         type(c_devptr),value :: xyz,velocity
@@ -448,7 +449,7 @@ contains
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
 #endif
     character(*),intent(in) :: profile,mode,pipeline,backend,script
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t,duration,window(2)
     logical,intent(in) :: mean_requested
     integer(int64),intent(in) :: host_budget,device_budget,reserve
@@ -471,7 +472,8 @@ contains
           bind(C,name='astr_insitu_device_render_walls')
         import c_int,c_real_kind,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*)
-        integer(c_int),value :: comm,step,im,km,nw,wall_kind,mean_requested,covered
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm,im,km,nw,wall_kind,mean_requested,covered
         real(c_real_kind),value :: t,duration,window_start,window_end
         type(c_devptr),value :: xyz,fields,means
         integer(c_int64_t),value :: budget,reserve,retained
@@ -533,7 +535,7 @@ contains
     use parallel, only: mpirank
     use checkpoint_state_io, only: checkpoint_state_require
     real(real_kind),device,contiguous,intent(in) :: means(:,:,:,:)
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: time,duration,window(2)
     integer(int64),intent(in) :: host_budget
     character(1024) :: prefix
@@ -588,7 +590,7 @@ contains
     use checkpoint_state_io, only: checkpoint_state_require
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
     character(*),intent(in) :: mode,pipeline,backend,script
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     real(real_kind),device,allocatable :: positions(:,:),fields(:,:)
@@ -606,7 +608,8 @@ contains
           xyz,fields,budget,reserve,retained) bind(C,name='astr_insitu_device_render_m12_planes')
         import c_int,c_real_kind,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*)
-        integer(c_int),value :: comm,step,nx,ny,nz,ox,gy,gz,gx,plane_j
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm,nx,ny,nz,ox,gy,gz,gx,plane_j
         real(c_real_kind),value :: t
         type(c_devptr),value :: xyz,fields
         integer(c_int64_t),value :: budget,reserve,retained
@@ -672,7 +675,7 @@ contains
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
 #endif
     character(*),intent(in) :: mode,pipeline,backend,script,profile,seed_layout
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t,window(2)
     logical,intent(in) :: statistics,mean_requested
     logical,optional,intent(in) :: require_covered_means
@@ -703,7 +706,8 @@ contains
           bind(C,name='astr_insitu_device_render')
         import c_int,c_real_kind,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*),profile(*),seeds(*)
-        integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz,cells,cellsy,cellsz,covered,curve,plane_j,diagnostic_components
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm,nx,ny,nz,ox,oy,oz,cells,cellsy,cellsz,covered,curve,plane_j,diagnostic_components
         real(c_real_kind),value :: t,duration,wstart,wend
         type(c_devptr),value :: velocity,halo,derived,reynolds,favre,xyz,xyz_halo,temperature
         integer(c_int64_t),value :: host,budget,reserve,retained

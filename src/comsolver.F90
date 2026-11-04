@@ -246,7 +246,7 @@ module comsolver
   subroutine gradcal(timerept)
     !
     use commvar,   only : im,jm,km,npdci,npdcj,npdck,difschm,ndims,    &
-                          num_species,num_modequ,is,ie,js,je,ks,ke,    &
+                          num_species,is,ie,js,je,ks,ke,              &
                           turbmode
     use commarray, only : vel,tmp,spc,dvel,dtmp,dspc,dxi,omg,tke,dtke, &
                           domg
@@ -277,7 +277,8 @@ module comsolver
       domg=0.e0_real_kind
     endif
     !
-    ncolm=4+num_species+num_modequ
+    ncolm=4+num_species
+    if(trim(turbmode)=='k-omega') ncolm=ncolm+2
     !
     ! calculate velocity and temperature gradient
     !

@@ -30,7 +30,7 @@ def prepare(output,library,enabled=True,processing_backend='host',postprocess_tr
     (output/'datin').mkdir()
     (output/'outdat/render').mkdir(parents=True)
     (output/'outdat/new').mkdir()
-    for name in ('input.tgv','controller','input.output'):
+    for name in ('input.case','input.run','input.output'):
         shutil.copyfile(preset/name,output/'datin'/name)
     content=Template((preset/'insitu.nml.in').read_text()).substitute(
         enabled='t' if enabled else 'f',library=library,pipeline=pipeline)
@@ -67,7 +67,7 @@ def main():
         env.pop(key,None)
     env.update(ASTR_INSITU_CONFIG=str(output/'insitu.nml'),ASTR_INSITU_TIMING='1',
         ASTR_FORCE_MPI_TOPOLOGY=f'{args.np},1,1',ASTR_GPU_SYNC_MODE='explicit',
-        ASTR_GPU_HALO_TRANSPORT='pinned',ASTR_GPU_PRECISION_MODE='fp64',ASTR_GPU_FILTER_WORKSPACE='scalar')
+        ASTR_GPU_HALO_TRANSPORT='pinned',ASTR_GPU_FILTER_WORKSPACE='scalar')
     if args.postprocess_transport=='device-aware':
         env.update(OMPI_MCA_pml='ucx',OMPI_MCA_coll='^hcoll,ucc,cuda',OMPI_MCA_osc='pt2pt',
             UCX_MEMTYPE_CACHE='n',UCX_CUDA_COPY_ENABLE_FABRIC='no',UCX_CUDA_COPY_DMABUF='no',
@@ -79,7 +79,7 @@ def main():
     if not launcher.is_file():
         p.error('MPI launcher is missing')
     command=[str(launcher),'--mca','coll_hcoll_enable','0',
-        '-np',str(args.np),str(args.executable.resolve(strict=True)),'run','datin/input.tgv']
+        '-np',str(args.np),str(args.executable.resolve(strict=True)),'run','datin/input.case']
     with (output/'run.log').open('w') as log:
         subprocess.run(command,cwd=output,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
 

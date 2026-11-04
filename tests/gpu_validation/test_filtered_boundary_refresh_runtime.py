@@ -172,8 +172,10 @@ def test_nscbc52_global_filter_rejected(tmp_path):
                ASTR_GPU_PRECISION_MODE="fp64", OMPI_MCA_coll_hcoll_enable="0")
     mpiexec = os.environ.get("ASTR_OUTPUT_MPIEXEC",
         "/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec")
+    from named_fixture import prepare_named_run
+    primary=prepare_named_run(tmp_path,'datin/input.flatplate',env)
     with (tmp_path / "gpu.log").open("wb") as log:
-        result = subprocess.run([mpiexec, "-np", "2", str(GPU), "run", "datin/input.flatplate"],
+        result = subprocess.run([mpiexec, "-np", "2", str(GPU), "run", primary],
                                 cwd=tmp_path, env=env, stdout=log,
                                 stderr=subprocess.STDOUT, timeout=60)
     assert result.returncode != 0

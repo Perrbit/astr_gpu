@@ -44,7 +44,6 @@ done < <(compgen -e)
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY"
 if [[ "$MODE" == gpu ]]; then
-  export ASTR_GPU_PRECISION_MODE=fp64
   export ASTR_GPU_SYNC_MODE=explicit
   export ASTR_GPU_HALO_TRANSPORT="$HALO_TRANSPORT"
   if [[ "$FILTER_WORKSPACE" != default ]]; then
@@ -52,23 +51,11 @@ if [[ "$MODE" == gpu ]]; then
   fi
 fi
 case "$CASE" in
-  channel)
-    export ASTR_CHANNEL_FORCE_MODE=fixed
-    export ASTR_CHANNEL_FORCE_FIXED=1.d-4
-    ;;
-  flatplate)
-    export ASTR_PROFILE_INFLOW_MODE=complete_state
-    ;;
   air5_tgv|air5_flatplate)
-    export ASTR_AIR5_SOURCE_MODE=coupled
-    export ASTR_AIR5_CONVECTION_LIMITER=symmetric_species
-    export ASTR_AIR5_DIFFUSION_LIMITER=layered
     export ASTR_AIR5_PRIMITIVE_REUSE=off
     export ASTR_AIR5_CHEMISTRY_REDUCTIONS=baseline
     if [[ "$CASE" == air5_flatplate ]]; then
-      export ASTR_AIR5_COMPENSATION=on
       export ASTR_AIR5_FILTER_VALIDATION=on
-      export ASTR_AIR5_TOP_MODE=prescribed
       export ASTR_AIR5_FLOW_MONITOR_STRIDE=1
     fi
     ;;
@@ -84,7 +71,7 @@ env | LC_ALL=C sort | grep -E '^(ASTR_|OMP_NUM_THREADS=|CUDA_VISIBLE_DEVICES=)' 
 printf 'EXE=%q\nMPIEXEC=%q\nNP=%q\n' "$EXE" "$MPIEXEC" "$NP" > launch.txt
 echo "Running $CASE ($MODE, NP=$NP, topology=$TOPOLOGY) in $PWD"
 set +e
-"$MPIEXEC" -np "$NP" "$EXE" run datin/input.dat > run.log 2>&1
+"$MPIEXEC" -np "$NP" "$EXE" run datin/input.case > run.log 2>&1
 status=$?
 set -e
 if (( status != 0 )); then

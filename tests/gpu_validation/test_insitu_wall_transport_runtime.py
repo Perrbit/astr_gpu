@@ -158,9 +158,11 @@ def run_wall_fixture(case, backend, topology, records, steps=10, statistics=Fals
         (case / 'datin/input.insitu').write_text(configuration((.01, .19)))
         env['ASTR_INSITU_CONFIG'] = 'datin/input.insitu'
     args = arguments(case.parent)
+    from named_fixture import prepare_named_run
+    primary=prepare_named_run(case,'datin/input.dat',env)
     with (case / 'run.log').open('w') as log:
         result = subprocess.run([str(args.mpiexec), '--mca', 'coll_hcoll_enable', '0', '--oversubscribe',
-                                 '-np', str(np.prod(topology)), str(Path(EXE).resolve()), 'run', 'datin/input.dat'],
+                                 '-np', str(np.prod(topology)), str(Path(EXE).resolve()), 'run', primary],
                                 cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT)
     log = (case/'run.log').read_text()
     if reject is not None:

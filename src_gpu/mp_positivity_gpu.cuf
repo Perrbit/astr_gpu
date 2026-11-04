@@ -1,4 +1,5 @@
 module mp_positivity_gpu
+  use case_model_options, only: get_case_option
   use iso_fortran_env, only: int32,int64
   use astr_precision, only: real_kind
   use cudafor
@@ -207,7 +208,7 @@ contains
 
     if(configured) return
     value=''
-    call get_environment_variable('ASTR_GPU_MP_POSITIVITY',value,status=status)
+    call get_case_option('gpu_mp_positivity',value,status=status)
     choice=-1
     if(status==1.or.(status==0.and.len_trim(value)==0)) choice=0
     if(status==0.and.trim(value)=='off') choice=0

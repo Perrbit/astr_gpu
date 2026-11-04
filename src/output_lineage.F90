@@ -58,7 +58,7 @@ contains
     integer :: depth,d,i,n,unit,err,closed,status,components_saved,selection(14),nselection,source_bytes
     character(64) :: clock_text
     character(16) :: saved_units
-    character(16) :: name
+    character(32) :: name
     logical :: valid
     ok=.false.; compatible=.true.; paths=''; paths(1)='.'; depth=1
     do
@@ -96,7 +96,7 @@ contains
     previous_step=-1; previous_time=-1
     do d=depth,2,-1
       if(err/=0) exit
-      if(len_trim(root)+1+len_trim(paths(d))+25>1200) then
+      if(len_trim(root)+1+len_trim(paths(d))+32>1200) then
         err=1; exit
       endif
       source=trim(root)//'/'//trim(paths(d))
@@ -107,7 +107,7 @@ contains
       geometry=trim(source)//'/../resources/data.h5'
       do i=1,n
         if(steps(i)>origins(d-1)) cycle
-        write(name,'("step",i12.12)') steps(i)
+        write(name,'("step",i0.12)') steps(i)
         frame=trim(source)//'/'//name
         call read_frame(trim(frame),steps(i),step,time,components_saved,saved_units,selection,nselection,clock_text,valid)
         if(.not.valid) then
@@ -131,11 +131,11 @@ contains
           endif
         end block
         if(err/=0) exit
-        if(len_trim(paths(d))+len_trim(name)+10>1200.or.len_trim(paths(d))+25>1200) then
+        if(len_trim(paths(d))+len_trim(name)+10>1200.or.len_trim(paths(d))+32>1200) then
           err=1; exit
         endif
         write(unit,'(i0,1x,a,1x,i0,/,a,/,a)',iostat=err) step,trim(clock_text),source_bytes, &
-          trim(paths(d))//'/'//name//'/data.h5',trim(paths(d))//'/../resources/data.h5'
+          trim(paths(d))//'/'//trim(name)//'/data.h5',trim(paths(d))//'/../resources/data.h5'
         previous_step=step; previous_time=time
       enddo
     enddo
@@ -343,7 +343,7 @@ contains
     character(1201) :: line
     integer(int64) :: step
     real(real_kind) :: time
-    character(16) :: name
+    character(32) :: name
     ok=.false.
     open(newunit=target,file=root//'/lineage.frames.tmp',status='new',action='write',iostat=err)
     if(err/=0) return
@@ -367,8 +367,8 @@ contains
         else
           read(line,*,iostat=err) step,time
           if(err/=0) exit
-          write(name,'("step",i12.12)') step
-          write(target,'(a,1x,i0,/,a,/,a)',iostat=err) trim(line),real_bytes,name//'/data.h5','../resources/data.h5'
+          write(name,'("step",i0.12)') step
+          write(target,'(a,1x,i0,/,a,/,a)',iostat=err) trim(line),real_bytes,trim(name)//'/data.h5','../resources/data.h5'
         endif
         if(err/=0) exit
       enddo

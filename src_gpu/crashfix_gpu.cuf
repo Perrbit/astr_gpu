@@ -8,6 +8,7 @@ module crashfix_gpu
   private
   public :: repair_crashfix_state_gpu,check_crashfix_state_gpu,release_crashfix_gpu
   public :: repair_reconciled_state_gpu
+  public :: crashfix_support_status_gpu
   integer(1),allocatable,device :: fluid_d(:,:,:)
   integer,allocatable,device :: first_d(:,:),last_d(:,:)
   real(real_kind),allocatable,device :: partial_d(:,:)
@@ -19,6 +20,16 @@ module crashfix_gpu
   integer(int64),save :: report_visits=0,report_calls=0
   real(real_kind),save :: report_changes(5)=0.e0_real_kind,report_minima(4)=huge(0.e0_real_kind)
 contains
+  integer function crashfix_support_status_gpu() result(status)
+    use commvar, only: lcomb,numq,num_species,conschm,recon_schem
+    status=0
+    if(lcomb.or.numq/=5.or.num_species/=0) then
+      status=1
+    elseif(trim(conschm)/='643e'.and..not.(trim(conschm)=='743e'.and.recon_schem==5)) then
+      status=2
+    endif
+  end function
+
   subroutine initialize_crashfix_gpu()
     use commvar, only: im,jm,km,nondimen,spcinf
     use commarray, only: nodestat

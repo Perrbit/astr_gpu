@@ -12,7 +12,7 @@ module insitu_sbli_gpu
 contains
   subroutine render_sbli_2d_gpu(mode,pipeline,backend,script,step,t,host_budget,budget,reserve)
     character(*),intent(in) :: mode,pipeline,backend,script
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     integer(int64),intent(in) :: host_budget,budget,reserve
     call sbli_2d_products_gpu(mode,pipeline,backend,script,step,t,host_budget,budget,reserve)
@@ -20,7 +20,7 @@ contains
 
   subroutine capture_sbli_wall_curves_gpu(mode,step,t,host_budget,budget,reserve,wall,bounds,success)
     character(*),intent(in) :: mode
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     integer(int64),intent(in) :: host_budget,budget,reserve
     real(real_kind),allocatable,intent(out) :: wall(:,:)
@@ -40,7 +40,7 @@ contains
     use insitu_product_schedule, only: product_scene_due
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
     character(*),intent(in) :: mode,pipeline,backend,script
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     integer(int64),intent(in) :: host_budget,budget,reserve
     real(real_kind),allocatable,optional,intent(out) :: wall_capture(:,:)
@@ -59,7 +59,8 @@ contains
           budget,reserve,retained) bind(C,name='astr_insitu_device_render_sbli_2d')
         import c_int,c_char,c_real_kind,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*)
-        integer(c_int),value :: comm,step,nx,ny,nwall
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm,nx,ny,nwall
         real(c_real_kind),value :: t
         type(c_devptr),value :: xyz,fields
         real(c_real_kind),intent(in) :: wall(*),bounds(6)
@@ -276,7 +277,8 @@ contains
 #ifdef ASTR_BUILD_TESTING
   subroutine write_oracle(step,positions,fields,im,jm,budget)
     use parallel, only: mpirank,ig0
-    integer,intent(in) :: step,im,jm
+    integer(int64),intent(in) :: step
+    integer,intent(in) :: im,jm
     integer(int64),intent(in) :: budget
     real(real_kind),device,intent(in) :: positions(:,:),fields(:,:)
     real(real_kind),allocatable :: host_xyz(:,:),host_fields(:,:)

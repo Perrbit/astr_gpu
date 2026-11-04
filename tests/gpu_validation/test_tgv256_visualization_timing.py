@@ -41,14 +41,13 @@ def test_missing_rank_step_rejected(tmp_path):
 
 @pytest.mark.parametrize('pipeline',['compatible','standard-device','direct-device'])
 def test_preflight_explicit_pipeline_and_no_field_io(tmp_path,monkeypatch,pipeline):
-    def prepare(command,**kwargs):
-        case=Path(command[command.index('--dst-case')+1])
-        (case/'datin').mkdir(parents=True)
-        assert command[command.index('--maxstep')+1]=='1'
-        assert command[command.index('--feqlist')+1]=='1'
-    monkeypatch.setattr(BENCHMARK.subprocess,'run',prepare)
     case=tmp_path/'case'
     BENCHMARK.prepare(case,2,True,tmp_path/'lib','device-aware',pipeline)
+    runtime=(case/'datin/input.run').read_text()
+    assert 'max_steps=2' in runtime and 'fixed_dt=1.d-4' in runtime and 'list_steps=1' in runtime
+    primary=(case/'datin/input.case').read_text()
+    assert all(f'  {field} = 256\n' in primary for field in ('ia','ja','ka'))
+    assert not (case/'datin/controller').exists()
     content=(case/'insitu.nml').read_text()
     assert f"rendering_pipeline='{pipeline}'" in content
     script='device_render_pipeline.py'

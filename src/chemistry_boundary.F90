@@ -104,6 +104,7 @@ contains
 end module chemistry_postshock_boundary
 
 module chemistry_hbl_boundary
+  use case_model_options, only: get_case_option
   use iso_fortran_env, only: real64
   use chemistry_model, only: chemistry_status_ok
   use chemistry_state_layout, only: air5_num_conservative,air5_idx_species_first, &
@@ -214,7 +215,7 @@ contains
     real(real64) :: density,velocity(3),temperature,y(5),tv,pressure,gas,cv
 
     value='prescribed'
-    call get_environment_variable('ASTR_AIR5_TOP_MODE',value,status=status)
+    call get_case_option('top_mode',value,status=status)
     if(status==1) value='prescribed'
     choice=-1
     if(status==0.or.status==1) then
@@ -257,7 +258,7 @@ contains
     endif
     value=''
     tau=-1.0_real64
-    call get_environment_variable('ASTR_AIR5_TOP_TAU',value,status=status)
+    call get_case_option('top_tau',value,status=status)
     if(status==0) read(value,*,iostat=status) tau
     choice=0
     if(status/=0.or..not.ieee_is_finite(tau)) choice=1
@@ -353,10 +354,10 @@ contains
     if(characteristic_top.and.version/=2) bad=1
     if(mode==1) then
       option=''
-      call get_environment_variable('ASTR_AIR5_COMPENSATION',option,status=env_status)
+      call get_case_option('compensation',option,status=env_status)
       if(env_status/=0.or.trim(option)/='on') bad=1
       option='restore'
-      call get_environment_variable('ASTR_AIR5_COMPENSATION_RESTART',option,status=env_status)
+      call get_case_option('compensation_restart',option,status=env_status)
       if(env_status/=1) then
         if(env_status/=0.or.trim(option)/='restore') bad=1
       endif

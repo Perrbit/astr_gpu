@@ -8,7 +8,7 @@ module checkpoint_gpu
   public :: restore_exact_checkpoint_gpu,exact_checkpoint_version_gpu
   public :: exact_checkpoint_generation_gpu
   logical,save :: prepared=.false.
-  integer,save :: saved_step=-1
+  integer(int64),save :: saved_step=-1
   integer(int64),save :: generation=0_int64
   interface
     function rename_file(old,new) bind(C,name='rename') result(status)

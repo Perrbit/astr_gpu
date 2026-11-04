@@ -365,6 +365,8 @@ end subroutine ppentrance
       !
       call h5sread(varname='time_sbeg',var=time,filename=fname//'.s5')
       call h5srite(var=time,varname='time_sbeg',filename=fname//'.h5')
+      call h5sread(varname='mean_time_weight',var=time,filename=fname//'.s5')
+      call h5srite(var=time,varname='mean_time_weight',filename=fname//'.h5')
       !
       call data3d_rcw(varname='rom')
       call data3d_rcw(varname='u1m')
@@ -383,6 +385,8 @@ end subroutine ppentrance
       !
       call h5sread(varname='time_sbeg',var=time,filename=fname//'.s5')
       call h5srite(var=time,varname='time_sbeg',filename=fname//'.h5')
+      call h5sread(varname='mean_time_weight',var=time,filename=fname//'.s5')
+      call h5srite(var=time,varname='mean_time_weight',filename=fname//'.h5')
       !
       call data3d_rcw(varname= 'pp')
       call data3d_rcw(varname= 'tt')
@@ -406,6 +410,8 @@ end subroutine ppentrance
       !
       call h5sread(varname='time_sbeg',var=time,filename=fname//'.s5')
       call h5srite(var=time,varname='time_sbeg',filename=fname//'.h5')
+      call h5sread(varname='mean_time_weight',var=time,filename=fname//'.s5')
+      call h5srite(var=time,varname='mean_time_weight',filename=fname//'.h5')
       !
       call data3d_rcw(varname='u111')
       call data3d_rcw(varname='u112')
@@ -428,6 +434,8 @@ end subroutine ppentrance
       !
       call h5sread(varname='time_sbeg',var=time,filename=fname//'.s5')
       call h5srite(var=time,varname='time_sbeg',filename=fname//'.h5')
+      call h5sread(varname='mean_time_weight',var=time,filename=fname//'.s5')
+      call h5srite(var=time,varname='mean_time_weight',filename=fname//'.h5')
       !
       call data3d_rcw(varname= 'predil')
       call data3d_rcw(varname=    'pu1')

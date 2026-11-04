@@ -62,14 +62,14 @@ def test_standalone_preset_has_no_validation_imports_or_private_defaults(tmp_pat
     assert len(products)==(6 if enabled else 0)
     assert all(row['schedule']==dict(mode='steps',interval=2) for row in products)
     assert str(library.resolve()) in config
-    assert {p.name for p in (output/'datin').iterdir()}=={'input.tgv','controller','input.output'}
+    assert {p.name for p in (output/'datin').iterdir()}=={'input.case','input.run','input.output'}
     assert (output/'outdat/render').is_dir()
     assert (output/'outdat/new').is_dir()
-    primary=(output/'datin/input.tgv').read_text().splitlines()
-    assert primary[5]=='tgv' and primary[8]=='32,32,32'
-    assert primary[11]=='t,t,t' and primary[14]=='t,t,t,f,f,f,t,f,t'
-    control=(output/'datin/controller').read_text().splitlines()
-    assert control[5]=='f,f,f,f' and control[8]=='3,1,100,50,1,50' and control[11]=='1.d-3'
+    primary=(output/'datin/input.case').read_text()
+    assert "flowtype = 'tgv'" in primary and 'use_gpu = .true.' in primary
+    assert all(f'  {field} = 32\n' in primary for field in ('ia','ja','ka'))
+    control=(output/'datin/input.run').read_text()
+    assert 'max_steps = 4' in control and "mode = 'fixed'" in control and 'fixed_dt = 1.d-3' in control
     assert 'tests.gpu_validation' not in path.read_text()
     assert '/home/dell' not in path.read_text()
     with pytest.raises(FileExistsError):module.prepare(output,library,enabled)

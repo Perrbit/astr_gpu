@@ -1,8 +1,7 @@
-! Basic completed-step output for the nonreacting quickstart cases.
-! Frequencies and budgets are startup examples, not production recommendations.
+! Basic completed-step output. Checkpoint cadence is independent of input.run.
 &output
  directory='outdat/output', buffer_bytes=4096,
- host_budget_bytes=67108864, device_budget_bytes=67108864
+ host_budget_bytes=-1, device_budget_bytes=-1
 /
 &checkpoint
  enabled=.true., mode='steps', interval_steps=100, keep=2

@@ -1041,7 +1041,7 @@ contains
                 err=1; exit
               endif
               identity=checkpoint_state_identity(step,time,0.0_real_kind,1.0_real_kind)
-              write(name,'("step",i12.12)') step
+              write(name,'("step",i0.12)') step
               data_reference=trim(name)//'/data.h5'
               geometry_reference='../resources/data.h5'
               if(lineage) then

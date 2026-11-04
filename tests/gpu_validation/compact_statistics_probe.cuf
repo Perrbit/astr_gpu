@@ -6,20 +6,26 @@ program compact_statistics_probe
 
   integer,parameter :: im=1,jm=1,km=4,hm=1
   real(8),allocatable,device :: x_d(:,:,:,:),measure_d(:,:),plane_sum_d(:,:,:)
+  real(8),allocatable,device :: plane_endpoint_d(:,:,:),wall_endpoint_d(:,:)
   real(8),allocatable,device :: rho_d(:,:,:),vel_d(:,:,:,:),prs_d(:,:,:),tmp_d(:,:,:)
   real(8),allocatable,device :: dvel_d(:,:,:,:,:),dtmp_d(:,:,:,:),bnorm_d(:,:,:),wall_sum_d(:,:)
   real(8),allocatable :: x(:,:,:,:),measure(:,:),expected(:,:),plane_sum(:,:,:),expected_sum(:,:,:)
   real(8),allocatable :: rho(:,:,:),vel(:,:,:,:),prs(:,:,:),tmp(:,:,:)
   real(8),allocatable :: dvel(:,:,:,:,:),dtmp(:,:,:,:),bnorm(:,:,:),wall_sum(:,:),expected_wall(:,:)
+  real(8),allocatable :: previous_sum(:,:,:),current_sum(:,:,:),integral(:,:,:),endpoint(:,:,:)
   real(8) :: z(0:km),dx,dy,dz,ds,left(12),right(12)
+  real(8),parameter :: times(3)=[0.d0,0.3d0,1.d0],factors(3)=[1.d0,2.d0,0.5d0]
+  integer,parameter :: powers(12)=[1,2,2,2,1,0,3,3,3,3,3,3]
   type(dim3) :: block,grid
-  integer :: i,j,k,istat
+  integer :: i,j,k,istat,sample,m
 
   allocate(x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
   allocate(measure(0:im,0:jm),expected(0:im,0:jm))
   allocate(x_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
   allocate(measure_d(0:im,0:jm))
   allocate(plane_sum_d(0:im,0:jm,1:12),plane_sum(0:im,0:jm,1:12))
+  allocate(plane_endpoint_d(0:im,0:jm,12),previous_sum(0:im,0:jm,12), &
+    current_sum(0:im,0:jm,12),integral(0:im,0:jm,12),endpoint(0:im,0:jm,12))
   allocate(expected_sum(0:im,0:jm,1:12))
   allocate(rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
   allocate(vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
@@ -33,6 +39,7 @@ program compact_statistics_probe
   allocate(bnorm(0:im,0:km,1:3),wall_sum(0:im,1:3),expected_wall(0:im,1:3))
   allocate(dvel_d(0:im,0:jm,0:km,1:3,1:3),dtmp_d(0:im,0:jm,0:km,1:3))
   allocate(bnorm_d(0:im,0:km,1:3),wall_sum_d(0:im,1:3))
+  allocate(wall_endpoint_d(0:im,3))
   block=dim3(32,16,1)
   grid=dim3(1,1,1)
 
@@ -97,18 +104,31 @@ program compact_statistics_probe
   enddo
   x_d=x; rho_d=rho; vel_d=vel; prs_d=prs; tmp_d=tmp; plane_sum_d=0.d0
   call compact_plane_moment_kernel<<<grid,block>>>(x_d,rho_d,vel_d,prs_d,tmp_d, &
-                                                    plane_sum_d,im,jm,km,hm)
+    plane_sum_d,plane_endpoint_d,0.d0,.false.,im,jm,km,hm)
   istat=cudaDeviceSynchronize()
   if(istat/=cudaSuccess) error stop 'compact statistics moment kernel failed'
   plane_sum=plane_sum_d
-  if(maxval(abs(plane_sum-expected_sum))>1.d-12) error stop 'compact statistics moment mismatch'
-  call compact_plane_moment_kernel<<<grid,block>>>(x_d,rho_d,vel_d,prs_d,tmp_d, &
-                                                    plane_sum_d,im,jm,km,hm)
-  istat=cudaDeviceSynchronize()
-  if(istat/=cudaSuccess) error stop 'compact statistics second moment kernel failed'
-  plane_sum=plane_sum_d
-  if(maxval(abs(plane_sum-2.d0*expected_sum))>2.d-12) &
-    error stop 'compact statistics repeated sample mismatch'
+  endpoint=plane_endpoint_d
+  if(any(plane_sum/=0.d0)) error stop 'first compact sample must have zero coverage'
+  if(maxval(abs(endpoint-expected_sum))>1.d-12) error stop 'compact statistics endpoint mismatch'
+  previous_sum=expected_sum;integral=0.d0
+  do sample=2,3
+    rho_d=factors(sample)*rho;vel_d=factors(sample)*vel
+    do m=1,12
+      current_sum(:,:,m)=expected_sum(:,:,m)*factors(sample)**powers(m)
+    enddo
+    integral=integral+(0.5d0*(times(sample)-times(sample-1)))*(previous_sum+current_sum)
+    call compact_plane_moment_kernel<<<grid,block>>>(x_d,rho_d,vel_d,prs_d,tmp_d, &
+      plane_sum_d,plane_endpoint_d,times(sample)-times(sample-1),.true.,im,jm,km,hm)
+    istat=cudaDeviceSynchronize()
+    if(istat/=cudaSuccess) error stop 'compact statistics time integral kernel failed'
+    plane_sum=plane_sum_d;endpoint=plane_endpoint_d
+    if(maxval(abs(plane_sum-integral)/max(1.d0,abs(integral)))>1.d-14) &
+      error stop 'compact statistics nonuniform time integral mismatch'
+    if(maxval(abs(endpoint-current_sum)/max(1.d0,abs(current_sum)))>1.d-14) &
+      error stop 'compact statistics next endpoint mismatch'
+    previous_sum=current_sum
+  enddo
 
   do k=0,km
   do j=0,jm
@@ -139,10 +159,22 @@ program compact_statistics_probe
   enddo
   x_d=x; prs_d=prs; tmp_d=tmp; dvel_d=dvel; dtmp_d=dtmp; bnorm_d=bnorm; wall_sum_d=0.d0
   call compact_wall_moment_kernel<<<1,256>>>(x_d,bnorm_d,prs_d,tmp_d,dvel_d,dtmp_d, &
-    wall_sum_d,im,jm,km,hm,im,0,.true.,1000.d0,0.72d0,2.5d0,1.d0,0.4d0,1.4d0)
+    wall_sum_d,wall_endpoint_d,0.d0,.false.,im,jm,km,hm,im,0,.true.,1000.d0,0.72d0,2.5d0,1.d0,0.4d0,1.4d0)
   istat=cudaDeviceSynchronize()
   if(istat/=cudaSuccess) error stop 'compact statistics wall kernel failed'
   wall_sum=wall_sum_d
+  if(any(wall_sum/=0.d0)) error stop 'first wall sample must have zero coverage'
+  call compact_wall_moment_kernel<<<1,256>>>(x_d,bnorm_d,prs_d,tmp_d,dvel_d,dtmp_d, &
+    wall_sum_d,wall_endpoint_d,0.3d0,.true.,im,jm,km,hm,im,0,.true.,1000.d0,0.72d0,2.5d0,1.d0,0.4d0,1.4d0)
+  istat=cudaDeviceSynchronize()
+  if(istat/=cudaSuccess) error stop 'compact wall first interval kernel failed'
+  prs_d=2.d0*prs;dvel_d=2.d0*dvel;dtmp_d=2.d0*dtmp
+  call compact_wall_moment_kernel<<<1,256>>>(x_d,bnorm_d,prs_d,tmp_d,dvel_d,dtmp_d, &
+    wall_sum_d,wall_endpoint_d,0.7d0,.true.,im,jm,km,hm,im,0,.true.,1000.d0,0.72d0,2.5d0,1.d0,0.4d0,1.4d0)
+  istat=cudaDeviceSynchronize()
+  if(istat/=cudaSuccess) error stop 'compact wall second interval kernel failed'
+  wall_sum=wall_sum_d
+  expected_wall=(0.3d0+0.5d0*0.7d0*3.d0)*expected_wall
   if(maxval(abs(wall_sum-expected_wall))>1.d-12) then
     write(*,'(A,1X,ES24.16E3)') 'COMPACT_STATISTICS_WALL_FAIL',maxval(abs(wall_sum-expected_wall))
     error stop 'compact statistics wall mismatch'

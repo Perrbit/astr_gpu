@@ -296,7 +296,8 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
                     '--sample=none', '--cpuctxsw=none', '--cuda-memory-usage=true',
                     '--cuda-um-cpu-page-faults=true', '--cuda-um-gpu-page-faults=true',
                     '--export=sqlite', '--output='+str(case/'trace.rank%q{OMPI_COMM_WORLD_RANK}')]
-    command += [str(args.executable), 'run', 'datin/input.dat']
+    from named_fixture import prepare_named_run
+    command += [str(args.executable), 'run', prepare_named_run(case,'datin/input.dat',env)]
     native_dt = float(np.float32(selected_dt)) if precision == 'fp32' else selected_dt
     cfl = CflGate(case/'run.log', 1., native_dt, first_step, steps)
     checked = {}

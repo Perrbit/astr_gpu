@@ -155,8 +155,9 @@ def test_m12_diagnostic_clock_restores_and_segments(tmp_path):
         prepare_probe_map(case, shape)
         env = environment('2,1,1')
         env.update(ASTR_INSITU_CONFIG='datin/input.insitu', ASTR_GPU_MP_POSITIVITY='flux')
+        from named_fixture import prepare_named_run
         command = [str(MPIEXEC), '--mca', 'pml', 'ob1', '--mca', 'btl', 'self,vader,tcp',
-            '--bind-to', 'none', '-np', '2', str(exe), 'run', 'datin/input.dat']
+            '--bind-to', 'none', '-np', '2', str(exe), 'run',prepare_named_run(case,'datin/input.dat',env)]
         with (case/'run.log').open('w') as log:
             result = subprocess.run(command, env=env, cwd=case, stdout=log, stderr=subprocess.STDOUT, timeout=180)
         assert result.returncode == 0, (case/'run.log').read_text()[-6000:]

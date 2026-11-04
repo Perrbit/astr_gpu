@@ -22,6 +22,7 @@ module parallel
     module procedure bcast_cha
     module procedure bcast_chafix_ary
     module procedure bcast_int
+    module procedure bcast_int64
     module procedure bcast_r8
     module procedure bcast_log
     module procedure bcast_int_ary
@@ -1390,6 +1391,17 @@ module parallel
     !
     !
   end subroutine bcast_int
+  subroutine bcast_int64(vario,comm)
+    use iso_fortran_env, only: int64
+    integer(int64),intent(inout) :: vario
+    integer,intent(in),optional :: comm
+    integer :: ierr
+    if(present(comm)) then
+      call MPI_Bcast(vario,1,MPI_INTEGER8,0,comm,ierr)
+    else
+      call MPI_Bcast(vario,1,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+    endif
+  end subroutine bcast_int64
   !
   subroutine bcast_int_ary(vario)
     !

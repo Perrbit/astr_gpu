@@ -123,7 +123,9 @@ def test_m12_lightweight_random_blowing_and_crashfix_history(tmp_path, backend, 
         config = case / 'datin/input.output'
         config.write_text(config.read_text().replace(' exact_restart=f,', ' '))
         env = runtime(f'{ranks},1,1')
-        command = [*mpi_command(MPIEXEC, ranks, 'pinned'), str(Path(EXE).resolve()), 'run', 'datin/input.dat']
+        from named_fixture import prepare_named_run
+        command = [*mpi_command(MPIEXEC, ranks, 'pinned'), str(Path(EXE).resolve()), 'run',
+                   prepare_named_run(case,'datin/input.dat',env)]
         with (case / 'run.log').open('w') as log:
             result = subprocess.run(command, cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=120)
         assert result.returncode == 0, (case / 'run.log').read_text()[-8000:]

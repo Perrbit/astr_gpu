@@ -6,7 +6,10 @@
 !| 12-02-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module statistic
+  use iso_fortran_env, only: int64
+  use case_model_options, only: get_case_option
   use astr_precision, only: real_kind,clock_kind,real_to_word,word_to_real
+  use mean_statistics_math, only: mean_point_moments,mean_endpoint_count,mean_moment_count
   !
   use constdef
   use commvar,  only : im,jm,km,ia,ja,ka,ndims,xmin,xmax,ymin,ymax,    &
@@ -18,7 +21,8 @@ module statistic
   use utility, only: timereporter
   !
   implicit none
-  private :: real_kind,clock_kind,real_to_word,word_to_real
+  private :: real_kind,clock_kind,real_to_word,word_to_real,int64
+  private :: mean_point_moments,mean_endpoint_count,mean_moment_count
   !
   type :: tsta
     real(real_kind) :: urms,machrms,macht,kolmoglength,kolmogvelocity,        &
@@ -26,9 +30,11 @@ module statistic
     real(real_kind) :: rhoe
   end type tsta
   !
-  integer :: nsamples,nstep_sbeg
-  integer,private,save :: mean_last_sample_step=0
+  integer(int64) :: nsamples,nstep_sbeg
+  integer(int64),private,save :: mean_last_sample_step=-1
   real(real_kind),private,save :: mean_last_sample_time=0.e0_real_kind
+  real(real_kind),save :: mean_time_weight=0.e0_real_kind
+  real(real_kind),allocatable,private :: mean_endpoint(:,:,:,:)
   logical :: lmeanallocated=.false.
   logical :: liosta=.false.
   real(real_kind) :: time_sbeg
@@ -65,13 +71,18 @@ module statistic
     integer :: status
 
     force=0.e0_real_kind
-    call get_environment_variable('ASTR_CHANNEL_FORCE_FIXED',fixed,status=status)
+    call get_case_option('channel_force_fixed',fixed,status=status)
     if(status==0.and.len_trim(fixed)>0) read(fixed,*) force(1)
   end subroutine initialize_channel_driver
 
   real(real_kind) function mean_last_sample_identity() result(t)
     t=mean_last_sample_time
   end function
+  subroutine reset_mean_statistics_window()
+    nsamples=0;nstep_sbeg=0;mean_last_sample_step=-1
+    time_sbeg=0.e0_real_kind;mean_last_sample_time=0.e0_real_kind
+    mean_time_weight=0.e0_real_kind;liosta=.false.
+  end subroutine
   subroutine complete_mean_statistics_file(path,writing,identity,budget,allow_repartition,repartition_axes)
     use iso_fortran_env, only: int64
     use ieee_arithmetic, only: ieee_is_finite
@@ -85,25 +96,26 @@ module statistic
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
     real(real_kind),allocatable :: values(:,:,:,:)
-    integer(int64) :: remaining,metadata(8)
+    integer(int64) :: remaining,metadata(9)
     type(checkpoint_state_identity) :: expected
-    call allocate_checkpoint_buffer([im,jm,km],0,44,budget,values,remaining,MPI_COMM_WORLD)
+    call allocate_checkpoint_buffer([im,jm,km],0,mean_moment_count+mean_endpoint_count,budget,values,remaining,MPI_COMM_WORLD)
     expected=identity
-    ! Metadata v2 retains the last sampling time independently of the current dt.
-    metadata=[2_int64,int(nsamples,int64),0_int64,0_int64,0_int64,0_int64,0_int64,0_int64]
+    ! Time-integral payloads cannot be resumed as old equal-sample sums.
+    metadata=[3_int64,int(nsamples,int64),0_int64,0_int64,0_int64,0_int64,0_int64,0_int64,0_int64]
     if(writing) then
       values=0.e0_real_kind
       call checkpoint_state_require(nsamples>=0,MPI_COMM_WORLD,'negative mean statistics count')
       if(nsamples>0) then
-        call checkpoint_state_require(lmeanallocated.and.liosta.and.mean_last_sample_step<identity%step, &
+        call checkpoint_state_require(lmeanallocated.and.liosta.and.mean_last_sample_step<=identity%step, &
           MPI_COMM_WORLD,'mean sampling identity')
-        call checkpoint_state_require(nstep_sbeg>0.and.nstep_sbeg<=mean_last_sample_step.and. &
+        call checkpoint_state_require(nstep_sbeg>=0.and.nstep_sbeg<=mean_last_sample_step.and. &
           nsamples<=mean_last_sample_step-nstep_sbeg+1.and.ieee_is_finite(time_sbeg).and. &
           ieee_is_finite(mean_last_sample_time).and.time_sbeg>=0.e0_real_kind.and. &
           mean_last_sample_time>=time_sbeg.and.mean_last_sample_time<=identity%time, &
           MPI_COMM_WORLD,'mean sampling clock')
         metadata(3:8)=[int(nstep_sbeg,int64),int(mean_last_sample_step,int64), &
           real_to_word(time_sbeg),1_int64,1_int64,real_to_word(mean_last_sample_time)]
+        metadata(9)=real_to_word(mean_time_weight)
         values(:,:,:,1)=rom
         values(:,:,:,2)=u1m
         values(:,:,:,3)=u2m
@@ -148,6 +160,7 @@ module statistic
         values(:,:,:,42)=visdif1
         values(:,:,:,43)=visdif2
         values(:,:,:,44)=visdif3
+        values(:,:,:,45:58)=mean_endpoint
       endif
       call checkpoint_state_require(all(ieee_is_finite(values)),MPI_COMM_WORLD,'nonfinite mean statistics payload')
     endif
@@ -159,16 +172,17 @@ module statistic
       call checkpoint_state_require(identity%step==expected%step.and.identity%time==expected%time.and. &
         identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next, &
         MPI_COMM_WORLD,'mean checkpoint clock mismatch')
-      call checkpoint_state_require(metadata(1)==2.and.metadata(2)>=0.and.metadata(2)<=huge(nsamples).and. &
+      call checkpoint_state_require(metadata(1)==3.and.metadata(2)>=0.and.metadata(2)<=huge(nsamples).and. &
         metadata(3)>=0.and.metadata(3)<=identity%step.and.metadata(4)>=0.and. &
-        metadata(4)<max(1_int64,identity%step).and.ieee_is_finite(word_to_real(metadata(5))).and. &
+        metadata(4)<=identity%step.and.ieee_is_finite(word_to_real(metadata(5))).and. &
         ieee_is_finite(word_to_real(metadata(8))).and.word_to_real(metadata(5))>=0.e0_real_kind.and. &
         word_to_real(metadata(8))>=word_to_real(metadata(5)).and.word_to_real(metadata(8))<=identity%time.and. &
-        metadata(6)==merge(1_int64,0_int64,metadata(2)>0).and.metadata(7)==metadata(6), &
+        metadata(6)==merge(1_int64,0_int64,metadata(2)>0).and.metadata(7)==metadata(6).and. &
+        ieee_is_finite(word_to_real(metadata(9))).and.word_to_real(metadata(9))>=0.e0_real_kind, &
         MPI_COMM_WORLD,'mean checkpoint metadata')
       call checkpoint_state_require(all(ieee_is_finite(values)),MPI_COMM_WORLD,'nonfinite mean statistics payload')
       if(metadata(2)>0) then
-        call checkpoint_state_require(metadata(3)>0.and.metadata(3)<=metadata(4).and. &
+        call checkpoint_state_require(metadata(3)>=0.and.metadata(3)<=metadata(4).and. &
           metadata(2)<=metadata(4)-metadata(3)+1,MPI_COMM_WORLD,'mean checkpoint sample sequence')
         if(.not.lmeanallocated) call allomeanflow
         rom=values(:,:,:,1)
@@ -215,15 +229,18 @@ module statistic
         visdif1=values(:,:,:,42)
         visdif2=values(:,:,:,43)
         visdif3=values(:,:,:,44)
+        mean_endpoint=values(:,:,:,45:58)
       else
-        call checkpoint_state_require(all(metadata(3:8)==0).and.all(values==0.e0_real_kind), &
+        call checkpoint_state_require(all(metadata(3:9)==0).and.all(values==0.e0_real_kind), &
           MPI_COMM_WORLD,'nonempty zero-sample mean checkpoint')
       endif
-      nsamples=int(metadata(2))
-      nstep_sbeg=int(metadata(3))
-      mean_last_sample_step=int(metadata(4))
+      nsamples=metadata(2)
+      nstep_sbeg=metadata(3)
+      mean_last_sample_step=metadata(4)
       time_sbeg=word_to_real(metadata(5))
       mean_last_sample_time=word_to_real(metadata(8))
+      mean_time_weight=word_to_real(metadata(9))
+      if(nsamples==0) mean_last_sample_step=-1
       liosta=metadata(7)==1
     endif
   end subroutine complete_mean_statistics_file
@@ -318,6 +335,7 @@ module statistic
     allocate( sgmam12(0:im,0:jm,0:km),stat=lallo)
     allocate( sgmam13(0:im,0:jm,0:km),stat=lallo)
     allocate( sgmam23(0:im,0:jm,0:km),stat=lallo)
+    allocate(mean_endpoint(0:im,0:jm,0:km,mean_endpoint_count))
     !
     lmeanallocated=.true.
     !
@@ -338,12 +356,13 @@ module statistic
     use commvar,   only : reynolds,nstep,time,nondimen
     use commarray, only : rho,vel,prs,tmp,dvel
     use fludyna,   only : miucal
+    use ieee_arithmetic, only: ieee_is_finite
+    use mpi, only: MPI_Abort,MPI_COMM_WORLD
 #ifdef ASTR_AIR5_CHEMISTRY
     use commvar, only: lcomb,num_modequ
     use commarray, only: tve,spc
     use chemistry_air5_data, only: air5_num_species
     use chemistry_transport, only: air5_transport_properties
-    use mpi, only: MPI_Abort,MPI_COMM_WORLD
 #endif
     !
     ! arguments
@@ -352,13 +371,16 @@ module statistic
     ! local data
     real(real_kind) :: rho_t,prs_t,tmp_t,u,v,w
     integer :: i,j,k
+    integer :: abort_ierr
+    real(real_kind) :: endpoint(mean_endpoint_count),previous(mean_endpoint_count), &
+      current_values(mean_moment_count),old_values(mean_moment_count),increment(mean_moment_count),interval
     real(real_kind) :: d11,d12,d13,d21,d22,d23,d31,d32,d33,s11,s12,s13,s22,    &
                s23,s33,skk,miu,div
     !
     real(clock_kind) :: time_beg
     real(clock_kind),save :: subtime=0.0_clock_kind
 #ifdef ASTR_AIR5_CHEMISTRY
-    integer :: transport_status,abort_ierr
+    integer :: transport_status
     real(real_kind) :: conductivity_tr,conductivity_v,species_viscosity(air5_num_species), &
       binary_diffusion(air5_num_species,air5_num_species),mixture_diffusion(air5_num_species)
 #endif
@@ -370,6 +392,15 @@ module statistic
     endif 
     
     if(nstep<=mean_last_sample_step) return
+    if(.not.ieee_is_finite(time)) call MPI_Abort(MPI_COMM_WORLD,90,abort_ierr)
+    interval=0.e0_real_kind
+    if(nsamples>0) then
+      interval=time-mean_last_sample_time
+      if(interval<=0.e0_real_kind.or..not.ieee_is_finite(interval)) then
+        write(*,'(A)') 'Mean statistics require strictly increasing finite sample times'
+        call MPI_Abort(MPI_COMM_WORLD,90,abort_ierr)
+      endif
+    endif
 #ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb) then
       if(nondimen.or.num_species/=air5_num_species.or.num_modequ/=1.or. &
@@ -442,6 +473,7 @@ module statistic
       !
       nstep_sbeg=nstep
       time_sbeg=time
+      mean_time_weight=0.e0_real_kind
     endif
     !
     do k=0,km
@@ -454,45 +486,6 @@ module statistic
       u=vel(i,j,k,1)
       v=vel(i,j,k,2)
       w=vel(i,j,k,3)
-      !
-      rom(i,j,k)=rom(i,j,k) + rho_t
-      u1m(i,j,k)=u1m(i,j,k) + rho_t*u
-      u2m(i,j,k)=u2m(i,j,k) + rho_t*v
-      u3m(i,j,k)=u3m(i,j,k) + rho_t*w
-      pm(i,j,k) =pm(i,j,k)  + prs(i,j,k)
-      tm(i,j,k) =tm(i,j,k)  + rho_t*tmp(i,j,k)
-      !
-      u11(i,j,k)=u11(i,j,k) + rho_t*u*u
-      u22(i,j,k)=u22(i,j,k) + rho_t*v*v
-      u33(i,j,k)=u33(i,j,k) + rho_t*w*w
-      u12(i,j,k)=u12(i,j,k) + rho_t*u*v
-      u13(i,j,k)=u13(i,j,k) + rho_t*u*w
-      u23(i,j,k)=u23(i,j,k) + rho_t*v*w
-      pp(i,j,k) =pp(i,j,k)  + prs_t*prs_t
-      !
-      tt(i,j,k) =tt(i,j,k)  + rho_t*tmp_t*tmp_t
-      tu1(i,j,k)=tu1(i,j,k) + rho_t*u*tmp_t
-      tu2(i,j,k)=tu2(i,j,k) + rho_t*v*tmp_t
-      tu3(i,j,k)=tu3(i,j,k) + rho_t*w*tmp_t
-      !
-      u111(i,j,k)=u111(i,j,k)+rho_t*u**3
-      u222(i,j,k)=u222(i,j,k)+rho_t*v**3
-      u333(i,j,k)=u333(i,j,k)+rho_t*w**3
-      u112(i,j,k)=u112(i,j,k)+rho_t*u*u*v
-      u113(i,j,k)=u113(i,j,k)+rho_t*u*u*w
-      u122(i,j,k)=u122(i,j,k)+rho_t*u*v*v
-      u133(i,j,k)=u133(i,j,k)+rho_t*u*w*w
-      u223(i,j,k)=u223(i,j,k)+rho_t*v*v*w
-      u233(i,j,k)=u233(i,j,k)+rho_t*v*w*w
-      u123(i,j,k)=u123(i,j,k)+rho_t*u*v*w
-      !
-      u1rem(i,j,k)=u1rem(i,j,k)+u
-      u2rem(i,j,k)=u2rem(i,j,k)+v
-      u3rem(i,j,k)=u3rem(i,j,k)+w
-      !
-      pu1(i,j,k)=pu1(i,j,k)+prs_t*u
-      pu2(i,j,k)=pu2(i,j,k)+prs_t*v
-      pu3(i,j,k)=pu3(i,j,k)+prs_t*w
       !
       d11=dvel(i,j,k,1,1); d12=dvel(i,j,k,1,2); d13=dvel(i,j,k,1,3)
       d21=dvel(i,j,k,2,1); d22=dvel(i,j,k,2,2); d23=dvel(i,j,k,2,3)
@@ -530,28 +523,68 @@ module statistic
       s13=miu*(d13+d31)
       s23=miu*(d23+d32)
       !
-      sgmam11(i,j,k)=sgmam11(i,j,k)+s11
-      sgmam22(i,j,k)=sgmam22(i,j,k)+s22
-      sgmam33(i,j,k)=sgmam33(i,j,k)+s33
-      sgmam12(i,j,k)=sgmam12(i,j,k)+s12
-      sgmam13(i,j,k)=sgmam13(i,j,k)+s13
-      sgmam23(i,j,k)=sgmam23(i,j,k)+s23
-      !
-      visdif1(i,j,k)=visdif1(i,j,k)+s11*u+s12*v+s13*w
-      visdif2(i,j,k)=visdif2(i,j,k)+s12*u+s22*v+s23*w
-      visdif3(i,j,k)=visdif3(i,j,k)+s13*u+s23*v+s33*w
-      !
-      disspa(i,j,k)=disspa(i,j,k)+s11*d11+s12*d12+s13*d13+           &
-                                  s12*d21+s22*d22+s23*d23+           &
-                                  s13*d31+s23*d32+s33*d33
-      !
-      predil(i,j,k)=predil(i,j,k)+prs_t*(d11+d22+d33)
+      endpoint=[rho_t,u,v,w,prs_t,tmp_t,s11,s22,s33,s12,s13,s23, &
+        s11*d11+s12*d12+s13*d13+s12*d21+s22*d22+s23*d23+s13*d31+s23*d32+s33*d33, &
+        prs_t*(d11+d22+d33)]
+      increment=0.e0_real_kind
+      if(nsamples>0) then
+        previous=mean_endpoint(i,j,k,:)
+        call mean_point_moments(previous,old_values)
+        call mean_point_moments(endpoint,current_values)
+        increment=(0.5e0_real_kind*interval)*(old_values+current_values)
+      endif
+      mean_endpoint(i,j,k,:)=endpoint
+      rom(i,j,k)=rom(i,j,k)+increment(1)
+      u1m(i,j,k)=u1m(i,j,k)+increment(2)
+      u2m(i,j,k)=u2m(i,j,k)+increment(3)
+      u3m(i,j,k)=u3m(i,j,k)+increment(4)
+      pm(i,j,k)=pm(i,j,k)+increment(5)
+      tm(i,j,k)=tm(i,j,k)+increment(6)
+      u11(i,j,k)=u11(i,j,k)+increment(7)
+      u22(i,j,k)=u22(i,j,k)+increment(8)
+      u33(i,j,k)=u33(i,j,k)+increment(9)
+      u12(i,j,k)=u12(i,j,k)+increment(10)
+      u13(i,j,k)=u13(i,j,k)+increment(11)
+      u23(i,j,k)=u23(i,j,k)+increment(12)
+      pp(i,j,k)=pp(i,j,k)+increment(13)
+      tt(i,j,k)=tt(i,j,k)+increment(14)
+      tu1(i,j,k)=tu1(i,j,k)+increment(15)
+      tu2(i,j,k)=tu2(i,j,k)+increment(16)
+      tu3(i,j,k)=tu3(i,j,k)+increment(17)
+      u111(i,j,k)=u111(i,j,k)+increment(18)
+      u222(i,j,k)=u222(i,j,k)+increment(19)
+      u333(i,j,k)=u333(i,j,k)+increment(20)
+      u112(i,j,k)=u112(i,j,k)+increment(21)
+      u113(i,j,k)=u113(i,j,k)+increment(22)
+      u122(i,j,k)=u122(i,j,k)+increment(23)
+      u133(i,j,k)=u133(i,j,k)+increment(24)
+      u223(i,j,k)=u223(i,j,k)+increment(25)
+      u233(i,j,k)=u233(i,j,k)+increment(26)
+      u123(i,j,k)=u123(i,j,k)+increment(27)
+      u1rem(i,j,k)=u1rem(i,j,k)+increment(28)
+      u2rem(i,j,k)=u2rem(i,j,k)+increment(29)
+      u3rem(i,j,k)=u3rem(i,j,k)+increment(30)
+      pu1(i,j,k)=pu1(i,j,k)+increment(31)
+      pu2(i,j,k)=pu2(i,j,k)+increment(32)
+      pu3(i,j,k)=pu3(i,j,k)+increment(33)
+      sgmam11(i,j,k)=sgmam11(i,j,k)+increment(34)
+      sgmam22(i,j,k)=sgmam22(i,j,k)+increment(35)
+      sgmam33(i,j,k)=sgmam33(i,j,k)+increment(36)
+      sgmam12(i,j,k)=sgmam12(i,j,k)+increment(37)
+      sgmam13(i,j,k)=sgmam13(i,j,k)+increment(38)
+      sgmam23(i,j,k)=sgmam23(i,j,k)+increment(39)
+      disspa(i,j,k)=disspa(i,j,k)+increment(40)
+      predil(i,j,k)=predil(i,j,k)+increment(41)
+      visdif1(i,j,k)=visdif1(i,j,k)+increment(42)
+      visdif2(i,j,k)=visdif2(i,j,k)+increment(43)
+      visdif3(i,j,k)=visdif3(i,j,k)+increment(44)
       !
     enddo
     enddo
     enddo
     !
     nsamples=nsamples+1
+    mean_time_weight=mean_time_weight+interval
     
     mean_last_sample_step=nstep
     mean_last_sample_time=time
@@ -1012,7 +1045,7 @@ module statistic
   !| -------------                                                     |
   !| 12-02-2021  | Created by J. Fang STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
-  subroutine statout(time_verybegin)
+  subroutine statout(time_verybegin,finishing)
     !
     use commvar, only : flowtype,nstep,time,maxstep,lrestart,feqlist,uinf
     use parallel,only : ptime
@@ -1020,6 +1053,7 @@ module statistic
     !
     ! arguments
     real(clock_kind),intent(in),optional :: time_verybegin
+    logical,intent(in),optional :: finishing
     !
     ! local data
     logical,save :: linit=.true.
@@ -1029,6 +1063,12 @@ module statistic
     integer,save :: hand_fs
     real(real_kind) :: l_0
     character(len=1024) :: fstitle
+    if(present(finishing)) then
+      if(finishing) then
+        if(lio.and..not.linit) close(hand_fs)
+        return
+      endif
+    endif
     ! 
     if(lio) then
       !
@@ -1075,6 +1115,7 @@ module statistic
         call listwrite(hand_fs,max_q(1),max_q(2),max_q(3),max_q(4),max_q(5))
       endif
       !
+      if(feqlist>0) then
       if(mod(nstep,feqlist)==0) then
         !
         if(mod(nstep,nprthead*feqlist)==0) then
@@ -1086,11 +1127,8 @@ module statistic
         write(*,"(2X,I7,1X,E13.6E2,5(1X,E13.6E2))")nstep,time,(max_q(i),i=1,5)
         !
       endif
-      !
-      if(nstep==maxstep) then
-        close(hand_fs)
-        print*,' << flowstate.dat'
       endif
+      !
       !
     endif
     !
@@ -1755,7 +1793,7 @@ module statistic
     endif
     !
     force_mode='feedback'
-    call get_environment_variable('ASTR_CHANNEL_FORCE_MODE',force_mode, &
+    call get_case_option('channel_force_mode',force_mode, &
                                   status=env_status)
     if(env_status/=0 .or. len_trim(force_mode)==0) force_mode='feedback'
     do i=1,len_trim(force_mode)
@@ -1767,7 +1805,7 @@ module statistic
     !
     use_fixed_force=.false.
     force_fixed=''
-    call get_environment_variable('ASTR_CHANNEL_FORCE_FIXED',force_fixed, &
+    call get_case_option('channel_force_fixed',force_fixed, &
                                   status=env_status)
     if(env_status==0 .and. len_trim(force_fixed)>0) then
       read(force_fixed,*) fixed_force

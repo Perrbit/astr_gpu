@@ -1,4 +1,5 @@
 module mixed_candidate_gpu
+  use case_model_options, only: get_case_option
   implicit none
   integer,parameter :: GPU_MIXED_FLUX=0
   integer,parameter :: GPU_MIXED_DERIVATIVE=1
@@ -17,7 +18,7 @@ contains
 
     if(gpu_mixed_candidate_configured) return
     value=''
-    call get_environment_variable('ASTR_GPU_MIXED_CANDIDATE',value,status=status)
+    call get_case_option('gpu_mixed_candidate',value,status=status)
     choice=-1
     candidate_was_explicit=status==0 .and. len_trim(value)>0
     if(status==1 .or. (status==0 .and. len_trim(value)==0)) then

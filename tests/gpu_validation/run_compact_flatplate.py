@@ -232,7 +232,8 @@ def main():
                     command += ['--leak-check','full']
                 if args.compact_transport=='device-aware':
                     command += ['--suppressions',str(Path(__file__).with_name('compute_sanitizer_ucx_cuda_aware.supp.xml').resolve())]
-            command += [str(exe.resolve()),'run','datin/input.dat']
+            from named_fixture import prepare_named_run
+            command += [str(exe.resolve()),'run',prepare_named_run(case,'datin/input.dat',env)]
             with (case/'run.log').open('w') as log:
                 subprocess.run(command,cwd=case,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
         text = (case/'run.log').read_text(errors='replace')

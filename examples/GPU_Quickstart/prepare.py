@@ -7,20 +7,25 @@ import argparse
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 
 HERE = Path(__file__).resolve().parent
 CASES = ("tgv", "channel", "flatplate", "air5_tgv", "air5_flatplate")
 
 
-def record(lines, marker):
-    matches = [i for i, line in enumerate(lines) if line.startswith("# " + marker)]
+def template_value(text, name):
+    """Read one scalar assignment in the bundled one-field-per-line templates."""
+    matches = re.findall(rf"^\s*{re.escape(name)}\s*=\s*(.*?)\s*$", text, re.MULTILINE)
     if len(matches) != 1:
-        raise ValueError(f"expected exactly one input marker: {marker}")
-    index = matches[0] + 1
-    if not lines[index].strip() or lines[index].startswith("#"):
-        raise ValueError(f"missing value after {marker}")
-    return index
+        raise ValueError(f"expected one named template assignment: {name}")
+    return matches[0]
+
+
+def set_template_value(text, name, value):
+    template_value(text, name)
+    return re.sub(rf"^(\s*{re.escape(name)}\s*=).*$", lambda match: f"{match[1]} {value}",
+                  text, flags=re.MULTILINE)
 
 
 def positive_real(value):
@@ -86,33 +91,25 @@ def prepare(case, destination, mode="gpu", np=1, topology="1,1,1",
     if destination.exists():
         raise FileExistsError(f"refusing to overwrite {destination}")
     source = HERE / case / "datin"
-    lines = (source / "input.dat").read_text(encoding="ascii").splitlines()
-    grid = tuple(int(v) for v in lines[record(lines, "ia,ja,ka")].split(","))
+    primary = (source / "input.case").read_text(encoding="ascii")
+    runtime = (source / "input.run").read_text(encoding="ascii")
+    grid = tuple(int(template_value(primary, name)) for name in ("ia", "ja", "ka"))
     topo = tuple(int(v) for v in topology.split(","))
     if len(topo) != 3 or min(topo) < 1 or np < 1 or math.prod(topo) != np:
         raise ValueError("positive topology dimensions must multiply to NP")
     if any(n // ranks < 6 for n, ranks in zip(grid, topo)):
         raise ValueError("these examples require local extents >= 6")
-    flags_index = record(lines, "nondimen,")
-    flags = lines[flags_index].split(",")
-    if len(flags) != 9:
-        raise ValueError("template must contain nine logical flags")
-    flags[-1] = "t" if mode == "gpu" else "f"
-    lines[flags_index] = ",".join(flags)
-    controller = (source / "controller").read_text(encoding="ascii").splitlines()
-    controls_index = record(controller, "maxstep,")
-    controls = controller[controls_index].split(",")
+    primary = set_template_value(primary, "use_gpu", ".true." if mode == "gpu" else ".false.")
     if steps is not None:
         if steps < 1:
             raise ValueError("STEPS must be positive")
-        controls[0] = str(steps - 1)
-        controls[1] = str(max(steps - 1, 1))
-        controller[controls_index] = ",".join(controls)
-    dt_index = record(controller, "deltat")
+        runtime = set_template_value(runtime, "max_steps", steps)
+        runtime = set_template_value(runtime, "reload_steps", max(steps - 1, 1))
+    updates = int(template_value(runtime, "max_steps"))
     if deltat is not None:
         positive_real(deltat)
-        controller[dt_index] = deltat
-    dt = positive_real(controller[dt_index])
+        runtime = set_template_value(runtime, "fixed_dt", deltat)
+    dt = positive_real(template_value(runtime, "fixed_dt"))
     # Resolve optional dependencies before creating an output directory.
     if case == "flatplate":
         import h5py  # noqa: F401
@@ -120,19 +117,22 @@ def prepare(case, destination, mode="gpu", np=1, topology="1,1,1",
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.mkdir()
     datin = destination / "datin"
-    shutil.copytree(source, datin)
-    (datin / "input.dat").write_text("\n".join(lines) + "\n", encoding="ascii")
-    (datin / "controller").write_text("\n".join(controller) + "\n", encoding="ascii")
-    if case in ("tgv", "channel", "flatplate"):
-        shutil.copyfile(HERE / "input.output", datin / "input.output")
-        (destination / "outdat/output").mkdir(parents=True)
+    shutil.copytree(source, datin, ignore=shutil.ignore_patterns("input.dat", "controller"))
+    (datin / "input.case").write_text(primary, encoding="ascii")
+    (datin / "input.run").write_text(runtime, encoding="ascii")
+    shutil.copyfile(HERE / "input.output", datin / "input.output")
+    if case.startswith("air5_"):
+        config = (datin / "input.output").read_text()
+        config = config.replace(" directory=", " exact_restart=.true.,\n directory=")
+        (datin / "input.output").write_text(config)
+    (destination / "outdat/output").mkdir(parents=True)
     if case == "flatplate":
         flatplate_data(datin, grid)
     elif case == "air5_flatplate":
         air5_flatplate_data(datin)
     metadata = dict(case=case, mode=mode, ranks=np, topology=topo, grid_upper_bounds=grid,
-                    updates=int(controls[0]) + 1, deltat=dt,
-                    expected_final_time=(int(controls[0]) + 1) * dt,
+                    updates=updates, deltat=dt,
+                    expected_final_time=updates * dt,
                     initial_restart=False, scope="short startup, not physical validation")
     (destination / "case.json").write_text(json.dumps(metadata, indent=2) + "\n",
                                           encoding="ascii")

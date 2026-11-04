@@ -17,7 +17,8 @@ module insitu_wall_statistics
   logical,allocatable,save :: owned(:,:,:)
   real(real_kind),save :: previous_time=0.e0_real_kind,window_saved(2)=0.e0_real_kind
   real(real_kind),save :: covered_duration=0.e0_real_kind
-  integer,save :: last_step=-1,nfields=0,profile=0
+  integer(int64),save :: last_step=-1
+  integer,save :: nfields=0,profile=0
   integer(int64),save :: samples=0
 contains
   subroutine require(condition,message)
@@ -118,7 +119,7 @@ contains
 #ifdef _CUDA
     use insitu_wall_statistics_gpu, only: push_wall_statistics_gpu,capture_and_push_wall_statistics_gpu
 #endif
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: time,window(2)
     integer(int64),intent(in) :: host_limit,device_limit,reserve
     character(*),intent(in),optional :: separation_prefix
@@ -338,7 +339,7 @@ contains
       call require(all(values(:,:,:,34*(w-1)+8)==covered_duration),'wall scalar coverage differs from moments')
     enddo
     call packed_state(values,.false.,identity%time)
-    samples=metadata(9); previous_time=identity%time; last_step=int(identity%step)
+    samples=metadata(9); previous_time=identity%time; last_step=identity%step
   end subroutine
 
   subroutine read_wall_moments(moments,download,success)
@@ -427,7 +428,7 @@ contains
   subroutine record_air5_separation(step,time,fields,prefix)
     use commvar, only: ia,im,km
     use parallel, only: ig0,jg0
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: time,fields(0:,0:,:,:)
     character(*),intent(in) :: prefix
     real(real_kind),allocatable :: local(:,:),span_weights(:)
@@ -457,7 +458,7 @@ contains
     use commvar, only: ia
     use parallel, only: mpirank
     use insitu_wall_separation, only: wall_crossing,find_wall_crossings,separation,reattachment,zero_interval
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     integer,intent(inout) :: comm
     real(real_kind),intent(in) :: time,local(0:,:),length,reference_u
     character(*),intent(in) :: prefix
@@ -525,7 +526,7 @@ contains
   end subroutine
 
   subroutine wall_statistics_catalog_info(step,time,ready,duration,window,count)
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: time
     logical,intent(out) :: ready
     real(real_kind),intent(out) :: duration,window(2)
@@ -535,7 +536,7 @@ contains
   end subroutine
 
   subroutine wall_statistics_render_clock(step,time,duration,window)
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: time
     real(real_kind),intent(out) :: duration,window(2)
     call require(samples>0.and.last_step==step.and.previous_time==time,'wall mean render phase mismatch')
@@ -547,7 +548,7 @@ contains
   subroutine wall_statistics_render_values(step,time,fields,download,success)
     use commvar, only: im,km,ia,ka,flowtype
     use parallel, only: mpileft,mpiright,mpiback,mpifront
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: time
     real(real_kind),allocatable,intent(out) :: fields(:,:,:,:)
     integer(int64),optional,intent(out) :: download

@@ -2,6 +2,7 @@
 #define ASTR_INSITU_DEVICE_PRODUCT_AUDIT_H
 
 #include "insitu_device_geometry.h"
+#include <cinttypes>
 #ifdef ASTR_BUILD_TESTING
 #include <cstdio>
 #include <cstdlib>
@@ -110,7 +111,7 @@ inline ProductAudit audit_device_product(const DeviceGeometryView& view,const Re
 
 #ifdef ASTR_BUILD_TESTING
 inline void test_curve_trace_oracle(const viskores::cont::DataSet& data,const DeviceGeometryView& view,
-    const char* name,int rank,int step,std::uint64_t host_budget) {
+    const char* name,int rank,std::int64_t step,std::uint64_t host_budget) {
   const char* prefix=std::getenv("ASTR_INSITU_TEST_CURVE_TRACE_PREFIX");
   if(!prefix || !*prefix) return;
   if(view.arity!=2) throw std::runtime_error("CURVE trace oracle requires line geometry");
@@ -153,12 +154,12 @@ inline void test_curve_trace_oracle(const viskores::cont::DataSet& data,const De
     if(!file) throw std::runtime_error("CURVE trace test oracle publication failed");
   } catch(...) {nvtxRangePop();throw;}
   nvtxRangePop();
-  std::printf("ASTR_INSITU_CURVE_TRACE_TEST_ORACLE rank=%d step=%d product=%s oracle_download_bytes=%llu "
+  std::printf("ASTR_INSITU_CURVE_TRACE_TEST_ORACLE rank=%d step=%" PRId64 " product=%s oracle_download_bytes=%llu "
     "runtime_zero_readback_evidence=0\n",rank,step,name,static_cast<unsigned long long>(bytes));
 }
 
 inline void test_curve_surface_oracle(const viskores::cont::DataSet& data,const DeviceGeometryView& view,
-    int rank,int step,std::uint64_t host_budget) {
+    int rank,std::int64_t step,std::uint64_t host_budget) {
   const char* prefix=std::getenv("ASTR_INSITU_TEST_CURVE_Q_PREFIX");
   if(!prefix || !*prefix) return;
   const std::uint64_t bytes=std::uint64_t(view.points)*10*sizeof(Real)+
@@ -191,7 +192,7 @@ inline void test_curve_surface_oracle(const viskores::cont::DataSet& data,const 
   if(!indices.empty()) file.write(reinterpret_cast<const char*>(indices.data()),indices.size()*sizeof(indices[0]));
   file.close();
   if(!file) throw std::runtime_error("CURVE Q test oracle publication failed");
-  std::printf("ASTR_INSITU_CURVE_Q_TEST_ORACLE rank=%d step=%d oracle_download_bytes=%llu "
+  std::printf("ASTR_INSITU_CURVE_Q_TEST_ORACLE rank=%d step=%" PRId64 " oracle_download_bytes=%llu "
     "runtime_zero_readback_evidence=0\n",rank,step,static_cast<unsigned long long>(bytes));
 }
 #endif

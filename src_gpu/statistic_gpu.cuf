@@ -80,7 +80,6 @@ contains
     real(real_kind) :: values(2)
     integer,save :: hand=-1
     logical,save :: first=.true.
-    if(nstep>maxstep) return
     call gpu_tgv_conservative_means(values)
     if(.not.lio) return
     if(first) then
@@ -1129,7 +1128,7 @@ contains
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
-    if(nstep <= 0 .or. nstep > maxstep) return
+    if(nstep <= 0) return
     if(present(value)) then
       kenergy_gpu=value
     else
@@ -1157,7 +1156,7 @@ contains
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
-    if(nstep <= 0 .or. nstep > maxstep) return
+    if(nstep <= 0) return
 
     if(present(values)) then
       kenergy_gpu=values(1); enstophy_gpu=values(2); dissipation_gpu=values(3)
@@ -1210,7 +1209,7 @@ contains
     integer,save :: hand=-1
     logical,save :: linit=.true.
 
-    if(nstep <= 0 .or. nstep > maxstep) return
+    if(nstep <= 0) return
     call gpu_s1_bl_scalars(massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu)
     if(.not.lio) return
     if(linit) then
@@ -1232,7 +1231,7 @@ contains
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
-    if(nstep <= 0 .or. nstep > maxstep) return
+    if(nstep <= 0) return
 
     call gpu_channel_scalars(massflux_gpu,fbcx_gpu,wrms_gpu)
     massflux = massflux_gpu
@@ -1268,7 +1267,7 @@ contains
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
-    if(nstep <= 0 .or. nstep > maxstep) return
+    if(nstep <= 0) return
     if(present(value)) then
       enstophy_gpu=value
     else
@@ -1296,7 +1295,7 @@ contains
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
-    if(nstep <= 0 .or. nstep > maxstep) return
+    if(nstep <= 0) return
     if(present(value)) then
       dissipation_gpu=value
     else

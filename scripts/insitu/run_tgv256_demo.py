@@ -54,7 +54,7 @@ def execute(args):
         raise ValueError('Launching requires an explicit --library Catalyst implementation directory')
     benchmark.prepare(case,args.steps,True,args.library,args.transport,args.rendering_pipeline)
     command = [str(args.mpiexec), '--mca', 'coll_hcoll_enable', '0', '-np', '2',
-               str(args.executable.resolve(strict=True)), 'run', 'datin/input.tgv']
+               str(args.executable.resolve(strict=True)), 'run', 'datin/input.case']
     with (case/'run.log').open('w') as log:
         subprocess.run(command, cwd=case, env=benchmark.environment(case,args.transport),
             stdout=log, stderr=subprocess.STDOUT, check=True)

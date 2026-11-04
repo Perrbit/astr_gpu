@@ -359,7 +359,8 @@ def run(args):
                     '--section', 'SpeedOfLight', '--section', 'MemoryWorkloadAnalysis',
                     '--section', 'LaunchStats', '--section', 'Occupancy',
                     '-o', str(case/'kernels.%p')]
-    command += [str(executable), 'run', 'datin/input.dat']
+    from named_fixture import prepare_named_run
+    command += [str(executable), 'run', prepare_named_run(case,'datin/input.dat',env)]
     provenance = dict(executable=str(executable), executable_sha256=digest(executable),
                       intervals=REFINED_INTERVALS, topology=topology, first_step=first,
                       stop_step=args.steps, warmup_steps=args.warmup,

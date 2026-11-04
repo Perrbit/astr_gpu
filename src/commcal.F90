@@ -14,8 +14,83 @@ module commcal
   !
   implicit none
   private :: real_kind,clock_kind,mpi_real_type
+  private :: node_cfl_rates
   !
   contains
+  subroutine node_cfl_rates(i,j,k,rates,valid)
+    use commvar, only: lcomb
+    use commarray, only: vel,tmp,dxi,spc,q
+    use fludyna, only: sos
+    use thermchem, only: aceval
+    use cfl_spectrum, only: spectral_rates
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_thermo, only: air5_temperature_from_q5, &
+      air5_species_gas_constant,air5_species_cv_tr
+#endif
+    integer,intent(in) :: i,j,k
+    real(real_kind),intent(out) :: rates(4)
+    logical,intent(out) :: valid
+    real(real_kind) :: velocity(3),metric(3,3),sound,temp,rden,cvden
+    integer :: status,s
+
+    status=0
+    velocity=vel(i,j,k,:)
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb) then
+      call air5_temperature_from_q5(q(i,j,k,1),q(i,j,k,2:4), &
+        q(i,j,k,6:10),q(i,j,k,11),q(i,j,k,5),temp,status)
+      sound=-1.e0_real_kind
+      if(status==0) then
+        velocity=q(i,j,k,2:4)/q(i,j,k,1)
+        rden=0.e0_real_kind
+        cvden=0.e0_real_kind
+        do s=1,5
+          rden=rden+q(i,j,k,5+s)*air5_species_gas_constant(s)
+          cvden=cvden+q(i,j,k,5+s)*air5_species_cv_tr(s)
+        enddo
+        sound=sqrt((1.e0_real_kind+rden/cvden)*rden*temp/q(i,j,k,1))
+      endif
+    else
+#endif
+#ifdef COMB
+      call aceval(tmp(i,j,k),spc(i,j,k,:),sound)
+#else
+      sound=sos(tmp(i,j,k))
+#endif
+#ifdef ASTR_AIR5_CHEMISTRY
+    endif
+#endif
+    metric=dxi(i,j,k,:,:)
+    call spectral_rates(velocity,sound,metric,rates,valid)
+    valid=valid.and.status==0
+  end subroutine node_cfl_rates
+
+  subroutine collect_timestep_rates_cpu(rates,valid)
+    use commvar, only: im,jm,km
+    use parallel, only: ig0,jg0,kg0
+    real(real_kind),intent(out) :: rates(3)
+    logical,intent(out) :: valid
+    real(real_kind) :: node_rates(4)
+    integer :: i,j,k
+    logical :: node_valid
+
+    rates=0.e0_real_kind
+    valid=.true.
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      call node_cfl_rates(i,j,k,node_rates,node_valid)
+      if(node_valid) then
+        rates=max(rates,node_rates(1:3))
+      else
+        if(valid) write(*,'(A,I0,A,3(1X,I0))') &
+          'ASTR_TIMESTEP invalid state/metric rank=',mpirank,' global_ijk=',i+ig0,j+jg0,k+kg0
+        valid=.false.
+      endif
+    enddo
+    enddo
+    enddo
+  end subroutine collect_timestep_rates_cpu
   !
   !+-------------------------------------------------------------------+
   !| This subroutine is used to calculate CFL number and the           |
@@ -33,15 +108,7 @@ module commcal
     use ieee_arithmetic, only: ieee_is_finite
     use mpi
     use commvar, only: im,jm,km,ia,ja,lcomb,time,nstep
-    use commarray,only: vel,tmp,dxi,spc,q
-    use fludyna,  only: sos
     use parallel, only: ig0,jg0,kg0
-    use thermchem,only: aceval
-    use cfl_spectrum, only: spectral_rates
-#ifdef ASTR_AIR5_CHEMISTRY
-    use chemistry_thermo, only: air5_temperature_from_q5, &
-      air5_species_gas_constant,air5_species_cv_tr
-#endif
     !
     ! arguments
     real(real_kind),intent(in) :: deltat
@@ -58,9 +125,9 @@ module commcal
     procedure(cfl_provider),optional :: device_collector
     !
     ! local data
-    real(real_kind) :: cfl,css,temp,rden,cvden,velocity(3),metric(3,3),rates(4),local(4),global(4)
+    real(real_kind) :: cfl,rates(4),local(4),global(4)
     real(real_kind),allocatable :: ylocal(:,:),yglobal(:,:)
-    integer :: i,j,k,s,axis,status,ierr,invalid,invalid_global,opts(2),omin(2),omax(2),env_status
+    integer :: i,j,k,axis,status,ierr,invalid,invalid_global,opts(2),omin(2),omax(2),env_status
     integer(int64) :: key,keys(4),global_keys(4),gi,gj,gk
     logical :: valid,enabled,profile
     character(len=32) :: option
@@ -102,36 +169,8 @@ module commcal
       do k=0,km
       do j=0,jm
       do i=0,im
-        status=0
-        velocity=vel(i,j,k,:)
-#ifdef ASTR_AIR5_CHEMISTRY
-        if(lcomb) then
-          call air5_temperature_from_q5(q(i,j,k,1),q(i,j,k,2:4), &
-            q(i,j,k,6:10),q(i,j,k,11),q(i,j,k,5),temp,status)
-          css=-1.e0_real_kind
-          if(status==0) then
-            velocity=q(i,j,k,2:4)/q(i,j,k,1)
-            rden=0.e0_real_kind
-            cvden=0.e0_real_kind
-            do s=1,5
-              rden=rden+q(i,j,k,5+s)*air5_species_gas_constant(s)
-              cvden=cvden+q(i,j,k,5+s)*air5_species_cv_tr(s)
-            enddo
-            css=sqrt((1.e0_real_kind+rden/cvden)*rden*temp/q(i,j,k,1))
-          endif
-        else
-#endif
-#ifdef COMB
-          call aceval(tmp(i,j,k),spc(i,j,k,:),css)
-#else
-          css=sos(tmp(i,j,k))
-#endif
-#ifdef ASTR_AIR5_CHEMISTRY
-        endif
-#endif
-        metric=dxi(i,j,k,:,:)
-        call spectral_rates(velocity,css,metric,rates,valid)
-        if(.not.valid.or.status/=0) rates=huge(1.e0_real_kind)
+        call node_cfl_rates(i,j,k,rates,valid)
+        if(.not.valid) rates=huge(1.e0_real_kind)
         key=(int(k+kg0,int64)*(ja+1)+j+jg0)*(ia+1)+i+ig0
         do axis=1,4
           if(rates(axis)>local(axis).or.(rates(axis)==local(axis).and.key<keys(axis))) then

@@ -1,0 +1,67 @@
+&case_options
+  flowtype = 'windtunn'
+  ltimrpt = .true.
+  use_gpu = .false.
+  iomode = 'h'
+/
+
+&mesh
+  ia = 256
+  ja = 128
+  ka = 0
+  lihomo = .false.
+  ljhomo = .false.
+  lkhomo = .true.
+  lreadgrid = .false.
+  lfftk = .false.
+  gridfile = 'datin/grid.h5'
+/
+
+&physics
+  nondimen = .true.
+  diffterm = .true.
+  lcomb = .false.
+  ref_tem = 273.15d0
+  reynolds = 200.d0
+  mach = 0.1d0
+  num_species = 0
+  turbmode = 'none'
+/
+
+&numerics
+  lfilter = .false.
+  alfa_filter = 0.49d0
+  kcutoff = 48
+  conschm = '742e'
+  difschm = '642e'
+  rkscheme = 'rk3'
+  recon_schem = 5
+  lchardecomp = .true.
+  bfacmpld = 0.3d0
+  shkcrt = 0.001d0
+/
+
+&boundary
+  bctype = 11, 22, 52, 52, 1, 1
+  twall = 0, 0, 0, 0, 0, 0
+  turbinf = 'free'
+  pout = 1
+/
+
+&initialization
+  limmbou = .true.
+  lrestart = .false.
+  ninit = 0
+  ibmode = 'stl'
+  solidfile = 'datin/circle.stl'
+/
+
+&sponge
+  spg_i0 = 0
+  spg_im = 0
+  spg_j0 = 0
+  spg_jm = 0
+  spg_k0 = 0
+  spg_km = 0
+  spg_def = 'layer'
+/

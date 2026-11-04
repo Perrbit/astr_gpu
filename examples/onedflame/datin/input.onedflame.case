@@ -1,0 +1,67 @@
+&case_options
+  flowtype = 'onedflame'
+  ltimrpt = .true.
+  use_gpu = .false.
+  iomode = 'h'
+/
+
+&mesh
+  ia = 768
+  ja = 0
+  ka = 0
+  lihomo = .false.
+  ljhomo = .true.
+  lkhomo = .true.
+  lreadgrid = .false.
+  lfftk = .false.
+  gridfile = 'grid.h5'
+/
+
+&physics
+  nondimen = .false.
+  diffterm = .true.
+  lcomb = .true.
+  ref_tem = 300.d0
+  ref_vel = 1.d0
+  ref_len = 0.01d0
+  ref_den = 1.17642d0
+  odetype = 'rk3'
+  turbmode = 'none'
+  chemfile = 'datin/Burke12.yaml'
+/
+
+&numerics
+  lfilter = .true.
+  alfa_filter = 0.49d0
+  kcutoff = 48
+  conschm = '643c'
+  difschm = '643c'
+  rkscheme = 'rk3'
+  recon_schem = 5
+  lchardecomp = .true.
+  bfacmpld = 0.3d0
+  shkcrt = 0.05d0
+/
+
+&boundary
+  bctype = 11, 21, 1, 1, 1, 1
+  twall = 0, 0, 0, 0, 0, 0
+  turbinf = 'free'
+  pout = 1
+/
+
+&initialization
+  limmbou = .false.
+  lrestart = .false.
+  ninit = 0
+/
+
+&sponge
+  spg_i0 = 0
+  spg_im = 0
+  spg_j0 = 0
+  spg_jm = 0
+  spg_k0 = 0
+  spg_km = 0
+  spg_def = 'layer'
+/

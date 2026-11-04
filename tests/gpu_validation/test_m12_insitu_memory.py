@@ -54,7 +54,8 @@ def launch(directory,executable,profile,baseline=None,steps=2,memcheck=False,pip
     if memcheck:
         command+=['compute-sanitizer','--tool','memcheck','--error-exitcode','99',
                   '--log-file',str(directory/'memcheck.%p.log')]
-    command+=[str(executable),'run','datin/input.dat']
+    from named_fixture import prepare_named_run
+    command+=[str(executable),'run',prepare_named_run(directory,'datin/input.dat',env)]
     first=0 if restore is None else int(restore.name.removeprefix('step'))
     cfl=CflGate(directory/'run.log',1.,.02,first,steps)
     with (directory/'run.log').open('w') as log:

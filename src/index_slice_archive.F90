@@ -128,7 +128,7 @@ contains
     control_changed=.false.
     phase_started=insitu_clock()
     call poll_catalog_watch(identity%step,real(identity%time,real64),[ia,ja,ka],numq,MPI_COMM_WORLD,changed,update_message)
-    call report_insitu_timing('index_slice_catalog',phase_started,int(identity%step))
+    call report_insitu_timing('index_slice_catalog',phase_started,identity%step)
     dirty=changed.or.len(update_message)>0
     control_changed=changed
     if(rank==0.and.len(update_message)>0) print '(a)','ASTR_CATALOG '//update_message
@@ -502,7 +502,7 @@ contains
       if(normalization_status/=0) then
         ok=.false.;message='cannot evaluate the one-dimensional wall reference table';return
       endif
-      call report_insitu_timing('wall_reference_evaluate',reference_started,int(identity%step))
+      call report_insitu_timing('wall_reference_evaluate',reference_started,identity%step)
     endif
     call begin_product_segment(index,state,ok,message)
     if(.not.ok) return
@@ -516,7 +516,7 @@ contains
       if(mode>0) header=header//',stanton_available,St_stat'
       header=header//',y_first_plus,dx_minus_plus,dx_plus_plus,dz_min_plus,dz_max_plus'
     endif
-    write(frame,'("frame.step",i12.12,".csv")') identity%step
+    write(frame,'("frame.step",i0.12,".csv")') identity%step
     target=segments(index)%path//'/'//trim(frame);temporary=target//'.tmp'
     started=insitu_clock();status=0;closed=0
     if(rank==0) then
@@ -640,8 +640,8 @@ contains
     call MPI_Bcast(closed,1,MPI_INTEGER,0,MPI_COMM_WORLD,err);call mpi_ok(err)
     ok=status==0.and.closed==0;message='wall profile CSV write/close/publication failed'
     if(ok) message=''
-    call report_insitu_timing('wall_profile_csv',started,int(identity%step))
-    call report_insitu_timing('wall_profile_publish_total',product_started,int(identity%step))
+    call report_insitu_timing('wall_profile_csv',started,identity%step)
+    call report_insitu_timing('wall_profile_publish_total',product_started,identity%step)
   contains
     subroutine number(value,available,text)
       real(real_kind),intent(in) :: value
@@ -695,7 +695,7 @@ contains
     if(layer_requested) then
       started=insitu_clock()
       call prepare_thickness()
-      call report_insitu_timing('station_thickness_diagnostic',started,int(identity%step))
+      call report_insitu_timing('station_thickness_diagnostic',started,identity%step)
       if(.not.ok) return
     endif
     call begin_product_segment(index,state,ok,message)
@@ -732,7 +732,7 @@ contains
       endif
     endif
     if(layer_requested) header=header//',thickness_integrals_available,cumulative_displacement,cumulative_momentum'
-    write(frame,'("frame.step",i12.12,".csv")') identity%step
+    write(frame,'("frame.step",i0.12,".csv")') identity%step
     target=segments(index)%path//'/'//trim(frame);temporary=target//'.tmp'
     started=insitu_clock();status=0;closed=0
     if(rank==0) then
@@ -855,7 +855,7 @@ contains
     call MPI_Bcast(closed,1,MPI_INTEGER,0,MPI_COMM_WORLD,err);call mpi_ok(err)
     ok=status==0.and.closed==0;message='station profile CSV write/close/publication failed'
     if(ok) message=''
-    call report_insitu_timing('station_profile_csv',started,int(identity%step))
+    call report_insitu_timing('station_profile_csv',started,identity%step)
   contains
     subroutine prepare_thickness()
       integer :: band(2),slots(3),ny,allocation_status
@@ -1064,7 +1064,7 @@ contains
     else
       message='probe CSV write/close failed'
     endif
-    call report_insitu_timing('runtime_probe_csv',started,int(identity%step))
+    call report_insitu_timing('runtime_probe_csv',started,identity%step)
   end subroutine
 
   subroutine write_product(index,state,identity,values,xyz,first,extent,window,measure,count,ok,message)
@@ -1150,7 +1150,7 @@ contains
       endif
       segments(index)%geometry=.true.
     endif
-    write(frame,'("step",i12.12,".h5")') identity%step
+    write(frame,'("step",i0.12,".h5")') identity%step
     temporary=segments(index)%path//'/'//trim(frame)//'.tmp';target=segments(index)%path//'/'//trim(frame)
     status=write_slice(temporary//c_null_char,'geometry.h5'//c_null_char,0_c_int,int(MPI_COMM_WORLD,c_int), &
       real_bytes,int(dimensions,c_int),int(offset,c_int),int(local_extent,c_int), &
@@ -1161,13 +1161,13 @@ contains
     if(status/=0) then
       message='slice field HDF5 write/close/publication failed';return
     endif
-    call report_insitu_timing('index_slice_hdf5',phase_started,int(identity%step))
+    call report_insitu_timing('index_slice_hdf5',phase_started,identity%step)
     n=size(segments(index)%frames)
     allocate(frames(n+1));frames(:n)=segments(index)%frames
     frames(n+1)%file=frame;frames(n+1)%identity=identity
     phase_started=insitu_clock()
     call write_series(index,state,frames,dimensions,system,status)
-    call report_insitu_timing('index_slice_index',phase_started,int(identity%step))
+    call report_insitu_timing('index_slice_index',phase_started,identity%step)
     if(status/=0) then
       message='cannot publish slice time index; the failed frame was not indexed';return
     endif

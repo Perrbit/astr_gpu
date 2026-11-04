@@ -30,7 +30,7 @@ def rank_exec(exe, case):
         topology=Path(f'/sys/devices/system/cpu/cpu{cpu}/topology')
         cores.add((int((topology/'physical_package_id').read_text()),int((topology/'core_id').read_text())))
     (case/f'affinity.rank{rank:08d}.json').write_text(json.dumps(dict(rank=rank,cpus=cpus,physical_cores=sorted(cores)))+'\n')
-    os.execv(str(exe),[str(exe),'run','datin/input.tgv'])
+    os.execv(str(exe),[str(exe),'run','datin/input.case'])
 
 
 def prepare_and_run(args, row, name, timing=True, validation=True):
@@ -56,6 +56,8 @@ def prepare_and_run(args, row, name, timing=True, validation=True):
         env.update(ASTR_VALIDATION_RHS_PREFIX=str(case/'state'),ASTR_VALIDATION_RHS_STEP=str(steps-1))
     if backend=='gpu':
         env['ASTR_GPU_PRECISION_MODE']='fp64'
+    from named_fixture import prepare_named_run
+    prepare_named_run(case,'datin/input.tgv',env)
     exe=args.gpu if backend=='gpu' else args.cpu
     mapping='slot:PE=2' if backend=='gpu' else 'core'
     launch=['mpirun','--map-by',mapping,'--bind-to','core','--report-bindings','-np',str(ranks),

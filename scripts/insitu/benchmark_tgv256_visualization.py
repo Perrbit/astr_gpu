@@ -23,11 +23,14 @@ PRODUCTS = ('q_surface', 'instantaneous_streamlines')
 
 
 def prepare(case, steps, enabled, library, transport, pipeline='compatible', cells=256):
-    subprocess.run([sys.executable, str(ROOT/'tests/gpu_validation/prepare_tgv_case.py'),
-        '--src-case', str(ROOT/'examples/Taylor_Green_Vortex'), '--dst-case', str(case),
-        '--use-gpu', 't', '--grid', ','.join([str(cells)]*3), '--maxstep', str(steps-1),
-        '--feqchkpt', '1000', '--feqlist', '1' if steps==2 else '10', '--deltat', '1.d-4',
-        '--lfilter', 't', '--diffterm', 't', '--scheme', '643e'], check=True)
+    (case/'datin').mkdir(parents=True,exist_ok=False)
+    primary=(Path(__file__).resolve().parent/'presets/tgv32/input.case').read_text()
+    for field in ('ia','ja','ka'):
+        primary=primary.replace(f'  {field} = 32\n',f'  {field} = {cells}\n')
+    (case/'datin/input.case').write_text(primary)
+    (case/'datin/input.run').write_text(f'&run_control max_steps={steps},reload_steps=1000 /\n'
+        '&timestep mode="fixed",fixed_dt=1.d-4 /\n'
+        f'&logging list_steps={1 if steps==2 else 10} /\n')
     (case/'outdat/render').mkdir(parents=True)
     (case/'datin/input.output').write_text(
         "&output\n directory='outdat/output', buffer_bytes=4096,\n"
@@ -57,7 +60,7 @@ def environment(case, transport):
         ASTR_INSITU_WRITE_EPS='1' if eps_output_enabled() else '0',
         ASTR_COMPLETE_STEP_TIMING='1', ASTR_GPU_RK_TIMING='1', ASTR_GPU_RANK_RK_TIMING='1',
         ASTR_FORCE_MPI_TOPOLOGY='2,1,1', ASTR_GPU_SYNC_MODE='explicit',
-        ASTR_GPU_HALO_TRANSPORT='pinned', ASTR_GPU_PRECISION_MODE='fp64',
+        ASTR_GPU_HALO_TRANSPORT='pinned',
         ASTR_GPU_FILTER_WORKSPACE='scalar')
     if transport == 'device-aware':
         env.update(OMPI_MCA_pml='ucx', OMPI_MCA_coll='^hcoll,ucc,cuda',
@@ -187,7 +190,7 @@ def launch(args, name, steps, enabled, pipeline='compatible', monitor=False, res
     print(f'START {name}: {steps} steps, visualization={enabled}, pipeline={pipeline}', flush=True)
     started = perf_counter()
     observed=None
-    solver=[str(args.executable),'run','datin/input.tgv']
+    solver=[str(args.executable),'run','datin/input.case']
     if profile:
         if monitor or not shutil.which('nsys'):
             raise ValueError('Separate attribution requires Nsight without the resource observer')
@@ -238,7 +241,7 @@ def launch(args, name, steps, enabled, pipeline='compatible', monitor=False, res
 
 def compare_diagnostics(reference,case):
     import numpy as np
-    for name in ('input.tgv','input.output','controller'):
+    for name in ('input.case','input.output','input.run'):
         if (reference/'datin'/name).read_bytes()!=(case/'datin'/name).read_bytes():
             raise AssertionError('Unmatched solver input: '+name)
     a,b=[np.loadtxt(p/'flowstate.dat',skiprows=1,ndmin=2) for p in (reference,case)]
@@ -359,7 +362,7 @@ def main():
         if not args.smoke_only:
             report['on'] = launch(args,'visualization_on',100,True)
             report['off'] = launch(args,'visualization_off',100,False)
-            for name in ('input.tgv','input.output','controller'):
+            for name in ('input.case','input.output','input.run'):
                 if (args.output/'visualization_on/datin'/name).read_bytes() != (args.output/'visualization_off/datin'/name).read_bytes():
                     raise AssertionError('Unmatched solver input: '+name)
             import numpy as np

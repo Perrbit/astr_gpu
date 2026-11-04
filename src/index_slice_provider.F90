@@ -60,7 +60,8 @@ contains
     real(real_kind) :: weights(7,0:6),directional(5,3),gradient(3,3),density_gradient(3),diagnostic(18),started
     real(real_kind) :: thermal(3),mu,kappa,shear(3),heat,temperature,metric(3,3)
     real(8) :: phase_started
-    integer :: step,vortex_mask,vortex_status
+    integer(int64) :: step
+    integer :: vortex_mask,vortex_status
     real(real_kind) :: vortex(2)
     if(present(staging_download)) staging_download=0
     if(present(staging_upload)) staging_upload=0

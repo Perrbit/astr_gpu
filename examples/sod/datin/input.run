@@ -1,0 +1,24 @@
+&run_control
+  max_steps = 2001
+  reload_steps = 2000
+/
+
+&timestep
+  mode = 'fixed'
+  fixed_dt = 1.d-3
+/
+
+&logging
+  list_steps = 1
+/
+
+&repair
+  crashfix = .false.
+/
+
+&statistics
+  enabled = .false.
+  sample_clock = 'steps'
+  sample_steps = 1
+  write_steps = 0
+/

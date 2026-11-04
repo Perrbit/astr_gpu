@@ -12,6 +12,9 @@ from time import perf_counter
 
 import h5py
 import numpy as np
+
+from named_fixture import prepare_named_run
+from convert_legacy_input import convert_controller,namelist
 from prepare_tgv_case import next_data_line, set_controller_deltat, set_flowtype, set_ninit, set_restart
 
 
@@ -78,7 +81,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              product_catalog_records=None,product_poll_steps=10,catalog_replay=None,image_publication_failure=None,
              runtime_line_oracle=False,trace_collective_fault=False,runtime_allocation_refusal=None,wall_publication_failure=None,
              runtime_compatible_oracle=False,geometry_publication_failure=None,trace_allocation_refusal=None,
-             wall_capture_refusal=None,tgv_cartesian_grid=None):
+             wall_capture_refusal=None,tgv_cartesian_grid=None,run_config_text=None,capture_checkpoint_step=None):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -490,7 +493,16 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     if wall_publication_failure is not None:
         product_id,step=wall_publication_failure
         env.update(ASTR_TEST_WALL_FAIL_ID=product_id,ASTR_TEST_WALL_FAIL_STEP=str(step))
-    solver_command = [str(args.executable), "run", "datin/" + input_name]
+    # Legacy fixture editing ends here; the solver receives only named inputs.
+    primary=prepare_named_run(case,'datin/'+input_name,env)
+    runtime=case/'datin/input.run'
+    if run_config_text is not None:
+        runtime.write_text(run_config_text)
+    if controller_replay is not None:
+        for packet in (case/'controller_replay').glob('controller*'):
+            packet.write_text(namelist(convert_controller(packet.read_text())))
+        env['ASTR_CONTROLLER_TEST_FILE']=str(runtime.resolve(strict=True))
+    solver_command = [str(args.executable), "run", primary]
     if ncu_kernel is not None:
         profiler = shutil.which('ncu')
         if profiler is None:
@@ -568,16 +580,24 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
             process = subprocess.Popen(command, cwd=case, env=env, stdout=log,
                                        stderr=subprocess.STDOUT, start_new_session=True)
             try:
-                if cfl_gate is None:
+                if cfl_gate is None and capture_checkpoint_step is None:
                     returncode = process.wait(timeout=timeout)
                 else:
                     deadline = None if timeout is None else perf_counter()+timeout
                     while True:
-                        cfl_gate.check()
+                        if cfl_gate is not None:
+                            cfl_gate.check()
+                        if capture_checkpoint_step is not None:
+                            name=f'step{capture_checkpoint_step:012d}'
+                            source=case/'outdat/new/checkpoints'/name
+                            captured=case/'captured/checkpoints'/name
+                            if source.is_dir() and not captured.exists():
+                                shutil.copytree(source,captured)
+                                shutil.copytree(case/'outdat/new/resources',case/'captured/resources')
                         if deadline is not None and perf_counter() >= deadline:
                             raise TimeoutError('CFL-monitored solver exceeded runtime budget')
                         try:
-                            returncode = process.wait(timeout=.02)
+                            returncode = process.wait(timeout=.001 if capture_checkpoint_step is not None else .02)
                             break
                         except subprocess.TimeoutExpired:
                             continue

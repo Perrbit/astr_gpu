@@ -320,7 +320,8 @@ def run_case(output, source, executable, shape, steps, images, baseline=None, ch
     if sanitizer:
         command += ['compute-sanitizer', '--tool', 'memcheck', '--error-exitcode', '99',
                     '--log-file', str(case/'memcheck.%p.log')]
-    command += [str(executable), 'run', 'datin/input.dat']
+    from named_fixture import prepare_named_run
+    command += [str(executable), 'run', prepare_named_run(case,'datin/input.dat',runtime)]
     receipt = dict(status='prepared', shape=shape, steps=steps, dt=.02, topology='2,1,1', images=images,
         fields=False, checkpoint=checkpoint, wall_curves_every=50, probes_every=1,
         image_intervals=dict(slices=100, q=250, streamlines=250), command=command,

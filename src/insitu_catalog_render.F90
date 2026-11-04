@@ -64,7 +64,8 @@ contains
           selected_field,host_budget,download) bind(C,name='astr_insitu_render_host_product')
         import c_int,c_char,c_int64_t,c_double,c_real_kind
         character(c_char),intent(in) :: backend(*),script(*),id(*),source(*),definition(*),directory(*),labels(*)
-        integer(c_int),value :: comm,step,nfields,axis,provider,selected_field
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm,nfields,axis,provider,selected_field
         integer(c_int64_t),value :: version,samples,host_budget,download
         integer(c_int),intent(in) :: words(7),field_ids(*),extent(3)
         real(c_double),intent(in) :: settings(31)
@@ -81,7 +82,8 @@ contains
           bind(C,name='astr_insitu_render_index_product')
         import c_int,c_char,c_int64_t,c_double,c_real_kind,c_devptr
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*),id(*),source(*),definition(*),directory(*),labels(*)
-        integer(c_int),value :: comm,step,nfields,width,height,provider,selected_field
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm,nfields,width,height,provider,selected_field
         integer(c_int64_t),value :: version,samples,host_budget
         integer(c_int),intent(in) :: words(7),field_ids(*),first(3),unique_upper(3)
         real(c_double),intent(in) :: settings(31)
@@ -94,7 +96,8 @@ contains
           provider,statistics,samples,host_budget) bind(C,name='astr_insitu_render_line_product')
         import c_int,c_char,c_int64_t,c_double,c_real_kind,c_devptr
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*),id(*),source(*),definition(*),directory(*),labels(*)
-        integer(c_int),value :: comm,step,provider,physical
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm,provider,physical
         integer(c_int64_t),value :: version,samples,host_budget
         integer(c_int),intent(in) :: words(7),global(3),extent(3),offset(3)
         real(c_double),intent(in) :: settings(31)
@@ -107,7 +110,8 @@ contains
           provider,statistics,samples,selected_field,budget,retained,host_budget) bind(C,name='astr_insitu_render_physical_product')
         import c_int,c_char,c_int64_t,c_double,c_real_kind,c_devptr
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*),id(*),source(*),definition(*),directory(*),labels(*)
-        integer(c_int),value :: comm,step,nfields,provider,selected_field
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm,nfields,provider,selected_field
         integer(c_int64_t),value :: version,samples,budget,retained,host_budget
         integer(c_int),intent(in) :: words(7),field_ids(*),global(3),extent(3),offset(3)
         real(c_double),intent(in) :: settings(31)
@@ -136,7 +140,8 @@ contains
           provider,statistics,samples,host_budget) bind(C,name='astr_insitu_render_wall_trace_product')
         import c_int,c_char,c_int64_t,c_double,c_real_kind,c_devptr
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*),id(*),source(*),definition(*),directory(*),labels(*)
-        integer(c_int),value :: comm,step,nfields,width,height,provider
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm,nfields,width,height,provider
         integer(c_int64_t),value :: version,samples,host_budget
         integer(c_int),intent(in) :: words(7),field_ids(*),first(3),origin(3),cells(3),ranges(2,3)
         real(c_double),intent(in) :: settings(31)
@@ -152,8 +157,9 @@ contains
         integer(c_int),value :: comm
       end function
       integer(c_int) function cleanup(comm,step,t) bind(C,name='astr_insitu_runtime_catalog_cleanup')
-        import c_int,c_real_kind
-        integer(c_int),value :: comm,step
+        import c_int,c_int64_t,c_real_kind
+        integer(c_int64_t),value :: step
+        integer(c_int),value :: comm
         real(c_real_kind),value :: t
       end function
       subroutine get_error(buffer,capacity) bind(C,name='astr_insitu_runtime_error')
@@ -173,7 +179,7 @@ contains
     dirty=.false.;retire_needed=.false.
 #if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
     if(available.and.runtime_catalog_changed()) then
-      status=cleanup(int(MPI_COMM_WORLD,c_int),int(identity%step,c_int),identity%time)
+      status=cleanup(int(MPI_COMM_WORLD,c_int),int(identity%step,c_int64_t),identity%time)
       if(status/=0) then
         print *, 'runtime renderer control cleanup failed'
         call MPI_Abort(MPI_COMM_WORLD,status,err)
@@ -338,7 +344,7 @@ contains
         statistics=[frames(q)%window,frames(q)%measure]
         if(host) then
           status=render_host(trim(options%implementation_path)//c_null_char,trim(options%pipeline_file)//c_null_char, &
-            int(MPI_COMM_WORLD,c_int),int(identity%step,c_int),identity%time,state%definition%id//c_null_char, &
+            int(MPI_COMM_WORLD,c_int),int(identity%step,c_int64_t),identity%time,state%definition%id//c_null_char, &
             state%definition%source//c_null_char,state%definition%record//c_null_char,directory//c_null_char, &
             int(state%version,c_int64_t),labels,words,settings,int(sample_definition%fields,c_int), &
             int(size(sample_definition%fields),c_int),int(extent,c_int),int(sample_definition%axis,c_int),xyz,values, &
@@ -346,14 +352,14 @@ contains
             int(state%definition%fields(1),c_int),int(options%host_budget_bytes,c_int64_t),int(download,c_int64_t))
         elseif(lines) then
           status=render_lines(trim(options%rendering_pipeline)//c_null_char,trim(options%implementation_path)//c_null_char, &
-            trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int),identity%time, &
+            trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int64_t),identity%time, &
             state%definition%id//c_null_char,state%definition%source//c_null_char,state%definition%record//c_null_char, &
             directory//c_null_char,int(state%version,c_int64_t),labels,words,settings,int([ia,ja,ka],c_int), &
             int(extent-1,c_int),int(first,c_int),merge(1_c_int,0_c_int,curve),line_velocity,line_coordinates,device_coordinates, &
             references,int(frames(q)%source,c_int),statistics,int(frames(q)%samples,c_int64_t),int(options%host_budget_bytes,c_int64_t))
         elseif(wall_lines) then
           status=render_wall_lines(trim(options%rendering_pipeline)//c_null_char,trim(options%implementation_path)//c_null_char, &
-            trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int),identity%time, &
+            trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int64_t),identity%time, &
             state%definition%id//c_null_char,state%definition%source//c_null_char,state%definition%record//c_null_char, &
             directory//c_null_char,int(state%version,c_int64_t),labels,words,settings,int(sample_definition%fields,c_int), &
             int(size(sample_definition%fields),c_int),int(extent(1),c_int),int(extent(3),c_int),device_coordinates,device_values, &
@@ -362,7 +368,7 @@ contains
         elseif(physical) then
           retained=workspace+product(int(extent,int64))*(3+size(sample_definition%fields))*real_bytes
           status=render_physical(trim(options%rendering_pipeline)//c_null_char,trim(options%implementation_path)//c_null_char, &
-            trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int),identity%time, &
+            trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int64_t),identity%time, &
             state%definition%id//c_null_char,state%definition%source//c_null_char,state%definition%record//c_null_char, &
             directory//c_null_char,int(state%version,c_int64_t),labels,words,settings,int(sample_definition%fields,c_int), &
             int(size(sample_definition%fields),c_int),int([ia,ja,ka],c_int),int(extent,c_int),int(first,c_int), &
@@ -379,7 +385,7 @@ contains
         where([ig0+im,jg0+jm,kg0+km]==[ia,ja,ka].and..not.[lihomo,ljhomo,lkhomo]) &
           unique_upper=unique_upper+1
         status=render(trim(options%rendering_pipeline)//c_null_char,trim(options%implementation_path)//c_null_char, &
-          trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int),identity%time, &
+          trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int64_t),identity%time, &
           state%definition%id//c_null_char,state%definition%source//c_null_char,state%definition%record//c_null_char, &
           directory//c_null_char,int(state%version,c_int64_t),labels,words,settings,int(sample_definition%fields,c_int), &
           int(size(sample_definition%fields),c_int),int(extent(axes(1)),c_int),int(extent(axes(2)),c_int), &
@@ -427,13 +433,13 @@ contains
           call index_group(0_c_int)
         endif
       endif
-      if(lines.and..not.host) call end_catalog_streamlines_gpu(int(identity%step))
+      if(lines.and..not.host) call end_catalog_streamlines_gpu(identity%step)
       call release_index_slice_gpu()
 #endif
     enddo
 #if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
     if(available.and.retire_needed) then
-      status=cleanup(int(MPI_COMM_WORLD,c_int),int(identity%step,c_int),identity%time)
+      status=cleanup(int(MPI_COMM_WORLD,c_int),int(identity%step,c_int64_t),identity%time)
       if(status/=0) call MPI_Abort(MPI_COMM_WORLD,status,err)
     endif
 #endif

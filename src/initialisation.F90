@@ -7,6 +7,7 @@
 !| 01-02-2021: Created by J. Fang @ STFC Daresbury Laboratory          |
 !+---------------------------------------------------------------------+
 module initialisation
+  use case_model_options, only: get_case_option
   use astr_precision, only: real_kind
   !
   use constdef
@@ -34,7 +35,7 @@ module initialisation
     use commvar,  only: flowtype,nstep,time,filenumb,fnumslic,ninit,   &
                         lrestart,lavg,turbmode,ymax,use_gpu,lcomb
     use commarray,only: vel,rho,prs,spc,q,tke,omg
-    use readwrite,only: readcont,readflowini3d,readflowini2d,readflowini1d,          &
+    use readwrite,only: read_run_input,readflowini3d,readflowini2d,readflowini1d,    &
                         readcheckpoint,readmeanflow,readmonc,writeflfed,write_io_tree
     use fludyna,  only: updateq
     use statistic,only: nsamples
@@ -59,7 +60,7 @@ module initialisation
 #endif
     call inletprofile
     !
-    call readcont
+    call read_run_input()
     call configure_output_runtime()
     call prepare_insitu_pair()
     !
@@ -374,7 +375,7 @@ module initialisation
     character(len=1024) :: shock_x_text
 
     shock_x=-4.e0_real_kind
-    call get_environment_variable('ASTR_SHUOSHER_SHOCK_X',shock_x_text, &
+    call get_case_option('shuosher_shock_x',shock_x_text, &
                                   length=path_length,status=status)
     if(status==0 .and. path_length>0) then
       read(shock_x_text(1:path_length),*,iostat=ios) shock_x

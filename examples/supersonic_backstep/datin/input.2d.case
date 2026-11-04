@@ -1,0 +1,68 @@
+! Original CPU does not read the trailing solid filename when limmbou=f.
+&case_options
+  flowtype = 'bl'
+  ltimrpt = .true.
+  use_gpu = .false.
+  iomode = 'h'
+/
+
+&mesh
+  ia = 1450
+  ja = 320
+  ka = 0
+  lihomo = .false.
+  ljhomo = .false.
+  lkhomo = .true.
+  lreadgrid = .true.
+  lfftk = .false.
+  gridfile = 'datin/grid.2d'
+/
+
+&physics
+  nondimen = .true.
+  diffterm = .true.
+  lcomb = .false.
+  ref_tem = 224.14d0
+  reynolds = 3994.54d0
+  mach = 1.5d0
+  num_species = 0
+  turbmode = 'none'
+/
+
+&numerics
+  lfilter = .false.
+  alfa_filter = 0.49d0
+  kcutoff = 48
+  conschm = '543c'
+  difschm = '643c'
+  rkscheme = 'rk3'
+  recon_schem = 5
+  lchardecomp = .true.
+  bfacmpld = 0.1d0
+  shkcrt = 2.5d-4
+/
+
+&boundary
+  bctype = 11, 21, 42, 42, 1, 1
+  twall = 0, 0, 0, 0, 0, 0
+  turbinf = 'prof'
+  pout = 1
+/
+
+&initialization
+  limmbou = .true.
+  lrestart = .false.
+  ninit = 1
+  ibmode = 'udf'
+  solidfile = 'backfacestep'
+/
+
+&sponge
+  spg_i0 = 0
+  spg_im = 0
+  spg_j0 = 0
+  spg_jm = 0
+  spg_k0 = 0
+  spg_km = 0
+  spg_def = 'layer'
+/

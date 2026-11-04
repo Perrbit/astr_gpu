@@ -307,15 +307,15 @@ contains
     if(present(retained_other)) extra=extra+retained_other
     call snapshot_sample_velocity_gpu(q_d,velocity,extent,hm,numq,sizes,neighbors,MPI_COMM_WORLD,device_budget,reserve, &
       retained_other=extra)
-    call report_insitu_timing('device_snapshot_inclusive',phase_started,-1)
+    call report_insitu_timing('device_snapshot_inclusive',phase_started,-1_int64)
     phase_started=insitu_clock()
     call extend_sample_velocity_gpu(velocity,halo,extent,MPI_COMM_WORLD,device_budget,reserve,retained_other=extra)
-    call report_insitu_timing('device_halo_inclusive',phase_started,-1)
+    call report_insitu_timing('device_halo_inclusive',phase_started,-1_int64)
     phase_started=insitu_clock()
     if(calculate_q) then
       call derive_sample_velocity_gpu(halo,dxi_d,derived,extent,hm,MPI_COMM_WORLD,device_budget,reserve, &
       wall_sixth=curve_wall.or.sbli,q_only=compact_q,retained_other=extra)
-      call report_insitu_timing('device_gradient_q_inclusive',phase_started,-1)
+      call report_insitu_timing('device_gradient_q_inclusive',phase_started,-1_int64)
     else
       allocate(derived(1,1),stat=status)
       call checkpoint_state_require(status==0,MPI_COMM_WORLD,'unused Q pointer allocation')

@@ -1,4 +1,5 @@
 module validation_io
+  use iso_fortran_env, only: int64
   use astr_precision, only: real_kind,real_bytes
   use commvar, only: nstep
   implicit none
@@ -14,7 +15,7 @@ module validation_io
   public :: gradient_validation_requested,write_gradient_validation_snapshot
   logical,save :: configured=.false.,enabled=.false.
   character(len=1024),save :: prefix=''
-  integer,save :: validation_step=0,validation_step_secondary=-1,validation_step_end=-1
+  integer(int64),save :: validation_step=0,validation_step_secondary=-1,validation_step_end=-1
   logical,save :: compact_configured=.false.,compact_enabled=.false.
   character(len=1024),save :: compact_prefix=''
   logical,save :: gradient_configured=.false.,gradient_enabled=.false.
@@ -158,7 +159,7 @@ contains
   end subroutine configure_rhs_validation
 
   logical function validation_snapshot_requested(step_value)
-    integer,intent(in) :: step_value
+    integer(int64),intent(in) :: step_value
     call configure_rhs_validation()
     validation_snapshot_requested=enabled.and. &
       (step_value==validation_step.or.step_value==validation_step_secondary.or. &
@@ -186,10 +187,12 @@ contains
     use commvar, only: im,jm,km,rkstep
     use parallel, only: mpirank
     real(real_kind),intent(in) :: gradient(0:,0:,0:,:,:),temperature_gradient(0:,0:,0:,:)
-    integer,intent(in),optional :: step_index,stage_index
+    integer(int64),intent(in),optional :: step_index
+    integer,intent(in),optional :: stage_index
     real(real_kind),allocatable,intent(in),optional :: lower_normal(:,:,:),upper_normal(:,:,:)
     character(*),intent(in),optional :: label
-    integer :: step_value,stage_value,unit,has_lower,has_upper
+    integer(int64) :: step_value
+    integer :: stage_value,unit,has_lower,has_upper
     character(32) :: tag
     character(1200) :: filename
     if(.not.gradient_validation_requested()) return
@@ -257,7 +260,7 @@ contains
 
   subroutine write_compact_statistics_validation_snapshot()
     use iso_fortran_env, only: int32,int64
-    use commvar, only: ia,ja,ka,im,jm,km,hm,nstep,time,lavg,feqavg, &
+    use commvar, only: ia,ja,ka,im,jm,km,hm,nstep,time,lavg,        &
                        nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1
     use commarray, only: x,rho,vel,prs,tmp,dvel,dtmp,bnorm_j0
     use parallel, only: mpirank,irk,jrk,krk,ig0,jg0,kg0,isize,jsize,ksize
@@ -270,8 +273,7 @@ contains
     logical :: has_wall
 
     call configure_compact_validation()
-    if(.not.compact_enabled .or. nstep<=0 .or. (.not.lavg)) return
-    if(mod(nstep,feqavg)/=0) return
+    if(.not.compact_enabled.or..not.lavg) return
     has_wall=jrk==0 .and. allocated(bnorm_j0)
     fixed_header=(/int(1,int32),int(z'01020304',int32),int(real_bytes,int32), &
       int(merge(1,0,has_wall),int32),int(merge(1,0,nondimen),int32), &
@@ -311,10 +313,12 @@ contains
     use commarray, only: qrhs
     use parallel, only: mpirank
     character(len=*),intent(in) :: label
-    integer,intent(in),optional :: step_index,stage_index
+    integer(int64),intent(in),optional :: step_index
+    integer,intent(in),optional :: stage_index
     real(real_kind),intent(in),optional :: values(0:,0:,0:,:)
     character(len=1200) :: filename
-    integer :: unit,step_value,stage_value
+    integer :: unit,stage_value
+    integer(int64) :: step_value
     call configure_rhs_validation()
     step_value=nstep
     stage_value=rkstep
@@ -377,9 +381,11 @@ contains
     use commarray, only: q
     use parallel, only: mpirank
     character(len=*),intent(in) :: label
-    integer,intent(in),optional :: step_index,stage_index
+    integer(int64),intent(in),optional :: step_index
+    integer,intent(in),optional :: stage_index
     character(len=1200) :: filename
-    integer :: unit,step_value,stage_value
+    integer :: unit,stage_value
+    integer(int64) :: step_value
     call configure_rhs_validation()
     step_value=nstep
     stage_value=rkstep
@@ -399,9 +405,11 @@ contains
     use commarray, only: rho,vel,prs,tmp
     use parallel, only: mpirank
     character(len=*),intent(in) :: label
-    integer,intent(in),optional :: step_index,stage_index
+    integer(int64),intent(in),optional :: step_index
+    integer,intent(in),optional :: stage_index
     character(len=1200) :: filename
-    integer :: unit,step_value,stage_value
+    integer :: unit,stage_value
+    integer(int64) :: step_value
     call configure_rhs_validation()
     step_value=nstep
     stage_value=rkstep
@@ -422,9 +430,11 @@ contains
     character(len=*),intent(in) :: label
     real(real_kind),intent(in) :: sensor(:,:,:)
     integer(1),intent(in) :: mask(:,:,:)
-    integer,intent(in),optional :: step_index,stage_index
+    integer(int64),intent(in),optional :: step_index
+    integer,intent(in),optional :: stage_index
     character(len=1200) :: filename
-    integer :: unit,step_value,stage_value
+    integer :: unit,stage_value
+    integer(int64) :: step_value
     call configure_rhs_validation()
     step_value=nstep
     stage_value=rkstep

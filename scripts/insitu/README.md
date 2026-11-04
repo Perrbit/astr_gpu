@@ -79,9 +79,9 @@ unchanged. Host, free-device, directory and timeout limits remain 4 GiB/node,
 1 GiB/GPU, 256 MiB and 300 seconds respectively.
 
 Run from a fresh directory outside the source new-output root. Copy the source
-`resources/input.txt` byte-for-byte to `datin/input.tgv` and provide a matching
-`datin/controller` with legacy averaging disabled. Keep the command-line input
-path shorter than the existing 64-character reader limit. Create the empty
+`resources/input.txt` byte-for-byte to `datin/input.case` and provide a matching
+named `datin/input.run` with its statistics disabled. The main input must already
+use the named schema; positional files are not a runtime alternative. Create the empty
 `outdat/render` directory before launch. Use the existing `datin/input.output`
 grammar with the source batch as `restore_directory` and checkpoint, volume,
 slices and adaptive scheduling disabled. Preview reads the frozen grid and
@@ -98,7 +98,7 @@ polls production rendering clocks.
 ```bash
 export ASTR_INSITU_CONFIG=datin/input.insitu
 export ASTR_FORCE_MPI_TOPOLOGY=2,1,1
-mpiexec -np 2 /path/to/device-enabled/astr insitu-preview datin/input.tgv
+mpiexec -np 2 /path/to/device-enabled/astr insitu-preview datin/input.case
 ```
 
 For instantaneous streamlines, set both `statistics=f` and
@@ -1054,11 +1054,11 @@ python3 scripts/insitu/start_tgv_acceptance.py --output /new/empty/case \
 
 Use `--prepare-only` to inspect generated files; `--off` changes only the new
 in-situ enable flag. Existing directories are never overwritten. Templates are
-under `presets/tgv32/`: 32^3, dt=1e-3, four completed steps (controller's inclusive
-zero-based maxstep=3), statistics window 0.003..0.004, frames 2/4, all products,
+under `presets/tgv32/`: 32^3, fixed_dt=1e-3, max_steps=4 complete updates,
+statistics window 0.003..0.004, frames 2/4, all products,
 checkpoint interval 1/keep 2, local host/device/free budgets 4/2/1 GiB.
-Keep the positional primary/controller input layout, including header and blank
-lines. The launcher prepares separate empty output roots. The independent NP=2
+The launcher copies named input.case/input.run and prepares separate empty output roots.
+Group and field order do not depend on header or blank lines. The earlier independent NP=2
 four-step launch passed with all ten product frames and exact authority against
 the matched on case; receipt: `insitu_is7_standalone_final_20261005/`.
 These are acceptance presets, not production defaults. Configure runtime libraries

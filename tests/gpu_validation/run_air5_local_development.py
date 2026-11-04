@@ -142,8 +142,9 @@ def final_state(path, physics):
 
 def run_case(case, executable, variant, steps, preflight, campaign):
     runtime, record = prepare_window(case, variant, steps, preflight)
+    from named_fixture import prepare_named_run
     command = [str(MPIEXEC), '--mca', 'coll_hcoll_enable', '0', '-np', '2',
-               str(executable), 'run', 'datin/input.air5_c4']
+               str(executable), 'run', prepare_named_run(case,'datin/input.air5_c4',runtime)]
     record.update(command=command, environment={k:v for k,v in runtime.items()
         if k.startswith(('ASTR_','OMPI_','CUDA_','UCX_','OMP_','OPENBLAS_','MKL_'))})
     save(case/'launch.json', record)

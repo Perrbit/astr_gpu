@@ -6,6 +6,7 @@
 !| 06-Oct-2018  | Created by J. Fang @ Warrington                      |
 !+---------------------------------------------------------------------+
 module readwrite
+  use case_model_options, only: get_case_option
   use iso_fortran_env, only: int64
   use astr_precision, only: real_kind,clock_kind,real_bytes
   ! This marker is optional in legacy auxiliary files.
@@ -21,9 +22,10 @@ module readwrite
   implicit none
   private :: real_kind,clock_kind,real_bytes
   !
-  integer :: nxtchkpt,nxtwsequ
+  integer(int64) :: nxtchkpt,nxtwsequ
   integer :: exact_gpu_restart_version=0
   integer(int64) :: exact_gpu_restart_generation=0_int64
+  character(1024) :: run_control_path='datin/input.run'
   !+---------------------+---------------------------------------------+
   !|            nxtchkpt | the next nstep to checkpoint.               |
   !|            nxtwsequ | the next nstep to write flow field.         |
@@ -474,7 +476,7 @@ module readwrite
   !| -------------                                                     |
   !| 06-02-2021  | Created by J. Fang @ Warrington                     |
   !+-------------------------------------------------------------------+
-  subroutine readinput
+  subroutine readinput(inspect)
     !
     use commvar
     use parallel,only : bcast,mpibar
@@ -489,9 +491,11 @@ module readwrite
                         ltimrpt,testmode,use_gpu
     use sponge_layer, only : spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km
     use parallel,only : bcast
-    use cmdefne, only : readkeyboad
+    use cmdefne, only : readkeyboad,case_input_path
     use bc,      only : bctype,twall,xslip,turbinf,xrhjump,angshk,pout
-    use utility, only : line_2_strings
+    use ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
+    use case_model_options, only: reset_model_options,read_model_group,publish_model_options,write_model_option_receipt
+    use mpi, only: MPI_COMM_WORLD
     !
 #ifdef COMB
     use commvar, only : lcomb
@@ -499,179 +503,172 @@ module readwrite
 #endif
     !
     ! local data
-    logical :: lfex,lcomb_input
-    character(len=64) :: inputfile
-    character(len=255) :: lineread
-    character(len=20),allocatable :: strings(:)
-    character(len=5) :: char
-    integer :: n,fh,i,ios
+    logical,optional,intent(in) :: inspect
+    logical :: lfex,seen(13)
+    character(len=1024) :: inputfile
+    character(len=4096) :: lineread
+    character(len=512) :: detail
+    character(len=20) :: group
+    character(len=20),parameter :: groups(13)=[character(len=20) :: &
+      'case_options','mesh','physics','numerics','boundary','initialization','sponge','species_transport', &
+      'boundary_options','transport_options','initial_conditions','precision_options','chemistry']
+    integer :: n,fh,i,ios,group_index
+    real(real_kind) :: missing
+    namelist /case_options/ flowtype,use_gpu,ltimrpt,iomode
+    namelist /mesh/ ia,ja,ka,lihomo,ljhomo,lkhomo,lreadgrid,lfftk,gridfile
+#ifdef COMB
+    namelist /physics/ nondimen,diffterm,lcomb,num_species,turbmode,ref_tem,ref_vel,ref_len,ref_den, &
+      reynolds,mach,odetype,chemfile
+#else
+    namelist /physics/ nondimen,diffterm,lcomb,num_species,turbmode,ref_tem,ref_vel,ref_len,ref_den,reynolds,mach
+#endif
+    namelist /numerics/ conschm,difschm,rkscheme,recon_schem,lchardecomp,bfacmpld,shkcrt,lfilter,alfa_filter,kcutoff
+    namelist /boundary/ bctype,twall,xslip,turbinf,pout,xrhjump,angshk
+    namelist /initialization/ lrestart,ninit,limmbou,ibmode,solidfile
+    namelist /sponge/ spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km,spg_def
+    namelist /species_transport/ schmidt
     !
     if(mpirank==0) then
       !
       testmode='....'
-      inputfile='datin/input.dat'
+      inputfile='datin/input.case'
       !
       call readkeyboad(inputfile)
+      if(len_trim(inputfile)==0) inputfile='datin/input.case'
+      case_input_path=inputfile
+      run_control_path=inputfile(:scan(trim(inputfile),'/',back=.true.))//'input.run'
       !
       call readkeyboad(testmode)
+      if(len_trim(testmode)==0) testmode='....'
       !
       fh=get_unit()
       !
-      open(fh,file=trim(inputfile),action='read')
-      read(fh,'(////)')
-      flowtype=' '
-      read(fh,*)flowtype
-      do i=1,len(flowtype)
-        if(flowtype(i:i)==char(0) .or. flowtype(i:i)==char(13)) flowtype(i:i)=' '
+      open(fh,file=trim(inputfile),status='old',action='read',iostat=ios,iomsg=detail)
+      if(ios/=0) call reject_case_input(inputfile,detail)
+      call reset_model_options()
+      ! Inventory groups once; native namelist reads below do all value parsing.
+      seen=.false.
+      do
+        read(fh,'(A)',iostat=ios,iomsg=detail) lineread
+        if(is_iostat_end(ios)) exit
+        if(ios/=0) call reject_case_input(inputfile,detail)
+        lineread=adjustl(lineread)
+        if(lineread(1:1)/='&') cycle
+        n=scan(lineread(2:),' ,'//achar(9)//achar(13)//'/!')
+        if(n==0) n=len_trim(lineread)
+        group=lineread(2:n)
+        do i=1,len_trim(group)
+          if(group(i:i)>='A'.and.group(i:i)<='Z') group(i:i)=achar(iachar(group(i:i))+32)
+        enddo
+        if(group=='end') cycle
+        group_index=0
+        do i=1,size(groups)
+          if(group==groups(i)) group_index=i
+        enddo
+        if(group_index==0) call reject_case_input(inputfile,'unknown group: '//trim(group))
+        if(seen(group_index)) call reject_case_input(inputfile,'duplicate group: '//trim(group))
+        seen(group_index)=.true.
       enddo
-      read(fh,'(/)')
-      read(fh,*)ia,ja,ka
-      read(fh,'(/)')
-      read(fh,*)lihomo,ljhomo,lkhomo
-      write(*,'(A)',advance='no')'  ** homogeneous direction: '
-      if(lihomo) write(*,'(A)',advance='no')'i,'
-      if(ljhomo) write(*,'(A)',advance='no')' j,'
-      if(lkhomo) write(*,'(A)')' k'
-      read(fh,'(/)')
-      use_gpu = .false.
-      read(fh,'(A)') lineread
+      if(.not.all(seen(1:5))) call reject_case_input(inputfile, &
+        'required groups: case_options, mesh, physics, numerics, boundary')
+      missing=ieee_value(0.e0_real_kind,ieee_quiet_nan)
+      flowtype='';use_gpu=.false.;ltimrpt=.false.;iomode='h'
+      ia=-1;ja=-1;ka=-1
+      lihomo=.false.;ljhomo=.false.;lkhomo=.false.;lreadgrid=.false.;lfftk=.false.
+      gridfile='datin/grid.h5'
+      nondimen=.true.;diffterm=.true.;lcomb=.false.;num_species=0;turbmode='none'
+      ref_tem=missing;reynolds=missing;mach=missing
+      ref_vel=0.e0_real_kind;ref_len=0.e0_real_kind;ref_den=0.e0_real_kind
+      conschm='';difschm='';rkscheme='';recon_schem=3;lchardecomp=.false.
+      bfacmpld=0.3e0_real_kind;shkcrt=0.05e0_real_kind;lfilter=.false.;alfa_filter=missing;kcutoff=-1
+      bctype=-huge(0);twall=0.e0_real_kind;xslip=missing;turbinf='';pout=1.e0_real_kind
+      xrhjump=missing;angshk=missing
+      lrestart=.false.;ninit=0;limmbou=.false.;ibmode='';solidfile=''
+      spg_i0=0;spg_im=0;spg_j0=0;spg_jm=0;spg_k0=0;spg_km=0;spg_def='layer'
 #ifdef COMB
-      read(lineread,*,iostat=ios)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb,use_gpu
-      if(ios /= 0) then
-        use_gpu = .false.
-        read(lineread,*,iostat=ios)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb
-        if(ios /= 0) then
-          lcomb = .false.
-          read(lineread,*)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt
-        endif
-      endif
-#else
-      lcomb_input = .false.
-      read(lineread,*,iostat=ios)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb_input,use_gpu
-      if(ios /= 0) then
-        use_gpu = .false.
-        read(lineread,*,iostat=ios)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb_input
-        if(ios /= 0) then
-          read(lineread,*)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt
-        endif
-      endif
-#ifdef ASTR_AIR5_CHEMISTRY
-      lcomb = lcomb_input
+      odetype='';chemfile=''
 #endif
-#endif
-      read(fh,'(/)')
-      read(fh,*)lrestart
-      read(fh,'(/)')
-      read(fh,*)alfa_filter,kcutoff
-
+      if(allocated(schmidt)) deallocate(schmidt)
+      do group_index=1,size(groups)
+        if(.not.seen(group_index)) cycle
+        rewind(fh)
+        select case(group_index)
+        case(1);read(fh,nml=case_options,iostat=ios,iomsg=detail)
+        case(2);read(fh,nml=mesh,iostat=ios,iomsg=detail)
+        case(3)
+          read(fh,nml=physics,iostat=ios,iomsg=detail)
+          if(ios==0) then
+            if(num_species<0) call reject_case_input(inputfile,'num_species must be nonnegative')
+            allocate(schmidt(num_species))
+            schmidt=missing
+          endif
+        case(4);read(fh,nml=numerics,iostat=ios,iomsg=detail)
+        case(5);read(fh,nml=boundary,iostat=ios,iomsg=detail)
+        case(6);read(fh,nml=initialization,iostat=ios,iomsg=detail)
+        case(7);read(fh,nml=sponge,iostat=ios,iomsg=detail)
+        case(8);read(fh,nml=species_transport,iostat=ios,iomsg=detail)
+        case(9:13);call read_model_group(fh,trim(groups(group_index)),ios,detail)
+        end select
+        if(ios/=0) call reject_case_input(inputfile,trim(groups(group_index))//': '//trim(detail))
+      enddo
+      if(len_trim(flowtype)==0) call reject_case_input(inputfile,'flowtype is required')
+      if(min(ia,ja,ka)<0.or.max(ia,ja,ka)==0) call reject_case_input(inputfile,'ia/ja/ka must define the grid')
+      if(.not.ieee_is_finite(ref_tem).or.ref_tem<=0.e0_real_kind) &
+        call reject_case_input(inputfile,'positive finite ref_tem is required')
       if(nondimen) then
-        read(fh,'(/)')
-        read(fh,*)ref_tem,reynolds,mach
+        if(.not.all(ieee_is_finite([reynolds,mach])).or.min(reynolds,mach)<=0.e0_real_kind) &
+          call reject_case_input(inputfile,'positive finite reynolds and mach are required for nondimen=t')
       else
-        read(fh,'(/)')
-        read(fh,*)ref_tem,ref_vel,ref_len,ref_den
+        if(.not.all(ieee_is_finite([ref_vel,ref_len,ref_den])).or.min(ref_vel,ref_len,ref_den)<=0.e0_real_kind) &
+          call reject_case_input(inputfile,'positive finite ref_vel/ref_len/ref_den are required for nondimen=f')
       endif
-
-      read(fh,'(/)')
-
-#ifdef COMB
-      read(fh,*)conschm,difschm,rkscheme,odetype
-#else 
-      read(fh,*)conschm,difschm,rkscheme
+      if(len_trim(conschm)==0.or.len_trim(difschm)==0.or.len_trim(rkscheme)==0) &
+        call reject_case_input(inputfile,'conschm, difschm and rkscheme are required')
+      if(any(bctype==-huge(0))) call reject_case_input(inputfile,'all six bctype values are required')
+      if(lfilter.and..not.ieee_is_finite(alfa_filter)) call reject_case_input(inputfile,'alfa_filter is required')
+      if(lfftk.and.kcutoff<0) call reject_case_input(inputfile,'nonnegative kcutoff is required for lfftk=t')
+      if(any((bctype==41.or.bctype==411).and.(.not.ieee_is_finite(twall).or.twall<=0.e0_real_kind))) &
+        call reject_case_input(inputfile,'bctype=41/411 requires positive finite twall on each selected face')
+      if(any(bctype==411.or.bctype==421).and..not.ieee_is_finite(xslip)) &
+        call reject_case_input(inputfile,'bctype=411/421 requires the shared xslip')
+      if(any(bctype==11).and.len_trim(turbinf)==0) &
+        call reject_case_input(inputfile,'bctype=11 requires the shared turbinf')
+      if(trim(flowtype)=='swbli'.and.any(bctype==51)) then
+        if(.not.all(ieee_is_finite([xrhjump,angshk]))) &
+          call reject_case_input(inputfile,'swbli bctype=51 requires xrhjump and angshk')
+      endif
+      if(.not.ieee_is_finite(pout)) call reject_case_input(inputfile,'pout must be finite')
+      if(lreadgrid.and.len_trim(gridfile)==0) call reject_case_input(inputfile,'gridfile is required')
+      if(limmbou.and.(len_trim(ibmode)==0.or.len_trim(solidfile)==0)) &
+        call reject_case_input(inputfile,'ibmode and solidfile are required for limmbou=t')
+      if(num_species>0.and..not.lcomb) then
+        if(.not.all(ieee_is_finite(schmidt)).or.any(schmidt<=0.e0_real_kind)) &
+          call reject_case_input(inputfile,'species_transport requires positive finite Schmidt numbers')
+      endif
+#if !defined(COMB) && !defined(ASTR_AIR5_CHEMISTRY)
+      if(lcomb) call reject_case_input(inputfile,'lcomb=t requires a chemistry-capable build')
 #endif
-      read(fh,'(/)')
-      read(fh,*)recon_schem,lchardecomp,bfacmpld,shkcrt
-      read(fh,'(/)')
 #ifdef COMB
-      read(fh,'()')
-#else 
-      read(fh,*)num_species
-      if(num_species>0) then
-        allocate(schmidt(num_species))
-        backspace(fh)
-        read(fh,*)num_species,(schmidt(i),i=1,num_species)
-      endif
-#endif
-      read(fh,'(/)')
-      read(fh,*)turbmode,iomode
-      read(fh,'(/)')
-      do n=1,6
-        read(fh,*)bctype(n)
-        if(bctype(n)==41) then
-          backspace(fh)
-          read(fh,*)bctype(n),twall(n)
-        endif
-        if(bctype(n)==411) then
-          backspace(fh)
-          read(fh,*)bctype(n),xslip,twall(n)
-        endif
-        if(bctype(n)==421) then
-          backspace(fh)
-          read(fh,*)bctype(n),xslip
-        endif
-        if(bctype(n)==11) then
-          backspace(fh)
-          read(fh,*)bctype(n),turbinf
-        endif
-        if(bctype(n)==21 .or. bctype(n)==22) then
-          backspace(fh)
-          read(fh,'(A)')lineread
-          strings=line_2_strings(lineread)
-          read(strings(1),*)bctype(n)
-          if(size(strings)==1) then
-            pout=1.e0_real_kind
-          else
-            read(strings(2),*)pout
-          endif
-        endif
-        if(bctype(n)==51) then
-          if(trim(flowtype)=='swbli') then
-            backspace(fh)
-            read(fh,*)bctype(n),xrhjump,angshk
-          endif
-        endif
-      enddo
-      read(fh,'(/)')
-      read(fh,*)ninit
-      read(fh,'(/)')
-      read(fh,'(A)')lineread
-      strings=line_2_strings(lineread)
-      read(strings(1),*)spg_i0
-      read(strings(2),*)spg_im
-      read(strings(3),*)spg_j0
-      read(strings(4),*)spg_jm
-      read(strings(5),*)spg_k0
-      read(strings(6),*)spg_km
-      spg_def='layer'
-      if(size(strings)>6) then
-        read(strings(7),*)spg_def
-      endif
-      read(fh,'(/)')
-      read(fh,'(A)')gridfile
-      if(limmbou) then
-        read(fh,'(/)')
-        read(fh,*)ibmode,solidfile
-      endif
-#ifdef COMB
-      read(fh,'(/)')
-      read(fh,'(A)')chemfile  
-      if(len(trim(chemfile))>1) then
+      if(lcomb) then
+        if(len_trim(odetype)==0.or.len_trim(chemfile)==0) &
+          call reject_case_input(inputfile,'COMB requires odetype and chemfile')
         inquire(file=trim(chemfile),exist=lfex)
-        !
-        if(.not. lfex) then
-          print*,' !! Error ',trim(chemfile),' not exist !!'
-          stop
-        endif
-        !
-      else
-        print*,' !! Error chemfile not provided in input !!'
-          stop
+        if(.not.lfex) call reject_case_input(inputfile,'chemfile not found: '//trim(chemfile))
       endif
 #endif
+      if(.not.ieee_is_finite(alfa_filter)) alfa_filter=0.e0_real_kind
+      if(.not.ieee_is_finite(xslip)) xslip=0.e0_real_kind
+      if(.not.ieee_is_finite(xrhjump)) xrhjump=0.e0_real_kind
+      if(.not.ieee_is_finite(angshk)) angshk=0.e0_real_kind
+      if(.not.ieee_is_finite(reynolds)) reynolds=0.e0_real_kind
+      if(.not.ieee_is_finite(mach)) mach=0.e0_real_kind
       close(fh)
       print*,' >> ',trim(inputfile),' ... done'
       !
     endif !mpirank==0
+    call publish_model_options(MPI_COMM_WORLD)
+    call bcast(run_control_path)
+    call bcast(case_input_path)
     !
     call bcast(ia)
     call bcast(ja)
@@ -722,7 +719,7 @@ module readwrite
     !
     call bcast(recon_schem)
     call bcast(num_species)
-    if(nondimen)call bcast(schmidt,num_species)
+    call bcast(schmidt,num_species)
     !
     call bcast(bctype)
     call bcast(twall)
@@ -743,13 +740,31 @@ module readwrite
     call bcast(angshk)
     call bcast(testmode)
     call bcast(lcomb)
+#ifdef COMB
+    call bcast(odetype)
+    call bcast(chemfile)
+#endif
+    if(present(inspect)) then
+      if(inspect) then
+        write(inputfile,'(A,I6.6,A)') 'case_input.rank',mpirank,'.nml'
+        open(newunit=fh,file=trim(inputfile),status='replace',action='write',delim='quote')
+        write(fh,nml=case_options)
+        write(fh,nml=mesh)
+        write(fh,nml=physics)
+        write(fh,nml=numerics)
+        write(fh,nml=boundary)
+        write(fh,nml=initialization)
+        write(fh,nml=sponge)
+        if(num_species>0) write(fh,nml=species_transport)
+        call write_model_option_receipt(fh)
+        close(fh)
+        return
+      endif
+    endif
     !
     call readslic
     !
 #ifdef COMB
-    call bcast(odetype)
-    call bcast(chemfile)
-    !
     call mpibar
     !
     ! every mpirank must read chem.dat
@@ -767,6 +782,13 @@ module readwrite
 #endif
   !
   end subroutine readinput
+  subroutine reject_case_input(path,message)
+    use mpi, only: MPI_Abort,MPI_COMM_WORLD
+    character(*),intent(in) :: path,message
+    integer :: abort_status
+    write(*,'(4A)') 'ASTR_CASE rejected ',trim(path),': ',trim(message)
+    call MPI_Abort(MPI_COMM_WORLD,90,abort_status)
+  end subroutine reject_case_input
   !+-------------------------------------------------------------------+
   !| The end of the subroutine readinput.                              |
   !+-------------------------------------------------------------------+
@@ -779,57 +801,43 @@ module readwrite
   !| -------------                                                     |
   !| 09-02-2021  | Created by J. Fang @ Warrington                     |
   !+-------------------------------------------------------------------+
-  subroutine readcont
-    !
-    use commvar, only: deltat,lwsequ,lwslic,lavg,maxstep,feqchkpt,     &
-                       feqwsequ,feqslice,feqlist,feqavg,lcracon
-    use parallel,only: bcast
-    !
-    ! local data
-    character(len=64) :: inputfile
-    integer :: fh
-    logical,save :: legacy_output_reported=.false.
-    !
-    inputfile='datin/controller'
-    !
-    if(mpirank==0) then
-      !
-      fh=get_unit()
-      !
-      open(fh,file=trim(inputfile),action='read')
-      read(fh,'(////)')
-      read(fh,*)lwsequ,lwslic,lavg,lcracon
-      read(fh,'(/)')
-      read(fh,*)maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg
-      read(fh,'(/)')
-      read(fh,*)deltat
-      close(fh)
-      print*,' >> ',trim(inputfile),' ... done'
-      !
+  subroutine read_run_input()
+    use mpi, only: MPI_COMM_WORLD,MPI_Abort
+    use commvar, only: deltat
+    use run_control_runtime, only: initialize_run_control,active_run
+    use timestep_control, only: timestep_fixed
+    logical :: ok
+    integer :: abort_status
+    character(512) :: message
+    call initialize_run_control(trim(run_control_path),MPI_COMM_WORLD,ok,message)
+    if(.not.ok) then
+      if(mpirank==0) write(*,'(2A)') 'ASTR_RUN startup rejected: ',trim(message)
+      call MPI_Abort(MPI_COMM_WORLD,90,abort_status)
     endif
-    !
-    call bcast(lwsequ)
-    call bcast(lwslic)
-    call bcast(lavg)
-    call bcast(lcracon)
-    call bcast(maxstep)
-    call bcast(feqchkpt)
-    call bcast(feqwsequ)
-    call bcast(feqslice)
-    call bcast(feqlist)
-    call bcast(feqavg)
-    call bcast(deltat)
-    if((lwsequ.or.lwslic).and..not.legacy_output_reported) then
-      if(mpirank==0) write(*,'(a)') &
-        'ASTR_OUTPUT legacy lwsequ/lwslic are ignored; configure volume/slices in input.output'
-      legacy_output_reported=.true.
-    endif
-    lwsequ=.false.
-    lwslic=.false.
-    !
-  end subroutine readcont
+    call apply_run_input()
+    if(mpirank==0) write(*,'(A,I0,A,ES24.16E3,A,I0)') &
+      'ASTR_RUN startup max_steps=',active_run%max_steps,' stop_time=',active_run%stop_time,' list_steps=',active_run%list_steps
+    ! Automatic startup obtains its real first dt only after the flow is ready.
+    deltat=0.e0_real_kind
+    if(active_run%timestep%mode==timestep_fixed) deltat=active_run%timestep%fixed_dt
+  end subroutine read_run_input
+
+  subroutine apply_run_input()
+    use commvar, only: lwsequ,lwslic,lavg,maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg,lcracon
+    use run_control_runtime, only: active_run
+    lwsequ=.false.;lwslic=.false.
+    lavg=active_run%statistics%enabled
+    lcracon=active_run%crashfix
+    maxstep=huge(maxstep)-1
+    if(active_run%max_steps>=0) maxstep=active_run%max_steps
+    feqlist=active_run%list_steps
+    ! Legacy diagnostic cadence only; file output has its own input.output schedule.
+    feqchkpt=max(1_int64,feqlist)
+    feqwsequ=1;feqslice=1
+    feqavg=active_run%statistics%sample_steps
+  end subroutine apply_run_input
   !+-------------------------------------------------------------------+
-  !| The end of the subroutine readcont.                               |
+  !| End of named runtime input setup.                                |
   !+-------------------------------------------------------------------+
   !
   !+-------------------------------------------------------------------+
@@ -1499,7 +1507,8 @@ module readwrite
     character(len=1),intent(in),optional :: mode
     !
     ! local data
-    integer :: nstep_h5,nstep_aux,jsp
+    integer(int64) :: nstep_h5,nstep_aux
+    integer :: jsp
     character(len=1) :: modeio
     character(len=2) :: qname
     character(len=3) :: spname
@@ -1656,7 +1665,7 @@ module readwrite
   subroutine readmeanflow(mode)
     !
     use commvar, only: nstep,im,jm,km
-    use statistic,only : nsamples,liosta,nstep_sbeg,time_sbeg,         &
+    use statistic,only : nsamples,liosta,nstep_sbeg,time_sbeg,mean_time_weight, &
                          rom,u1m,u2m,u3m,pm,tm,                        &
                          u11,u22,u33,u12,u13,u23,pp,tt,tu1,tu2,tu3,    &
                          u111,u222,u333,u112,u113,                     &
@@ -1672,7 +1681,7 @@ module readwrite
     character(len=1),intent(in),optional :: mode
     !
     ! local data
-    integer :: nstep_1,nsamples_1
+    integer(int64) :: nstep_1,nsamples_1
     character(len=1) :: modeio
     !
     if(present(mode)) then
@@ -1700,6 +1709,7 @@ module readwrite
     endif
     call h5read(varname='nstep_sbeg',var=nstep_sbeg)
     call h5read(varname='time_sbeg', var=time_sbeg)
+    call h5read(varname='mean_time_weight',var=mean_time_weight)
     call h5read(varname='rom',var=rom(0:im,0:jm,0:km),mode=modeio)
     call h5read(varname='u1m',var=u1m(0:im,0:jm,0:km),mode=modeio)
     call h5read(varname='u2m',var=u2m(0:im,0:jm,0:km),mode=modeio)
@@ -1725,7 +1735,7 @@ module readwrite
     call h5read(varname='tt', var=tt(0:im,0:jm,0:km),mode=modeio)
     call h5read(varname='tu1',var=tu1(0:im,0:jm,0:km),mode=modeio)
     call h5read(varname='tu2',var=tu2(0:im,0:jm,0:km),mode=modeio)
-    call h5read(varname='tu3',var=tu2(0:im,0:jm,0:km),mode=modeio)
+    call h5read(varname='tu3',var=tu3(0:im,0:jm,0:km),mode=modeio)
     call h5io_end
     !
     call h5io_init('outdat/3rdsta.'//modeio//'5',mode='read')
@@ -2197,7 +2207,7 @@ module readwrite
     logical :: present_version,present_high,present_carry
     if(lcomb) call configure_air5_integration_control(im,jm,km)
     value='off'
-    call get_environment_variable('ASTR_AIR5_COMPENSATION',value,length,status)
+    call get_case_option('compensation',value,length,status)
     if(status==1) value='off'
     choice=-1
     if(status==0 .or. status==1) then
@@ -2245,7 +2255,7 @@ module readwrite
         if(present_high .or. present_carry) error stop 'incomplete compensation checkpoint schema'
       enddo
       restart_mode=''
-      call get_environment_variable('ASTR_AIR5_COMPENSATION_RESTART',restart_mode,status=status)
+      call get_case_option('compensation_restart',restart_mode,status=status)
       choice=0
       if(status==0 .and. trim(restart_mode)=='initialize') choice=1
       call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
@@ -2623,7 +2633,7 @@ module readwrite
   subroutine writemeanflow
     !
     use commvar,  only : nstep,iomode
-    use statistic,only : nsamples,nstep_sbeg,time_sbeg,                &
+    use statistic,only : nsamples,nstep_sbeg,time_sbeg,mean_time_weight, &
                          rom,u1m,u2m,u3m,pm,tm,                        &
                          u11,u22,u33,u12,u13,u23,pp,tt,tu1,tu2,tu3,    &
                          u111,u222,u333,u112,u113,                     &
@@ -2658,7 +2668,7 @@ module readwrite
     call h5write(varname='tt', var=tt(0:im,0:jm,0:km) ,mode=iomode)
     call h5write(varname='tu1',var=tu1(0:im,0:jm,0:km),mode=iomode)
     call h5write(varname='tu2',var=tu2(0:im,0:jm,0:km),mode=iomode)
-    call h5write(varname='tu3',var=tu2(0:im,0:jm,0:km),mode=iomode)
+    call h5write(varname='tu3',var=tu3(0:im,0:jm,0:km),mode=iomode)
     call h5io_end
     !
     if(lio) call bakupfile(file='outdat/3rdsta.'//iomode//'5')
@@ -2701,18 +2711,22 @@ module readwrite
       call h5srite(varname='nsamples',  var=nsamples,  filename='outdat/meanflow.'//iomode//'5')
       call h5srite(varname='nstep_sbeg',var=nstep_sbeg,filename='outdat/meanflow.'//iomode//'5')
       call h5srite(varname='time_sbeg', var=time_sbeg, filename='outdat/meanflow.'//iomode//'5')
+      call h5srite(varname='mean_time_weight',var=mean_time_weight,filename='outdat/meanflow.'//iomode//'5')
       call h5srite(varname='nstep',     var=nstep,     filename=  'outdat/2ndsta.'//iomode//'5')
       call h5srite(varname='nsamples',  var=nsamples,  filename=  'outdat/2ndsta.'//iomode//'5')
       call h5srite(varname='nstep_sbeg',var=nstep_sbeg,filename=  'outdat/2ndsta.'//iomode//'5')
       call h5srite(varname='time_sbeg', var=time_sbeg, filename=  'outdat/2ndsta.'//iomode//'5')
+      call h5srite(varname='mean_time_weight',var=mean_time_weight,filename='outdat/2ndsta.'//iomode//'5')
       call h5srite(varname='nstep',     var=nstep,     filename=  'outdat/3rdsta.'//iomode//'5')
       call h5srite(varname='nsamples',  var=nsamples,  filename=  'outdat/3rdsta.'//iomode//'5')
       call h5srite(varname='nstep_sbeg',var=nstep_sbeg,filename=  'outdat/3rdsta.'//iomode//'5')
       call h5srite(varname='time_sbeg', var=time_sbeg, filename=  'outdat/3rdsta.'//iomode//'5')
+      call h5srite(varname='mean_time_weight',var=mean_time_weight,filename='outdat/3rdsta.'//iomode//'5')
       call h5srite(varname='nstep',     var=nstep,     filename=  'outdat/budget.'//iomode//'5')
       call h5srite(varname='nsamples',  var=nsamples,  filename=  'outdat/budget.'//iomode//'5')
       call h5srite(varname='nstep_sbeg',var=nstep_sbeg,filename=  'outdat/budget.'//iomode//'5')
       call h5srite(varname='time_sbeg', var=time_sbeg, filename=  'outdat/budget.'//iomode//'5')
+      call h5srite(varname='mean_time_weight',var=mean_time_weight,filename='outdat/budget.'//iomode//'5')
     endif
     !
   end subroutine writemeanflow
@@ -2751,7 +2765,7 @@ module readwrite
     logical :: lfopen
     real(clock_kind) :: time_beg
     real(clock_kind),save :: subtime=0.e0_clock_kind
-    integer,save :: nstep_save=0
+    integer(int64),save :: nstep_save=0
     
     if(nstep<=nstep_save) return
 
@@ -2832,7 +2846,7 @@ module readwrite
     character(len=5) :: stepname
     character(len=14) :: filename
     integer :: i,j,k
-    integer,save :: nstep_save=0
+    integer(int64),save :: nstep_save=0
     real(clock_kind) :: time_beg
     logical :: write_derivatives
     !
@@ -3110,7 +3124,8 @@ module readwrite
     logical,save :: linit=.true.
     logical :: lexist
     integer :: i
-    integer,save :: hand_rp,repsp
+    integer,save :: hand_rp
+    integer(int64),save :: repsp
     !
     if(lio) then
       !

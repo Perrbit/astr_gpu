@@ -6,6 +6,7 @@
 !| 09-02-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module mainloop
+  use iso_fortran_env, only: int64
   use astr_precision, only: real_kind,clock_kind
   !
   use constdef
@@ -19,16 +20,21 @@ module mainloop
   use utility,  only: timereporter
   use output_runtime, only: begin_output_runtime,completed_output_runtime,new_output_enabled,initial_output_runtime
   use output_runtime, only: observe_output_adaptive
+  use output_runtime, only: refresh_output_mean_statistics,write_scheduled_device_mean_statistics
+  use output_runtime, only: validate_output_run_control
+  use output_runtime, only: complete_restored_output_probe
   !
   implicit none
   private :: real_kind,clock_kind
   !
-  integer :: loop_counter=0
-  integer :: nxtbakup,feqbakup=5
+  integer(int64) :: loop_counter=0
+  integer(int64) :: nxtbakup
+  integer :: feqbakup=5
   integer :: fhand_err
-  integer :: nstep0
+  integer(int64) :: nstep0
   real(clock_kind) :: time_start
   logical :: rkfirst_pending=.true.
+  real(clock_kind) :: mean_sampling_seconds=0.0_clock_kind,mean_writing_seconds=0.0_clock_kind
   !
   contains
   !
@@ -43,14 +49,19 @@ module mainloop
     !
     use commvar,  only: maxstep,time,deltat,feqchkpt,feqwsequ,feqlist, &
                         nsrpt,flowtype,limmbou,use_gpu,lrestart
-    use statistic, only: initialize_channel_driver
-    use readwrite,only: readcont,timerept,nxtchkpt,nxtwsequ,           &
+    use statistic, only: initialize_channel_driver,statout
+    use readwrite,only: apply_run_input,timerept,nxtchkpt,nxtwsequ,    &
                         write_validation_rk_snapshot,writemon
     use commcal,  only: cflcal
+    use commcal, only: collect_timestep_rates_cpu
+    use iso_fortran_env, only: int64
+    use mpi, only: MPI_COMM_WORLD,MPI_Abort
+    use run_control_runtime, only: active_run,select_run_timestep,poll_run_control,run_is_finished
+    use run_control_runtime, only: report_run_control_timing
     use compact_runtime, only: configure_global_compact,release_global_compact
     use bc, only: bctype
 #ifdef _CUDA
-    use cfl_gpu, only: collect_cfl_gpu
+    use cfl_gpu, only: collect_cfl_gpu,collect_timestep_rates_gpu
 #endif
     use ibmethod, only: ibforce
     use userdefine,only: udf_eom_set
@@ -60,16 +71,21 @@ module mainloop
     use benchmark_runtime, only: begin_complete_step_timing,end_complete_step_timing, &
                                 insitu_clock,report_insitu_timing
     use insitu_session, only: sample_insitu_step,finish_insitu,begin_insitu
+#ifdef COMB
+    use fdnn, only: finalize
+    use commvar, only: odetype
+#endif
 #if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
     use m12_insitu_diagnostic_check, only: check_profile_device_sample_gpu,check_profile_render_isolation_gpu
 #endif
     !
     ! local data
     real(clock_kind) :: time_beg,time_next_step
-    real(real_kind) :: crange,completed_step_dt
+    real(real_kind) :: crange,completed_step_dt,next_dt,step_start_time
     integer :: hours,minus,secod,n,i,ios,j,k
     logical,save :: firstcall = .true.
-    logical :: lfex
+    logical :: lfex,control_ok,control_changed,mean_write_due
+    character(512) :: control_message
     integer,dimension(8) :: value
     integer,allocatable :: idata(:,:)
     real(clock_kind) :: time_total,time_dowhile,time_per_loop,time_save
@@ -109,6 +125,7 @@ module mainloop
 
     if(trim(flowtype)=='channel'.and..not.lrestart) call initialize_channel_driver()
     call begin_output_runtime(loop_counter,rkfirst_pending)
+    call apply_run_input()
 
     nxtchkpt=nstep+feqchkpt
     nxtwsequ=nstep+feqwsequ
@@ -122,6 +139,10 @@ module mainloop
     else
       open(fhand_err,file='errnode.log')
     endif
+    call crashcheck
+    call select_next_dt()
+    call sample_completed_mean_statistics(0.0_real_kind)
+    call complete_restored_output_probe(loop_counter,rkfirst_pending)
     !
     ! if(lio .and. lreport .and. ltimrpt) call timereporter(routine='steploop',timecost=time_dowhile,  &
     !                           message='init file')
@@ -134,41 +155,27 @@ module mainloop
     call initial_output_runtime(loop_counter,rkfirst_pending)
 
     window_started=insitu_clock()
-    do while(nstep<=maxstep)
+    do while(.not.run_is_finished(int(nstep,int64),time))
 
       iteration_started=insitu_clock()
       call begin_complete_step_timing()
-      call crashcheck
-
       completed_step_dt=deltat
+      step_start_time=time
       phase_started=insitu_clock()
       call time_integration_rk
+      call report_insitu_timing('rk_call_inclusive',phase_started,nstep+1)
+      call crashcheck
       call report_insitu_timing('advance_inclusive',phase_started,nstep+1)
 #if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
       call check_profile_device_sample_gpu()
 #endif
-      phase_started=insitu_clock()
-      call observe_output_adaptive(nstep+1,time+completed_step_dt)
-#if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
-      call check_profile_render_isolation_gpu(.true.)
-#endif
-      call sample_insitu_step(nstep+1,time+completed_step_dt,completed_step_dt)
-#if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
-      call check_profile_render_isolation_gpu(.false.)
-#endif
-      call report_insitu_timing('insitu_sample_inclusive',phase_started,nstep+1)
 #ifdef ASTR_AIR5_CHEMISTRY
       call writemon(time+completed_step_dt)
 #endif
-      ! Include completed-step scalar statistics, not subsequent field output.
-      call end_complete_step_timing(nstep)
 
-      if(.not.use_gpu .and. nstep+1<=maxstep .and.                     &
-         mod(nstep+1,feqchkpt)==0) call write_validation_rk_snapshot()
+      if(.not.use_gpu.and.mod(nstep+1,feqchkpt)==0) call write_validation_rk_snapshot()
 
-      if(mod(nstep,feqchkpt)==0) then
-        !
-        call readcont
+      if(feqlist>0.and.mod(nstep,feqchkpt)==0) then
         !
         nxtchkpt=nstep+feqchkpt
         !
@@ -268,8 +275,39 @@ module mainloop
       !
       loop_counter=loop_counter+1
       nstep=nstep+1
-      ! readcont may already have selected the next step size.
       time=time+completed_step_dt
+      ! Settle the completed interval before accepting controls for future steps.
+      call sample_completed_mean_statistics(completed_step_dt,mean_write_due)
+      call poll_run_control(nstep,time,MPI_COMM_WORLD,control_changed,control_ok,control_message, &
+        validate_output_run_control)
+      if(.not.control_ok.and.lio) write(*,'(A,I0,2A)') &
+        'ASTR_RUN update rejected at complete_step=',nstep,': ',trim(control_message)
+      if(control_changed) then
+        call apply_run_input()
+        if(lio) write(*,'(A,I0,A,ES24.16E3,A,I0,5(A,ES24.16E3))') &
+          'ASTR_RUN accepted complete_step=',nstep,' time=',time,' mode=',active_run%timestep%mode, &
+          ' cfl_target=',active_run%timestep%cfl_target,' growth_factor=',active_run%timestep%growth_factor, &
+          ' max_dt=',active_run%timestep%max_dt,' initial_dt=',active_run%timestep%initial_dt, &
+          ' fixed_dt=',active_run%timestep%fixed_dt
+      endif
+      ! Predict from the completed, repaired state before publishing dt_next.
+      call select_next_dt()
+      ! Publish the old schedule's write with the newly selected dt_next.
+      if(mean_write_due) call write_completed_mean_statistics(completed_step_dt)
+      if(control_changed) call sample_completed_mean_statistics(0.0_real_kind)
+      if(lio) write(*,'(A,I0,4(A,ES24.16E3))') 'ASTR_TIMESTEP complete_step=',nstep, &
+        ' time_start=',step_start_time,' time_end=',time,' dt_used=',completed_step_dt,' dt_next=',deltat
+      phase_started=insitu_clock()
+      call observe_output_adaptive(nstep,time)
+#if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
+      call check_profile_render_isolation_gpu(.true.)
+#endif
+      call sample_insitu_step(nstep,time,completed_step_dt)
+#if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
+      call check_profile_render_isolation_gpu(.false.)
+#endif
+      call report_insitu_timing('insitu_sample_inclusive',phase_started,nstep)
+      call end_complete_step_timing(nstep-1)
       phase_started=insitu_clock()
       call completed_output_runtime(completed_step_dt,loop_counter,rkfirst_pending)
       call report_insitu_timing('completed_output_inclusive',phase_started,nstep)
@@ -277,6 +315,8 @@ module mainloop
       !
     enddo
     call report_insitu_timing('completed_window',window_started,nstep)
+    call report_run_control_timing(MPI_COMM_WORLD)
+    call report_mean_statistics_timing()
     !
     ! if(limmbou) call timerept
     !
@@ -285,6 +325,10 @@ module mainloop
     time_total=ptime()-time_start
     phase_started=insitu_clock()
     call finish_insitu()
+    call statout(finishing=.true.)
+#ifdef COMB
+    if(odetype=='dnn') call finalize()
+#endif
     call release_global_compact()
     call report_insitu_timing('insitu_finalize_inclusive',phase_started,nstep)
     !
@@ -292,7 +336,141 @@ module mainloop
     !
     ! call errest
     !
+  contains
+    subroutine select_next_dt()
+#ifdef _CUDA
+      if(use_gpu) then
+        call select_run_timestep(collect_timestep_rates_gpu,MPI_COMM_WORLD,deltat,next_dt,control_ok,control_message)
+      else
+#endif
+        call select_run_timestep(collect_timestep_rates_cpu,MPI_COMM_WORLD,deltat,next_dt,control_ok,control_message)
+#ifdef _CUDA
+      endif
+#endif
+      if(.not.control_ok) then
+        if(lio) write(*,'(2A)') 'ASTR_TIMESTEP selection failed: ',trim(control_message)
+        call MPI_Abort(MPI_COMM_WORLD,90,ios)
+      endif
+      deltat=next_dt
+    end subroutine
   end subroutine steploop
+
+  subroutine sample_completed_mean_statistics(dt_used,writing_pending)
+    use iso_fortran_env, only: int64
+    use commvar, only: use_gpu,lavg,lcomb,time,num_species,turbmode
+    use commarray, only: vel,tmp,spc,tke,omg
+    use parallel, only: dataswap
+    use statistic, only: meanflowcal,reset_mean_statistics_window
+    use comsolver, only: gradcal
+    use run_control_runtime, only: active_run,poll_mean_statistics
+    use validation_io, only: write_compact_statistics_validation_snapshot
+#ifdef _CUDA
+    use halo_exchange_gpu, only: exchange_field_halo_gpu
+    use commarray_gpu, only: vel_d,tmp_d
+    use gradcal_gpu, only: compute_gradcal_gpu
+    use production_statistics_gpu, only: accumulate_compact_statistics_gpu,reset_compact_statistics_window_gpu
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_mean_statistics_gpu, only: accumulate_air5_mean_statistics_gpu,reset_air5_mean_statistics_gpu, &
+      set_air5_mean_sampling_gpu
+#endif
+#endif
+    real(real_kind),intent(in) :: dt_used
+    logical,optional,intent(out) :: writing_pending
+    logical :: sample,writing,new_window,changed,ok
+    real(clock_kind) :: started
+    call refresh_output_mean_statistics()
+    call poll_mean_statistics(int(nstep,int64),time,sample,writing,new_window,changed,ok)
+    if(.not.ok) then
+      if(lio) write(*,'(A)') 'invalid completed-step mean statistics schedule'
+      call mpistop()
+    endif
+    if(changed.and.lio) write(*,'(A,I0,A,ES24.16E3,A,L1,2A,A,I0,A,ES24.16E3,2A,A,I0,A,ES24.16E3)') &
+      'ASTR_MEAN_SCHEDULE step=',nstep,' time=',time,' enabled=',lavg, &
+      ' sample_clock=',trim(active_run%statistics%sample_clock),' sample_steps=',active_run%statistics%sample_steps, &
+      ' sample_time=',active_run%statistics%sample_time,' write_clock=',trim(active_run%statistics%write_clock), &
+      ' write_steps=',active_run%statistics%write_steps,' write_time=',active_run%statistics%write_time
+    if(new_window) then
+      call reset_mean_statistics_window()
+#ifdef _CUDA
+      if(use_gpu) then
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(lcomb) then
+          call reset_air5_mean_statistics_gpu()
+        else
+#endif
+          call reset_compact_statistics_window_gpu()
+#ifdef ASTR_AIR5_CHEMISTRY
+        endif
+#endif
+      endif
+#endif
+    endif
+    if(sample) then
+      started=ptime()
+#ifdef _CUDA
+      if(use_gpu) then
+        ! Explicit-shape sequence association presents the scalar as one field.
+        call exchange_field_halo_gpu(vel_d,3)
+        call exchange_field_halo_gpu(tmp_d,1)
+        call compute_gradcal_gpu()
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(lcomb) then
+          call set_air5_mean_sampling_gpu(.true.)
+          call accumulate_air5_mean_statistics_gpu()
+        else
+#endif
+          call accumulate_compact_statistics_gpu()
+#ifdef ASTR_AIR5_CHEMISTRY
+        endif
+#endif
+      else
+#endif
+        call dataswap(vel)
+        call dataswap(tmp)
+        if(num_species>0) call dataswap(spc)
+        if(trim(turbmode)=='k-omega') then
+          call dataswap(tke)
+          call dataswap(omg)
+        endif
+        call gradcal()
+        call meanflowcal()
+        call write_compact_statistics_validation_snapshot()
+#ifdef _CUDA
+      endif
+#endif
+      mean_sampling_seconds=mean_sampling_seconds+ptime()-started
+    endif
+    if(present(writing_pending)) then
+      writing_pending=writing
+    else if(writing) then
+      call write_completed_mean_statistics(dt_used)
+    endif
+  end subroutine
+
+  subroutine write_completed_mean_statistics(dt_used)
+    use commvar, only: use_gpu
+    use readwrite, only: writemeanflow
+    real(real_kind),intent(in) :: dt_used
+    real(clock_kind) :: started
+    started=ptime()
+    if(use_gpu) then
+      call write_scheduled_device_mean_statistics(dt_used)
+    else
+      call writemeanflow()
+    endif
+    mean_writing_seconds=mean_writing_seconds+ptime()-started
+  end subroutine
+
+  subroutine report_mean_statistics_timing()
+    use mpi
+    real(clock_kind) :: local(2),slowest(2)
+    integer :: status,ignored
+    local=[mean_sampling_seconds,mean_writing_seconds]
+    call MPI_Reduce(local,slowest,2,MPI_DOUBLE_PRECISION,MPI_MAX,0,MPI_COMM_WORLD,status)
+    if(status/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,status,ignored)
+    if(lio) write(*,'(A,2(A,ES24.16E3))') 'ASTR_MEAN_TIMING including_initial_seed', &
+      ' sample_max_seconds=',slowest(1),' write_max_seconds=',slowest(2)
+  end subroutine
   !+-------------------------------------------------------------------+
   !| The end of the subroutine steploop.                               |
   !+-------------------------------------------------------------------+
@@ -420,7 +598,6 @@ module mainloop
     use gpu_runtime, only : gpu_time_integration_rk,gpu_prepare_rkfirst_stats, &
                             gpu_write_flow_statistics,gpu_exchange_solution_halo, &
                             gpu_sync_flow_to_host,gpu_restore_stats_snapshot, &
-                            gpu_accumulate_compact_statistics, &
                             gpu_prepare_compact_statistics_checkpoint, &
                             gpu_commit_compact_statistics_checkpoint, &
                             gpu_begin_complete_step_timing, &
@@ -430,9 +607,6 @@ module mainloop
     use insitu_session, only: save_insitu_pair,capture_insitu_cpu_checkpoint
 #ifdef _CUDA
     use checkpoint_gpu, only: prepare_exact_checkpoint_gpu,commit_exact_checkpoint_gpu
-#ifdef ASTR_AIR5_CHEMISTRY
-    use chemistry_mean_statistics_gpu, only: set_air5_mean_sampling_gpu
-#endif
 #endif
     use userdefine, only : udf_write
     !
@@ -454,7 +628,7 @@ module mainloop
     real(clock_kind) :: time_beg_2
     real(clock_kind) :: cpu_rk_seconds,cpu_statistics_start,cpu_statistics_seconds
     real(clock_kind),save :: subtime=0.e0_clock_kind
-    integer,save :: n_rk_steps
+    integer(int64),save :: n_rk_steps
     logical :: gpu_checkpoint_due
     logical :: gpu_slice_due
     logical :: nscbc_boundary_halo_required
@@ -506,7 +680,6 @@ module mainloop
       call gpu_prepare_rkfirst_stats()
       if(flowtype(1:2)/='0d') call gpu_exchange_solution_halo()
       call gpu_write_flow_statistics()
-      call gpu_accumulate_compact_statistics()
       call gpu_restore_stats_snapshot()
       if(gpu_slice_due) then
         call writeslice(ctime(23),include_derivatives=.false.)
@@ -518,9 +691,6 @@ module mainloop
         call gpu_commit_compact_statistics_checkpoint()
       call save_insitu_pair()
       endif
-#ifdef ASTR_AIR5_CHEMISTRY
-      call set_air5_mean_sampling_gpu(nstep==0.or.loop_counter/=0)
-#endif
       call gpu_time_integration_rk(.true.,.false.)
       call gpu_end_complete_step_timing()
       return
@@ -973,7 +1143,6 @@ module mainloop
     !
 #ifdef COMB
     if(odetype=='dnn') then 
-      if(nstep==maxstep) call finalize()
       if(allocated(input))deallocate(input,output)
     endif
     !
@@ -1018,28 +1187,23 @@ module mainloop
   !+-------------------------------------------------------------------+
   subroutine rkfirst(skip_checkpoint)
     !
-    use commvar,  only : lavg,lwslic,lwsequ,feqavg,feqchkpt,feqwsequ,  &
+    use commvar,  only : lwslic,lwsequ,feqchkpt,feqwsequ,              &
                          feqslice,iomode
-    use statistic,only : statcal,statout,meanflowcal,liosta,nsamples
+    use statistic,only : statcal,statout
     use readwrite,only : writechkpt,writemon,writeslice,writeflfed,    &
                          nxtchkpt,nxtwsequ
     use userdefine,only: udf_stalist,udf_write
-    use validation_io, only: write_compact_statistics_validation_snapshot
     use parallel,  only: mpistop
     !
     logical,intent(in),optional :: skip_checkpoint
     !
     ! local data
-    integer,save :: nxtavg
     logical :: suppress_checkpoint
     !
     suppress_checkpoint=.false.
     if(present(skip_checkpoint)) suppress_checkpoint=skip_checkpoint
     suppress_checkpoint=suppress_checkpoint.or.new_output_enabled()
     !
-    if(rkfirst_pending) then
-      nxtavg=nstep+feqavg
-    endif
     
     if(.not. rkfirst_pending) then
     
@@ -1056,19 +1220,6 @@ module mainloop
       !
       call writemon
       !
-      if(lavg) then
-        ! if(nstep==nxtavg) then
-        if(mod(nstep,feqavg)==0) then
-          call meanflowcal(timerept=ltimrpt)
-          call write_compact_statistics_validation_snapshot()
-          !
-          nxtavg=nstep+feqavg
-        endif
-      else
-        nsamples=0
-        liosta=.false.
-        nxtavg=nstep+feqavg
-      endif
       
       if(.not. rkfirst_pending) then
         if(lwslic .and. mod(nstep,feqslice)==0.and..not.new_output_enabled()) then
@@ -1261,7 +1412,8 @@ module mainloop
     !
     ! lcoal data
     type :: databack
-      integer :: nstep,filenumb,fnumslic,ninflowslice
+      integer(int64) :: nstep
+      integer :: filenumb,fnumslic,ninflowslice
       real(real_kind) :: time,massflux,massflux_target,force(3)
       real(real_kind),allocatable :: q(:,:,:,:)
       integer :: recover_counter

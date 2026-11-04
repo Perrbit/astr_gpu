@@ -53,16 +53,16 @@ struct RuntimeProductView {
 };
 RuntimeProductView runtime_product_view(const char*,const char*,const char*,const char*,std::int64_t,
   const char*,const int*,const double*);
-DeviceMesh build_runtime_index_mesh(const RuntimeProductView&,int,Real,const int*,int,int,int,Real*,Real*,const Real*,int=0);
-DeviceMesh build_runtime_wall_glyph_mesh(const RuntimeProductView&,int,Real,const int*,int,int,int,Real*,Real*,const int*,const int*);
+DeviceMesh build_runtime_index_mesh(const RuntimeProductView&,std::int64_t,Real,const int*,int,int,int,Real*,Real*,const Real*,int=0);
+DeviceMesh build_runtime_wall_glyph_mesh(const RuntimeProductView&,std::int64_t,Real,const int*,int,int,int,Real*,Real*,const int*,const int*);
 void begin_runtime_index_group();
 void end_runtime_index_group();
-DeviceMesh build_runtime_physical_mesh(const RuntimeProductView&,int,Real,const int*,int,const int*,const int*,
+DeviceMesh build_runtime_physical_mesh(const RuntimeProductView&,std::int64_t,Real,const int*,int,const int*,const int*,
   const int*,Real*,Real*,const Real*,std::int64_t,std::int64_t,int=0);
 viskores::cont::DataSet clip_runtime_device_mesh(viskores::cont::DataSet,const RuntimeProductView&,int=3);
 double runtime_product_clock();
-void prepare_runtime_product_allocations(const RuntimeProductView&,int,int);
-int publish_runtime_product(const char*,const char*,const char*,int,int,Real,RuntimeProductView&,DeviceMesh,std::string,double);
+void prepare_runtime_product_allocations(const RuntimeProductView&,int,std::int64_t);
+int publish_runtime_product(const char*,const char*,const char*,int,std::int64_t,Real,RuntimeProductView&,DeviceMesh,std::string,double);
 void clear_runtime_compatible_geometry();
 std::shared_ptr<CompactMesh> retained_runtime_geometry();
 struct StreamlineView {
@@ -73,15 +73,15 @@ const std::vector<StreamlineView>& streamline_views();
 bool streamline_preview_active();
 bool retain_quantitative_product_fields();
 std::vector<double> device_display_palette(const std::string& color_map="diverging_blue_red");
-DeviceMesh build_device_plane(int fcomm,int step,Real time,const int global[3],
+DeviceMesh build_device_plane(int fcomm,std::int64_t step,Real time,const int global[3],
   const int local[3],const int offset[3],Real* coordinates,Real* velocity,
   const Real origin[3],const Real normal[3],std::int64_t budget,
   std::int64_t reserve,std::int64_t retained,std::int64_t host_budget,bool speed_colors=false,Real speed_max=1);
 int render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,
-  int step,Real time,const char* profile,std::vector<DeviceMesh> products,bool covered=false,bool complete=true,
+  std::int64_t step,Real time,const char* profile,std::vector<DeviceMesh> products,bool covered=false,bool complete=true,
   const RuntimeProductView* runtime=nullptr);
 int render_compact_products(const char* backend,const char* script,int fcomm,
-  int step,Real time,const char* profile,bool covered,Real duration,
+  std::int64_t step,Real time,const char* profile,bool covered,Real duration,
   Real window_start,Real window_end,std::vector<CompactMesh> products,
   const RuntimeProductView* runtime=nullptr,std::shared_ptr<CompactMesh> frozen={});
 }

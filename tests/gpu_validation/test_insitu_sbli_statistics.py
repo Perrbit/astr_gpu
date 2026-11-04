@@ -90,7 +90,9 @@ def launch(case,backend,topology,*,steps=12,restore=None,checkpoint=False,record
             config=config.replace('render=f,',"render=f,derivative_backend='gpu',processing_backend='device',postprocess_transport='device-aware',")
         (case/'datin/input.insitu').write_text(config)
         env['ASTR_INSITU_CONFIG']='datin/input.insitu'
-    solver=[str(Path(EXE if executable is None else executable).resolve()),'run','datin/input.flatplate']
+    from named_fixture import prepare_named_run
+    solver=[str(Path(EXE if executable is None else executable).resolve()),'run',
+        prepare_named_run(case,'datin/input.flatplate',env)]
     if memcheck:
         sanitizer=shutil.which('compute-sanitizer')
         assert sanitizer,'Compute Sanitizer is required for this explicit gate'

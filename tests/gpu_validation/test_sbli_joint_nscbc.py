@@ -83,7 +83,8 @@ def launch(case,backend,scheme,steps,topology,restore=None,checkpoint=True,memch
     command=mpi_command(MPIEXEC,ranks,transport)
     if memcheck:
         command+=['compute-sanitizer','--tool','memcheck','--error-exitcode','99']
-    command += [str(Path(EXE).resolve()),'run','datin/input.flatplate']
+    from named_fixture import prepare_named_run
+    command += [str(Path(EXE).resolve()),'run',prepare_named_run(case,'datin/input.flatplate',env)]
     with (case/'run.log').open('w') as log:
         result=subprocess.run(command,cwd=case,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=180)
     text=(case/'run.log').read_text()

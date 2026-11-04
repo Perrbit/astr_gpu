@@ -74,9 +74,11 @@ def launch(args, backend, ranks, name, steps, restore=None, exact=True, restore_
     if getattr(args, 'no_field_io', False):
         env['ASTR_GPU_BENCHMARK_NO_FIELD_IO'] = '1'
     env.update(getattr(args, 'extra_env', {}))
+    from named_fixture import prepare_named_run
+    primary=prepare_named_run(case,'datin/input.dat',env)
     with (case / 'run.log').open('w') as log:
         completed = subprocess.run([str(args.mpiexec.resolve()), '--bind-to', 'none', '-np', str(ranks),
-            str(getattr(args, backend).resolve()), 'run', 'datin/input.dat'], cwd=case, env=env,
+            str(getattr(args, backend).resolve()), 'run', primary], cwd=case, env=env,
             stdout=log, stderr=subprocess.STDOUT, timeout=180)
     if completed.returncode:
         raise RuntimeError(f'Ma12 restart solver failed: {case / "run.log"}')

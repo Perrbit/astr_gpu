@@ -1,6 +1,7 @@
 #pragma once
 #include <mpi.h>
 #include <cstdio>
+#include <cinttypes>
 #include <cstdlib>
 #include <exception>
 #include <stdexcept>
@@ -34,7 +35,7 @@ inline bool consensus_product_failure(MPI_Comm comm,std::string& error) {
 // Only local work belongs here. Distributed algorithms need their own matching
 // rendezvous before this boundary; MPI/CUDA context failures remain fatal.
 template<class Operation>
-bool local_product(MPI_Comm comm,const char* name,int step,double time,Operation operation) {
+bool local_product(MPI_Comm comm,const char* name,std::int64_t step,double time,Operation operation) {
   std::string error;
   int rank=0;
   if(MPI_Comm_rank(comm,&rank)!=MPI_SUCCESS) MPI_Abort(comm,1);
@@ -51,7 +52,7 @@ bool local_product(MPI_Comm comm,const char* name,int step,double time,Operation
     const auto id=std::string(name)+"."+kind;
     if(astr_insitu_product_disable && astr_insitu_product_disable(id.c_str())) MPI_Abort(comm,1);
   }
-  std::fprintf(stderr,"ASTR_INSITU_PRODUCT_DISABLED rank=%d product=%s step=%d time=%.17g reason=%s\n",
+  std::fprintf(stderr,"ASTR_INSITU_PRODUCT_DISABLED rank=%d product=%s step=%" PRId64 " time=%.17g reason=%s\n",
     rank,name,step,time,error.empty()?"product failed on another rank":error.c_str());
   return false;
 }

@@ -1,0 +1,108 @@
+program repair_lifecycle_probe
+  use iso_fortran_env, only: int64
+  use cudafor
+  use mpi
+  use commvar, only: im,jm,km,hm,use_gpu,lcracon
+  use commarray, only: crinod
+  use commarray_gpu, only: crinod_d,crashfix_enabled_d,sync_crashfix_mask_to_gpu
+  use checkpoint_state_gpu, only: checkpoint_crashfix_gpu
+  use checkpoint_state_io, only: checkpoint_crashfix_state
+  use hdf5io, only: h5io_init,h5io_end
+  use run_control_runtime, only: active_run
+  use readwrite, only: apply_run_input
+  use parallel, only: mpirank,mpisize,lio
+  implicit none
+  integer(int64),parameter :: unlimited=huge(0_int64)/4096_int64
+  integer :: status,devices,i
+  logical :: enabled
+  logical,allocatable :: expected(:,:,:),observed(:,:,:)
+  character(1024) :: path
+
+  call MPI_Init(status)
+  call MPI_Comm_rank(MPI_COMM_WORLD,mpirank,status)
+  call MPI_Comm_size(MPI_COMM_WORLD,mpisize,status)
+  lio=mpirank==0
+  status=cudaGetDeviceCount(devices)
+  if(status/=cudaSuccess.or.devices<mpisize) error stop 'probe requires one visible GPU per rank'
+  status=cudaSetDevice(mpirank)
+  if(status/=cudaSuccess) error stop 'probe GPU selection failed'
+  call get_command_argument(1,path)
+  im=8;jm=8;km=8;use_gpu=.true.
+  call check_primitive_halo_guard()
+  allocate(crinod(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+  allocate(expected,mold=crinod);allocate(observed,mold=crinod)
+  crinod=.false.;expected=.false.
+  active_run%max_steps=5
+  active_run%crashfix=.false.
+  call apply_run_input()
+  call sync_crashfix_mask_to_gpu()
+  enabled=crashfix_enabled_d
+  if(allocated(crinod_d).or.enabled) error stop 'disabled repair allocated or enabled a fresh mask'
+
+  active_run%crashfix=.true.
+  call apply_run_input()
+  if(lcracon.and..not.allocated(crinod_d)) call sync_crashfix_mask_to_gpu()
+  enabled=crashfix_enabled_d
+  if(.not.allocated(crinod_d).or..not.enabled) error stop 'repair activation did not reach device state'
+  i=3+mod(mpirank,2)
+  expected(i,4,4)=.true.
+  ! Emulate a previously marked GPU node while the resident host mask remains stale.
+  crinod_d(i,4,4)=.true.
+  active_run%crashfix=.false.
+  call apply_run_input()
+  enabled=crashfix_enabled_d
+  observed=crinod_d
+  if(lcracon.or..not.enabled.or.any(observed.neqv.expected)) &
+    error stop 'repair disable lost persistent GPU critical-node history'
+
+  call h5io_init(trim(path),'write')
+  call h5io_end()
+  call checkpoint_crashfix_gpu(trim(path),.true.,unlimited,unlimited,MPI_COMM_WORLD,.true.)
+  deallocate(crinod_d)
+  crashfix_enabled_d=.false.
+  call checkpoint_crashfix_gpu(trim(path),.false.,unlimited,unlimited,MPI_COMM_WORLD,.true.)
+  enabled=crashfix_enabled_d
+  observed=crinod_d
+  if(lcracon.or..not.enabled.or.any(observed.neqv.expected)) &
+    error stop 'checkpoint did not restore persistent history while repair is off'
+  call checkpoint_crashfix_state(trim(path),.false.,crinod,.false.,unlimited,MPI_COMM_WORLD,.true.)
+  if(any(crinod.neqv.expected)) error stop 'CPU/GPU critical-node packing differs'
+  print *, 'REPAIR_LIFECYCLE_PASS rank=',mpirank
+  deallocate(crinod_d,crinod,expected,observed)
+  crashfix_enabled_d=.false.
+  call MPI_Finalize(status)
+contains
+  subroutine check_primitive_halo_guard()
+    use astr_precision, only: real_kind
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+    use qswap_gpu, only: q_to_primitive_halo_kernel
+    use gpu_check, only: sync_after_kernel
+    use ieee_arithmetic, only: ieee_is_finite
+    type(dim3) :: block,grid
+    integer :: nodes
+    real(real_kind) :: invalid_value,diagonal(3),positive_pressure
+    allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),rho_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+      vel_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),prs_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+      tmp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    q_d=0.e0_real_kind;q_d(:,:,:,1)=1.e0_real_kind;q_d(:,:,:,5)=3.e0_real_kind
+    rho_d=-1.e0_real_kind;vel_d=0.e0_real_kind;prs_d=-1.e0_real_kind;tmp_d=-1.e0_real_kind
+    q_d(-1,-1,4,:)=0.e0_real_kind
+    q_d(-1,4,4,:)=0.e0_real_kind
+    q_d(4,4,4,:)=0.e0_real_kind
+    block=dim3(256,1,1)
+    nodes=(im+2*hm+1)*(jm+2*hm+1)*(km+2*hm+1)
+    grid=dim3((nodes+255)/256,1,1)
+    call q_to_primitive_halo_kernel<<<grid,block>>>(im,jm,km,hm,1.e0_real_kind,2.5e0_real_kind)
+    call sync_after_kernel('probe_primitive_diagonal_domain',.true.)
+    diagonal=[rho_d(-1,-1,4),prs_d(-1,-1,4),tmp_d(-1,-1,4)]
+    if(any(diagonal/=-1.e0_real_kind)) error stop 'unset diagonal cache was evaluated or invented'
+    positive_pressure=prs_d(-1,-1,5)
+    if(.not.ieee_is_finite(positive_pressure).or.positive_pressure<=0) &
+      error stop 'valid diagonal data was excluded by the narrow guard'
+    invalid_value=vel_d(-1,4,4,1)
+    if(ieee_is_finite(invalid_value)) error stop 'single-face zero-density error was hidden'
+    invalid_value=vel_d(4,4,4,1)
+    if(ieee_is_finite(invalid_value)) error stop 'physical zero-density error was hidden'
+    deallocate(q_d,rho_d,vel_d,prs_d,tmp_d)
+  end subroutine
+end program

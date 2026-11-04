@@ -1,0 +1,26 @@
+! Preserve the first dt actually read by the old CPU controller (1.d-9).
+! Later Mach-specific alternatives in the old file were not read.
+&run_control
+  max_steps = 100000001
+  reload_steps = 5000
+/
+
+&timestep
+  mode = 'fixed'
+  fixed_dt = 1.d-9
+/
+
+&logging
+  list_steps = 50
+/
+
+&repair
+  crashfix = .false.
+/
+
+&statistics
+  enabled = .false.
+  sample_clock = 'steps'
+  sample_steps = 1
+  write_steps = 0
+/

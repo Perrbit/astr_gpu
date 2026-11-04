@@ -214,9 +214,11 @@ def run_case(directory: Path, executable: Path, gpu: bool, topology: tuple[int, 
         if gpu and compact_transport == "device-aware":
             env.update(OMPI_MCA_pml="ucx", UCX_MEMTYPE_CACHE="n", UCX_TLS="self,sm,cuda_copy")
             env.pop("OMPI_MCA_opal_cuda_support")
+    from named_fixture import prepare_named_run
+    primary=prepare_named_run(directory,'datin/input.tgv',env)
     with (directory / "run.log").open("w") as log:
         subprocess.run(["mpirun", "-np", str(np.prod(topology)), str(executable),
-                        "run", "datin/input.tgv"], check=True, cwd=directory, env=env,
+                        "run", primary], check=True, cwd=directory, env=env,
                        stdout=log, stderr=subprocess.STDOUT)
     output = (directory / "run.log").read_text()
     steps = [int(n) for n in re.findall(r"ASTR_CFL complete_step=(\d+)", output)]

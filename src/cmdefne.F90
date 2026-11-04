@@ -11,6 +11,7 @@ module cmdefne
   !
   implicit none
   private :: real_kind
+  character(1024) :: case_input_path='datin/input.case'
   !
   contains
   !

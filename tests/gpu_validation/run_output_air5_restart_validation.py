@@ -17,6 +17,7 @@ from air5_checkpoint_contract import read_air5_contract
 from prepare_air5_c4_case import prepare_case, replace_boundary_types
 from run_air5_sbli_preflight import set_value
 from run_output_restart_validation import archive_schedule_payload, compare_fields, controlled_checkpoint_buffers
+from named_fixture import prepare_named_run
 from check_air5_mass_closure_stages import metrics
 from generate_air5_oblique_shock_states import frozen_oblique_jump, jump_metadata
 
@@ -314,7 +315,8 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
         env["ASTR_AIR5_C4_CONSERVATION"] = "1"
     elif fault == "top_mode":
         env["ASTR_AIR5_TOP_MODE"] = "prescribed" if args.top_mode == "characteristic" else "characteristic"
-    solver_command = [str(args.executable), "run", "datin/input.air5_c4"]
+    # Historical fixtures may still edit positional records; the solver only receives named input.
+    solver_command = [str(args.executable), "run", prepare_named_run(case,'datin/input.air5_c4',env)]
     if chemistry_failure_hook is not None:
         library, begin, end, pie = chemistry_failure_hook
         solver_command = ['env', f'LD_PRELOAD={Path(library).resolve(strict=True)}',

@@ -67,8 +67,10 @@ def main():
                        ASTR_GPU_HALO_TRANSPORT='pinned',ASTR_GPU_PRECISION_MODE='fp64',
                        ASTR_FORCE_MPI_TOPOLOGY=f'{ranks},1,1',ASTR_GPU_BENCHMARK_NO_FIELD_IO='1',
                        ASTR_GPU_RK_TIMING='1')
+            from named_fixture import prepare_named_run
+            primary=prepare_named_run(case,'datin/input.tgv',env)
             command=[str(args.mpiexec.resolve()),'--mca','coll_hcoll_enable','0',
-                     '-np',str(ranks),str(args.gpu.resolve()),'run','datin/input.tgv']
+                     '-np',str(ranks),str(args.gpu.resolve()),'run',primary]
             baseline=None
             if args.observe_resources:
                 from insitu_resource_monitor import run_monitored

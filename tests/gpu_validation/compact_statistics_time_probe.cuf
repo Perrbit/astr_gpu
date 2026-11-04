@@ -1,0 +1,113 @@
+program compact_statistics_time_probe
+  use cudafor
+  use iso_fortran_env, only: int64
+  use mpi
+  use commvar, only: im,jm,km,hm,ia,ja,ka,nstep,time,flowtype,use_gpu,lavg,feqavg, &
+    ndims,numq,num_species,num_modequ,turbmode,ljhomo,lkhomo,nondimen,reynolds,prandtl, &
+    const5,cp,tempconst,tempconst1
+  use parallel, only: mpirank,lio,irk,jrk,krk,isize,jsize,ksize,ig0,jg0,kg0
+  use bc, only: bctype
+  use commarray_gpu, only: x_d,rho_d,vel_d,prs_d,tmp_d,dvel_d,dtmp_d,bnorm_j0_d
+  use production_statistics_gpu, only: initialize_compact_statistics_gpu,release_compact_statistics_gpu, &
+    accumulate_compact_statistics_gpu,complete_compact_statistics_file,plane_sum_d,wall_sum_d, &
+    sample_count,time_weight,plane_endpoint_d,wall_endpoint_d
+  use statistic, only: nsamples
+  use checkpoint_state_io, only: checkpoint_state_identity
+  implicit none
+  type(checkpoint_state_identity) :: identity
+  integer :: ierr,ranks,devices,status,i,j,k,s
+  character(1024) :: prefix,state_path
+  real(8) :: moments(12),previous(12),integral(12),wall(3),previous_wall(3),wall_integral(3)
+  real(8) :: times(4),r,u,v,w,t,p,mu,dt
+  real(8),allocatable :: coordinates(:,:,:,:),observed(:,:,:),observed_wall(:,:)
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,mpirank,ierr)
+  call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr)
+  call get_command_argument(1,prefix)
+  status=cudaGetDeviceCount(devices)
+  if(status/=cudaSuccess.or.devices<1) error stop 'compact time probe GPU unavailable'
+  status=cudaSetDevice(mod(mpirank,devices))
+  if(status/=cudaSuccess) error stop 'compact time probe GPU binding failed'
+  im=2;jm=1;km=4;ia=im*ranks;ja=jm;ka=km
+  isize=ranks;jsize=1;ksize=1;irk=mpirank;jrk=0;krk=0;ig0=im*mpirank;jg0=0;kg0=0
+  lio=.false.;use_gpu=.true.;lavg=.true.;feqavg=0;flowtype='bl'
+  ndims=3;numq=5;num_species=0;num_modequ=0;turbmode='none'
+  ljhomo=.false.;lkhomo=.true.;bctype=[11,21,41,51,1,1]
+  nondimen=.true.;reynolds=1000.d0;prandtl=0.72d0;const5=2.5d0
+  cp=1.d0;tempconst=0.4d0;tempconst1=1.4d0;nsamples=0
+  allocate(x_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3), &
+    coordinates(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3), &
+    rho_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm),vel_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3), &
+    prs_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm),tmp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+    dvel_d(0:im,0:jm,0:km,3,3),dtmp_d(0:im,0:jm,0:km,3),bnorm_j0_d(0:im,0:km,3), &
+    observed(0:im,0:jm,12),observed_wall(0:im,3))
+  do k=-hm,km+hm
+    do j=-hm,jm+hm
+      do i=-hm,im+hm
+        coordinates(i,j,k,:)=[real(i+ig0,8),real(j,8),0.25d0*k]
+      enddo
+    enddo
+  enddo
+  x_d=coordinates
+  bnorm_j0_d=0.d0;bnorm_j0_d(:,:,2)=1.d0
+  call initialize_compact_statistics_gpu()
+  times=[0.d0,0.3d0,1.d0,1.8d0];integral=0.d0;wall_integral=0.d0
+  do s=1,4
+    r=1.d0+0.2d0*s;u=2.d0-0.1d0*s;v=0.2d0*s;w=-0.3d0*s
+    t=1.2d0+0.1d0*s;p=0.8d0+0.2d0*s
+    rho_d=r;vel_d(:,:,:,1)=u;vel_d(:,:,:,2)=v;vel_d(:,:,:,3)=w;tmp_d=t;prs_d=p
+    dvel_d=0.d0;dvel_d(:,:,:,1,2)=0.3d0*s
+    dtmp_d=0.d0;dtmp_d(:,:,:,2)=-0.2d0*s
+    moments=[r,r*u,r*v,r*w,r*t,p,r*u*u,r*v*v,r*w*w,r*u*v,r*u*w,r*v*w]
+    mu=t*sqrt(t)*tempconst1/(t+tempconst)/reynolds
+    wall=[p,mu*0.3d0*s,(mu/prandtl)/const5*(-0.2d0*s)]
+    if(s>1) then
+      dt=times(s)-times(s-1)
+      integral=integral+0.5d0*dt*(previous+moments)
+      wall_integral=wall_integral+0.5d0*dt*(previous_wall+wall)
+    endif
+    nstep=s-1;time=times(s)
+    call accumulate_compact_statistics_gpu()
+    call accumulate_compact_statistics_gpu()
+    call check_values()
+    if(s==1.or.s==3) then
+      identity=checkpoint_state_identity(int(nstep,int64),time,0.1d0,0.1d0)
+      write(state_path,'(A,I0,A)') trim(prefix)//'_sample',s,'.h5'
+      call complete_compact_statistics_file(trim(state_path),.true.,identity,huge(0_int64)/4096)
+      call release_compact_statistics_gpu()
+      nsamples=0
+      call initialize_compact_statistics_gpu()
+      call complete_compact_statistics_file(trim(state_path),.false.,identity,huge(0_int64)/4096)
+      call check_values()
+      call accumulate_compact_statistics_gpu()
+      call check_values()
+    endif
+    previous=moments;previous_wall=wall
+  enddo
+  print *, 'COMPACT_STATISTICS_TIME_RESTART_PASS'
+  call release_compact_statistics_gpu()
+  call MPI_Finalize(ierr)
+contains
+  subroutine check_values()
+    integer :: m
+    if(sample_count/=s.or.nsamples/=s.or.time_weight/=times(s)) error stop 'compact time/sample identity mismatch'
+    observed=plane_sum_d;observed_wall=wall_sum_d
+    do m=1,12
+      if(maxval(abs(observed(:,:,m)-integral(m)))/max(1.d0,abs(integral(m)))>1.d-14) &
+        error stop 'compact plane integral mismatch'
+    enddo
+    do m=1,3
+      if(maxval(abs(observed_wall(:,m)-wall_integral(m)))/max(1.d0,abs(wall_integral(m)))>1.d-14) &
+        error stop 'compact wall integral mismatch'
+    enddo
+    observed=plane_endpoint_d;observed_wall=wall_endpoint_d
+    do m=1,12
+      if(maxval(abs(observed(:,:,m)-moments(m)))/max(1.d0,abs(moments(m)))>1.d-14) &
+        error stop 'compact plane endpoint mismatch'
+    enddo
+    do m=1,3
+      if(maxval(abs(observed_wall(:,m)-wall(m)))/max(1.d0,abs(wall(m)))>1.d-14) &
+        error stop 'compact wall endpoint mismatch'
+    enddo
+  end subroutine
+end program

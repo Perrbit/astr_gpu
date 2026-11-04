@@ -248,8 +248,10 @@ def launch_hcw(case, backend, steps=12, restore=None, memcheck=False, dt_scale=1
     command = mpi_command(MPIEXEC, 2, 'pinned')
     if memcheck:
         command += ['compute-sanitizer', '--tool', 'memcheck', '--error-exitcode', '99']
+    from named_fixture import prepare_named_run
+    primary=prepare_named_run(case,'datin/input.hcw',env)
     with (case/'run.log').open('w') as log:
-        result = subprocess.run(command+[str(Path(EXE).resolve()), 'run', 'datin/input.hcw'],
+        result = subprocess.run(command+[str(Path(EXE).resolve()), 'run', primary],
                                 cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT,
                                 timeout=3600 if steps>12 else 180)
     text = (case/'run.log').read_text()

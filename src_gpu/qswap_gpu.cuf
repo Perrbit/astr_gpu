@@ -95,6 +95,8 @@ contains
     k = id/(ni*nj) - hm
 
     den = q_d(i,j,k,1)
+    ! Face-only repair exchange leaves diagonal q unset; keep its inactive cache without dividing by zero.
+    if(den==0.e0_real_kind.and.count([i<0.or.i>im,j<0.or.j>jm,k<0.or.k>km])>1) return
     u1 = q_d(i,j,k,2) / den
     u2 = q_d(i,j,k,3) / den
     u3 = q_d(i,j,k,4) / den

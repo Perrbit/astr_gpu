@@ -190,8 +190,10 @@ def launch(case,ranks,render,full=False,steps=2,restore=None,memcheck=False,host
     command=mpi_command(MPIEXEC,ranks,transport)
     if memcheck:
         command+=['compute-sanitizer','--tool','memcheck','--error-exitcode','99']
+    from named_fixture import prepare_named_run
+    primary=prepare_named_run(case,'datin/input.hcw',env)
     with (case/'run.log').open('w') as log:
-        result=subprocess.run(command+[str(Path(EXE).resolve()),'run','datin/input.hcw'],
+        result=subprocess.run(command+[str(Path(EXE).resolve()),'run',primary],
             cwd=case,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=300)
     text=(case/'run.log').read_text()
     assert result.returncode==0 and 'The job is done!' in text,text[-7000:]

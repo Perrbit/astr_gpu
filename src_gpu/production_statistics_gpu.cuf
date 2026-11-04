@@ -19,10 +19,13 @@ module production_statistics_gpu
   logical,save :: compact_statistics_initialized=.false.
   real(real_kind),allocatable,device :: plane_measure_d(:,:),plane_sum_d(:,:,:)
   real(real_kind),allocatable,device :: wall_measure_d(:),wall_sum_d(:,:)
+  real(real_kind),allocatable,device :: plane_endpoint_d(:,:,:),wall_endpoint_d(:,:)
   integer(int64),save :: sample_count=0_int64
   integer(int64),save :: sampling_start_step=0_int64
-  integer(int64),save :: last_sample_step=-huge(0_int64)
+  integer(int64),save :: last_sample_step=-1_int64
   real(real_kind),save :: sampling_start_time=0.e0_real_kind
+  real(real_kind),save :: last_sample_time=0.e0_real_kind,time_weight=0.e0_real_kind
+  integer,parameter :: compact_payload_count=32
   logical,save :: checkpoint_prepared=.false.
   ! Global history is replicated on the host, never added by a rank-local kernel.
   real(real_kind),allocatable,save :: inherited_statistics(:,:,:,:)
@@ -44,8 +47,9 @@ contains
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
     real(real_kind),allocatable :: values(:,:,:,:),plane_measure_h(:,:),plane_sum_h(:,:,:), &
-      wall_measure_h(:),wall_sum_h(:,:),old_values(:,:,:,:),measure(:,:,:,:)
-    integer(int64) :: remaining,metadata(12),expected_step,header(13),base_metadata(12),old_remaining,base_bytes,working_budget
+      wall_measure_h(:),wall_sum_h(:,:),old_values(:,:,:,:),measure(:,:,:,:), &
+      plane_endpoint_h(:,:,:),wall_endpoint_h(:,:)
+    integer(int64) :: remaining,metadata(14),expected_step,header(13),base_metadata(14),old_remaining,base_bytes,working_budget
     real(real_kind) :: expected_time
     type(checkpoint_state_identity) :: expected
     integer :: status,ierr,old_shape(3)
@@ -55,59 +59,66 @@ contains
     if(present(allow_repartition)) permit=allow_repartition
     migrating=.false.
     working_budget=budget
-    base_bytes=int(ia+1,int64)*(ja+1)*2*17*8
+    base_bytes=int(ia+1,int64)*(ja+1)*2*compact_payload_count*real_bytes
     if(permit.and..not.allocated(inherited_statistics)) then
       call checkpoint_state_require(budget>=2*base_bytes+4096,MPI_COMM_WORLD,'inherited statistics host budget')
-      allocate(inherited_statistics(ia+1,ja+1,2,17),stat=status)
+      allocate(inherited_statistics(ia+1,ja+1,2,compact_payload_count),stat=status)
       call checkpoint_state_require(status==0,MPI_COMM_WORLD,'inherited statistics allocation')
       inherited_statistics=0.e0_real_kind
       working_budget=budget-base_bytes
     endif
     ! The third index identifies the original z partition, not a physical z node.
     ! A terminal zero plane fits the node-ownership file layout without duplicating a volume.
-    call allocate_checkpoint_buffer([im,jm,1],0,17,working_budget,values,remaining,MPI_COMM_WORLD)
-    call checkpoint_state_require(remaining>=int(im+1,int64)*(jm+1)*13*8+int(im+1,int64)*4*8+4096, &
+    call allocate_checkpoint_buffer([im,jm,1],0,compact_payload_count,working_budget,values,remaining,MPI_COMM_WORLD)
+    call checkpoint_state_require(remaining>=int(im+1,int64)*(jm+1)*25*real_bytes+ &
+      int(im+1,int64)*7*real_bytes+4096, &
       MPI_COMM_WORLD,'compact statistics staging budget')
     values=0.e0_real_kind
-    allocate(plane_measure_h(0:im,0:jm),plane_sum_h(0:im,0:jm,12),stat=status)
+    allocate(plane_measure_h(0:im,0:jm),plane_sum_h(0:im,0:jm,12),plane_endpoint_h(0:im,0:jm,12),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'compact plane staging allocation')
     if(jrk==0) then
-      allocate(wall_measure_h(0:im),wall_sum_h(0:im,3),stat=status)
+      allocate(wall_measure_h(0:im),wall_sum_h(0:im,3),wall_endpoint_h(0:im,3),stat=status)
       call checkpoint_state_require(status==0,MPI_COMM_WORLD,'compact wall staging allocation')
     else
       call checkpoint_state_require(.true.,MPI_COMM_WORLD,'compact wall staging allocation')
     endif
-    metadata=[1_int64,int([ia,ja,ka,isize,jsize,ksize],int64),sample_count,sampling_start_step, &
-      last_sample_step,real_to_word(sampling_start_time),int(17,int64)]
-    if(permit) metadata(1)=2_int64
+    metadata=[3_int64,int([ia,ja,ka,isize,jsize,ksize],int64),sample_count,sampling_start_step, &
+      last_sample_step,real_to_word(sampling_start_time),int(compact_payload_count,int64), &
+      real_to_word(last_sample_time),real_to_word(time_weight)]
+    if(permit) metadata(1)=4_int64
     expected_step=identity%step
     expected_time=identity%time
     expected=identity
     call sync_gpu_boundary('complete compact statistics transfer entry')
     if(writing) then
-      call checkpoint_state_require(sample_count==int(nsamples,int64).and.last_sample_step<identity%step, &
+      call checkpoint_state_require(sample_count==int(nsamples,int64).and.last_sample_step<=identity%step, &
         MPI_COMM_WORLD,'compact sampling identity')
       plane_measure_h=plane_measure_d
       plane_sum_h=plane_sum_d
+      plane_endpoint_h=plane_endpoint_d
       values(:,:,1,1)=plane_measure_h
       values(:,:,1,2:13)=plane_sum_h
+      values(:,:,1,18:29)=plane_endpoint_h
       if(jrk==0) then
         wall_measure_h=wall_measure_d
         wall_sum_h=wall_sum_d
+        wall_endpoint_h=wall_endpoint_d
         values(:,1,1,14)=wall_measure_h
         values(:,1,1,15:17)=wall_sum_h
+        values(:,1,1,30:32)=wall_endpoint_h
       endif
     endif
     ! Staging and the HDF5 duplicate/partition buffers coexist under one host budget.
-    remaining=remaining-int(im+1,int64)*(jm+1)*13*8
-    if(jrk==0) remaining=remaining-int(im+1,int64)*4*8
+    remaining=remaining-int(im+1,int64)*(jm+1)*25*real_bytes
+    if(jrk==0) remaining=remaining-int(im+1,int64)*7*real_bytes
     if(permit) then
       call checkpoint_state_require(remaining>=2*base_bytes+4096,MPI_COMM_WORLD,'inherited staging budget')
       if(.not.writing) then
         call checkpoint_state_header(path,header,metadata,MPI_COMM_SELF)
-        call checkpoint_state_require(metadata(1)==2.and.all(metadata(2:4)==int([ia,ja,ka],int64)).and. &
+        call checkpoint_state_require(metadata(1)==4.and.all(metadata(2:4)==int([ia,ja,ka],int64)).and. &
           all(metadata(5:7)>=1).and.all(metadata(5:7)<=2).and.metadata(6)==1.and. &
-          product(metadata(5:7))<=2.and.header(8)==product(metadata(5:7)).and.header(13)==5.and.header(7)==17.and. &
+          product(metadata(5:7))<=2.and.header(8)==product(metadata(5:7)).and.header(13)==5.and. &
+          header(7)==compact_payload_count.and. &
           all(header(4:6)==[int(ia+1,int64),int(ja+1,int64),metadata(7)+1]), &
           MPI_COMM_WORLD,'compact migration source layout')
         migrating=any(metadata(5:7)/=int([isize,jsize,ksize],int64))
@@ -115,7 +126,7 @@ contains
     endif
     if(migrating) then
       old_shape=int(header(4:6))
-      call allocate_checkpoint_buffer(old_shape-1,0,17,remaining,old_values,old_remaining,MPI_COMM_WORLD)
+      call allocate_checkpoint_buffer(old_shape-1,0,compact_payload_count,remaining,old_values,old_remaining,MPI_COMM_WORLD)
       old_values=0.e0_real_kind
       call checkpoint_state_transfer(path,.false.,.true.,old_shape,[0,0,0],old_shape-1,0, &
         old_values,identity,old_remaining,MPI_COMM_SELF,role=5,metadata=metadata, &
@@ -142,9 +153,15 @@ contains
       values=0.e0_real_kind
       plane_measure_h=plane_measure_d
       values(:,:,1,1)=plane_measure_h
+      ! Only the global z-integrated endpoint is needed for the next trapezoid.
+      ! Redistribute it algebraically; do not invent a past three-dimensional field.
+      values(:,:,1,18:29)=sum(old_values(ig0+1:ig0+im+1,jg0+1:jg0+jm+1, &
+        1:old_shape(3)-1,18:29),dim=3)/real(ksize,real_kind)
       if(jrk==0) then
         wall_measure_h=wall_measure_d
         values(:,1,1,14)=wall_measure_h
+        values(:,1,1,30:32)=sum(old_values(ig0+1:ig0+im+1,1, &
+          1:old_shape(3)-1,30:32),dim=2)/real(ksize,real_kind)
       endif
       deallocate(old_values,measure)
     else
@@ -184,23 +201,29 @@ contains
       call checkpoint_state_require(identity%step==expected_step.and.identity%time==expected_time.and. &
         identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next, &
         MPI_COMM_WORLD,'compact checkpoint clock mismatch')
-      call checkpoint_state_require(metadata(1)==merge(2_int64,1_int64,permit).and. &
+      call checkpoint_state_require(metadata(1)==merge(4_int64,3_int64,permit).and. &
         all(metadata(2:4)==int([ia,ja,ka],int64)).and. &
-        metadata(12)==17.and.metadata(8)>=0.and.metadata(8)<=huge(nsamples).and. &
-        metadata(9)>=0.and.metadata(9)<=identity%step.and.metadata(10)<identity%step.and. &
-        ieee_is_finite(word_to_real(metadata(11))),MPI_COMM_WORLD,'compact checkpoint metadata')
+        metadata(12)==compact_payload_count.and.metadata(8)>=0.and.metadata(8)<=huge(nsamples).and. &
+        metadata(9)>=0.and.metadata(9)<=identity%step.and.metadata(10)<=identity%step.and. &
+        ieee_is_finite(word_to_real(metadata(11))).and.ieee_is_finite(word_to_real(metadata(13))).and. &
+        ieee_is_finite(word_to_real(metadata(14))).and.word_to_real(metadata(14))>=0.e0_real_kind, &
+        MPI_COMM_WORLD,'compact checkpoint metadata')
       call checkpoint_state_require(all(ieee_is_finite(values)),MPI_COMM_WORLD,'nonfinite compact payload')
       plane_measure_h=plane_measure_d
       call checkpoint_state_require(all(plane_measure_h==values(:,:,1,1)).and.all(plane_measure_h>0.e0_real_kind), &
         MPI_COMM_WORLD,'compact plane geometry mismatch')
       plane_sum_h=values(:,:,1,2:13)
       plane_sum_d=plane_sum_h
+      plane_endpoint_h=values(:,:,1,18:29)
+      plane_endpoint_d=plane_endpoint_h
       if(jrk==0) then
         wall_measure_h=wall_measure_d
         call checkpoint_state_require(all(wall_measure_h==values(:,1,1,14)).and.all(wall_measure_h>0.e0_real_kind), &
           MPI_COMM_WORLD,'compact wall geometry mismatch')
         wall_sum_h=values(:,1,1,15:17)
         wall_sum_d=wall_sum_h
+        wall_endpoint_h=values(:,1,1,30:32)
+        wall_endpoint_d=wall_endpoint_h
       else
         call checkpoint_state_require(.true.,MPI_COMM_WORLD,'compact wall geometry mismatch')
       endif
@@ -208,7 +231,9 @@ contains
       sampling_start_step=metadata(9)
       last_sample_step=metadata(10)
       sampling_start_time=word_to_real(metadata(11))
-      nsamples=int(sample_count)
+      last_sample_time=word_to_real(metadata(13))
+      time_weight=word_to_real(metadata(14))
+      nsamples=sample_count
       call sync_gpu_boundary('complete compact statistics restore')
     endif
   end subroutine complete_compact_statistics_file
@@ -231,9 +256,9 @@ contains
     integer(int64),intent(in) :: budget
     real(real_kind),allocatable :: plane(:,:),wall(:)
     integer :: ni,nj,ierr,status
-    call checkpoint_state_require(budget>=int(ia+1,int64)*(ja+1)*2*17*8+ &
-      int(im+1,int64)*(jm+2)*8+4096,MPI_COMM_WORLD,'global measure staging budget')
-    allocate(values(ia+1,ja+1,2,17),plane(0:im,0:jm),stat=status)
+    call checkpoint_state_require(budget>=int(ia+1,int64)*(ja+1)*2*compact_payload_count*real_bytes+ &
+      int(im+1,int64)*(jm+2)*real_bytes+4096,MPI_COMM_WORLD,'global measure staging budget')
+    allocate(values(ia+1,ja+1,2,compact_payload_count),plane(0:im,0:jm),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'global measure allocation')
     values=0.e0_real_kind
     plane=plane_measure_d
@@ -285,7 +310,7 @@ contains
   end subroutine compact_wall_measure_kernel
 
   attributes(global) subroutine compact_plane_moment_kernel(x,rho_field,vel,prs,tmp, &
-                                                              plane_sum,im,jm,km,hm)
+      plane_sum,endpoint,interval,has_previous,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
     real(real_kind),device,intent(in) :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
@@ -294,6 +319,9 @@ contains
     real(real_kind),device,intent(in) :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     real(real_kind),device,intent(in) :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     real(real_kind),device,intent(inout) :: plane_sum(0:im,0:jm,1:12)
+    real(real_kind),device,intent(inout) :: endpoint(0:im,0:jm,1:12)
+    real(real_kind),value :: interval
+    logical,value :: has_previous
     integer :: i,j,k,m
     real(real_kind) :: dx,dy,dz,ds,rho,u,v,w,t,p
     real(real_kind) :: left(12),right(12),total(12)
@@ -320,7 +348,9 @@ contains
       left=right
     enddo
     do m=1,12
-      plane_sum(i,j,m)=plane_sum(i,j,m)+total(m)
+      if(has_previous) plane_sum(i,j,m)=plane_sum(i,j,m)+ &
+        (0.5e0_real_kind*interval)*(endpoint(i,j,m)+total(m))
+      endpoint(i,j,m)=total(m)
     enddo
   end subroutine compact_plane_moment_kernel
 
@@ -446,7 +476,7 @@ contains
   end subroutine compact_wall_point_values_sp
 
   attributes(global) subroutine compact_wall_moment_kernel(x,bnorm,prs,tmp,dvel,dtmp, &
-      wall_sum,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1)
+      wall_sum,endpoint,interval,has_previous,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1)
     implicit none
     integer,value :: im,jm,km,hm,ia,ig0
     logical,value :: nondimen
@@ -458,6 +488,9 @@ contains
     real(real_kind),device,intent(in) :: dvel(0:im,0:jm,0:km,1:3,1:3)
     real(real_kind),device,intent(in) :: dtmp(0:im,0:jm,0:km,1:3)
     real(real_kind),device,intent(inout) :: wall_sum(0:im,1:3)
+    real(real_kind),device,intent(inout) :: endpoint(0:im,1:3)
+    real(real_kind),value :: interval
+    logical,value :: has_previous
     integer :: i,k
     real(real_kind) :: dx,dy,dz,ds,left(3),right(3),total(3)
 
@@ -476,11 +509,12 @@ contains
       total=total+0.5e0_real_kind*(left+right)*ds
       left=right
     enddo
-    wall_sum(i,:)=wall_sum(i,:)+total
+    if(has_previous) wall_sum(i,:)=wall_sum(i,:)+(0.5e0_real_kind*interval)*(endpoint(i,:)+total)
+    endpoint(i,:)=total
   end subroutine compact_wall_moment_kernel
 
   attributes(global) subroutine compact_wall_moment_sp_kernel(x,bnorm,prs,tmp,dvel,dtmp, &
-      wall_sum,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1)
+      wall_sum,endpoint,interval,has_previous,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1)
     implicit none
     integer,value :: im,jm,km,hm,ia,ig0
     logical,value :: nondimen
@@ -492,6 +526,9 @@ contains
     real(4),device,intent(in) :: dvel(0:im,0:jm,0:km,1:3,1:3)
     real(4),device,intent(in) :: dtmp(0:im,0:jm,0:km,1:3)
     real(real_kind),device,intent(inout) :: wall_sum(0:im,1:3)
+    real(real_kind),device,intent(inout) :: endpoint(0:im,1:3)
+    real(real_kind),value :: interval
+    logical,value :: has_previous
     integer :: i,k
     real(real_kind) :: dx,dy,dz,ds,left(3),right(3),total(3)
 
@@ -510,7 +547,8 @@ contains
       total=total+0.5e0_real_kind*(left+right)*ds
       left=right
     enddo
-    wall_sum(i,:)=wall_sum(i,:)+total
+    if(has_previous) wall_sum(i,:)=wall_sum(i,:)+(0.5e0_real_kind*interval)*(endpoint(i,:)+total)
+    endpoint(i,:)=total
   end subroutine compact_wall_moment_sp_kernel
 
 #ifndef TEST_COMPACT_STATS
@@ -547,7 +585,7 @@ contains
     real(real_kind),allocatable :: plane_measure_h(:,:),wall_measure_h(:)
     integer :: local_bad,global_bad,ierr
 
-    if(compact_statistics_initialized) return
+    if(compact_statistics_active) return
     compact_statistics_initialized=.true.
     if(.not.compact_statistics_requested()) return
     if(.not.compact_statistics_supported()) then
@@ -556,12 +594,14 @@ contains
     endif
 
     allocate(plane_measure_d(0:im,0:jm))
-    allocate(plane_sum_d(0:im,0:jm,1:12))
+    allocate(plane_sum_d(0:im,0:jm,1:12),plane_endpoint_d(0:im,0:jm,1:12))
     plane_sum_d=0.e0_real_kind
+    plane_endpoint_d=0.e0_real_kind
     sample_count=0_int64
     sampling_start_step=0_int64
     sampling_start_time=0.e0_real_kind
-    last_sample_step=-huge(0_int64)
+    last_sample_step=-1_int64
+    last_sample_time=0.e0_real_kind;time_weight=0.e0_real_kind
     block=dim3(32,16,1)
     grid=dim3((im+1+block%x-1)/block%x,(jm+1+block%y-1)/block%y,1)
     call compact_plane_measure_kernel<<<grid,block>>>(x_d,plane_measure_d,im,jm,km,hm)
@@ -569,8 +609,9 @@ contains
 
     if(jrk==0) then
       allocate(wall_measure_d(0:im))
-      allocate(wall_sum_d(0:im,1:3))
+      allocate(wall_sum_d(0:im,1:3),wall_endpoint_d(0:im,1:3))
       wall_sum_d=0.e0_real_kind
+      wall_endpoint_d=0.e0_real_kind
       block=dim3(256,1,1)
       grid=dim3((im+1+block%x-1)/block%x,1,1)
       call compact_wall_measure_kernel<<<grid,block>>>(plane_measure_d,wall_measure_d,im,jm)
@@ -597,38 +638,59 @@ contains
     if(lio) write(*,'(A)') ' ** GPU compact production statistics: enabled'
   end subroutine initialize_compact_statistics_gpu
 
+  subroutine reset_compact_statistics_window_gpu()
+    use statistic, only: nsamples
+    if(allocated(plane_sum_d)) plane_sum_d=0.e0_real_kind
+    if(allocated(plane_endpoint_d)) plane_endpoint_d=0.e0_real_kind
+    if(allocated(wall_sum_d)) wall_sum_d=0.e0_real_kind
+    if(allocated(wall_endpoint_d)) wall_endpoint_d=0.e0_real_kind
+    if(allocated(inherited_statistics)) inherited_statistics=0.e0_real_kind
+    sample_count=0;sampling_start_step=0;last_sample_step=-1
+    sampling_start_time=0.e0_real_kind;last_sample_time=0.e0_real_kind;time_weight=0.e0_real_kind
+    nsamples=0
+  end subroutine
+
   subroutine accumulate_compact_statistics_gpu()
+    use ieee_arithmetic, only: ieee_is_finite
+    use mpi, only: MPI_Abort,MPI_COMM_WORLD
     use commarray_gpu, only: x_d,rho_d,vel_d,prs_d,tmp_d,dvel_d,dtmp_d, &
                              dvel_sp_d,dtmp_sp_d,bnorm_j0_d, &
                              gpu_mixed_derivative_workspace_enabled
-    use commvar, only: im,jm,km,hm,ia,lavg,feqavg,nstep,time,nondimen,reynolds, &
+    use commvar, only: im,jm,km,hm,ia,lavg,nstep,time,nondimen,reynolds, &
                        prandtl,const5,cp,tempconst,tempconst1
     use gpu_check, only: sync_after_kernel
     use parallel, only: jrk,ig0
     use statistic, only: nsamples
     implicit none
     type(dim3) :: block,grid
+    real(real_kind) :: interval
+    integer :: ignored
 
     if(.not.compact_statistics_active) return
-    if(nstep<=0 .or. (.not.lavg)) return
-    if(mod(nstep,feqavg)/=0) return
+    if(.not.lavg) return
     if(int(nstep,int64)==last_sample_step) return
+    interval=0.e0_real_kind
+    if(sample_count>0) interval=time-last_sample_time
+    if(.not.ieee_is_finite(time).or..not.ieee_is_finite(interval).or. &
+      (sample_count>0.and.interval<=0.e0_real_kind)) then
+      call MPI_Abort(MPI_COMM_WORLD,90,ignored)
+    endif
     block=dim3(32,16,1)
     grid=dim3((im+1+block%x-1)/block%x,(jm+1+block%y-1)/block%y,1)
     call compact_plane_moment_kernel<<<grid,block>>>(x_d,rho_d,vel_d,prs_d,tmp_d, &
-                                                     plane_sum_d,im,jm,km,hm)
+      plane_sum_d,plane_endpoint_d,interval,sample_count>0,im,jm,km,hm)
     call sync_after_kernel('compact_plane_moment_kernel')
     if(jrk==0) then
       block=dim3(256,1,1)
       grid=dim3((im+1+block%x-1)/block%x,1,1)
       if(gpu_mixed_derivative_workspace_enabled()) then
         call compact_wall_moment_sp_kernel<<<grid,block>>>(x_d,bnorm_j0_d,prs_d,tmp_d,dvel_sp_d, &
-          dtmp_sp_d,wall_sum_d,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp, &
+          dtmp_sp_d,wall_sum_d,wall_endpoint_d,interval,sample_count>0,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp, &
           tempconst,tempconst1)
         call sync_after_kernel('compact_wall_moment_sp_kernel')
       else
         call compact_wall_moment_kernel<<<grid,block>>>(x_d,bnorm_j0_d,prs_d,tmp_d,dvel_d, &
-          dtmp_d,wall_sum_d,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp, &
+          dtmp_d,wall_sum_d,wall_endpoint_d,interval,sample_count>0,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp, &
           tempconst,tempconst1)
         call sync_after_kernel('compact_wall_moment_kernel')
       endif
@@ -638,8 +700,10 @@ contains
       sampling_start_time=time
     endif
     sample_count=sample_count+1_int64
-    nsamples=int(sample_count)
+    nsamples=sample_count
     last_sample_step=int(nstep,int64)
+    last_sample_time=time
+    time_weight=time_weight+interval
   end subroutine accumulate_compact_statistics_gpu
 
   integer(int64) function compact_statistics_sample_count()
@@ -884,7 +948,7 @@ contains
     sampling_start_step=sample_metadata(2)
     sampling_start_time=start_time
     last_sample_step=int(nstep,int64)
-    nsamples=int(sample_count)
+    nsamples=sample_count
     call sync_gpu_boundary('restore compact statistics checkpoint')
     deallocate(plane_measure_h,plane_sum_h)
     if(allocated(wall_measure_h)) deallocate(wall_measure_h,wall_sum_h)
@@ -895,13 +959,16 @@ contains
 
     if(allocated(plane_measure_d)) deallocate(plane_measure_d)
     if(allocated(plane_sum_d)) deallocate(plane_sum_d)
+    if(allocated(plane_endpoint_d)) deallocate(plane_endpoint_d)
     if(allocated(wall_measure_d)) deallocate(wall_measure_d)
     if(allocated(wall_sum_d)) deallocate(wall_sum_d)
+    if(allocated(wall_endpoint_d)) deallocate(wall_endpoint_d)
     if(allocated(inherited_statistics)) deallocate(inherited_statistics)
     compact_statistics_active=.false.
     compact_statistics_initialized=.false.
     sample_count=0_int64
-    last_sample_step=-huge(0_int64)
+    last_sample_step=-1_int64
+    last_sample_time=0.e0_real_kind;time_weight=0.e0_real_kind
     checkpoint_prepared=.false.
   end subroutine release_compact_statistics_gpu
 #endif
@@ -909,14 +976,16 @@ contains
   ! NVHPC 26.1 -g requires MPI COMMON users before this non-MPI helper.
   integer(int64) function compact_statistics_device_bytes() result(bytes)
     bytes=0
-    if(allocated(plane_measure_d)) bytes=bytes+8*size(plane_measure_d,kind=int64)
-    if(allocated(plane_sum_d)) bytes=bytes+8*size(plane_sum_d,kind=int64)
-    if(allocated(wall_measure_d)) bytes=bytes+8*size(wall_measure_d,kind=int64)
-    if(allocated(wall_sum_d)) bytes=bytes+8*size(wall_sum_d,kind=int64)
+    if(allocated(plane_measure_d)) bytes=bytes+real_bytes*size(plane_measure_d,kind=int64)
+    if(allocated(plane_sum_d)) bytes=bytes+real_bytes*size(plane_sum_d,kind=int64)
+    if(allocated(plane_endpoint_d)) bytes=bytes+real_bytes*size(plane_endpoint_d,kind=int64)
+    if(allocated(wall_measure_d)) bytes=bytes+real_bytes*size(wall_measure_d,kind=int64)
+    if(allocated(wall_sum_d)) bytes=bytes+real_bytes*size(wall_sum_d,kind=int64)
+    if(allocated(wall_endpoint_d)) bytes=bytes+real_bytes*size(wall_endpoint_d,kind=int64)
   end function
 
   integer(int64) function compact_statistics_host_bytes() result(bytes)
     bytes=0
-    if(allocated(inherited_statistics)) bytes=8*size(inherited_statistics,kind=int64)
+    if(allocated(inherited_statistics)) bytes=real_bytes*size(inherited_statistics,kind=int64)
   end function
 end module production_statistics_gpu

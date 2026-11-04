@@ -227,9 +227,12 @@ def test_air5_native_wall_and_volume_statistics_fresh_restart(tmp_path, backend)
         state_bitwise_equal=True, covered_time=duration), indent=2) + '\n')
 
 
-def test_air5_lightweight_checkpoint_is_explicitly_rejected(tmp_path):
+def test_air5_nonexact_checkpoint_retains_full_state(tmp_path):
     from run_output_air5_restart_validation import launch
     args = air5_arguments(tmp_path, 'gpu', 'z')
     args.executable = GPU
-    launch(args, 'gpu', 2, 'rejected', 1, exact_restart=False,
-           reject='AIR5 checkpoint currently requires exact_restart=t')
+    case,_=launch(args,'gpu',2,'full_nonexact',1,exact_restart=False)
+    with h5py.File(batch(case,1)/'state.h5') as state:
+        assert state['identity'][-1]==7
+        assert all(f'q{field:04d}' in state for field in range(1,35))
+    assert (case/'outdat/new/resources/geometry.h5').is_file()

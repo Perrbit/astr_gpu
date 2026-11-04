@@ -10,6 +10,7 @@
 #include <viskores/filter/geometry_refinement/Triangulate.h>
 #include <mpi.h>
 #include <cstdio>
+#include <cinttypes>
 #include <cstdlib>
 #include <fstream>
 #include <limits>
@@ -101,7 +102,7 @@ struct MergeAudit {
 
 #ifdef ASTR_BUILD_TESTING
 void test_oracle(const structured_geometry::PlaneProduct& product,const DeviceGeometryView& view,
-    int rank,int step,std::uint64_t host_budget) {
+    int rank,std::int64_t step,std::uint64_t host_budget) {
   const char* prefix=std::getenv("ASTR_INSITU_TEST_PLANE_PREFIX");
   if(!prefix || !*prefix) return;
   const std::uint64_t bytes=std::uint64_t(view.points)*(6*sizeof(Real)+2*sizeof(viskores::Id))+
@@ -132,13 +133,13 @@ void test_oracle(const structured_geometry::PlaneProduct& product,const DeviceGe
   if(!indices.empty()) file.write(reinterpret_cast<const char*>(indices.data()),indices.size()*sizeof(indices[0]));
   file.close();
   if(!file) throw std::runtime_error("Plane test oracle publication failed");
-  std::printf("ASTR_INSITU_PLANE_TEST_ORACLE rank=%d step=%d oracle_download_bytes=%llu runtime_zero_readback_evidence=0\n",
+  std::printf("ASTR_INSITU_PLANE_TEST_ORACLE rank=%d step=%" PRId64 " oracle_download_bytes=%llu runtime_zero_readback_evidence=0\n",
     rank,step,static_cast<unsigned long long>(bytes));
 }
 #endif
 }
 
-astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,Real time,const int global[3],
+astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,std::int64_t step,Real time,const int global[3],
     const int local[3],const int offset[3],Real* coordinates,Real* velocity,
     const Real origin[3],const Real normal[3],std::int64_t budget,std::int64_t reserve,
     std::int64_t retained,std::int64_t host_budget,bool speed_colors,Real speed_max) {
@@ -212,7 +213,7 @@ astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,Real 
     mesh.controls["plane_origin"+std::to_string(d)]=point[d];
     mesh.controls["plane_normal"+std::to_string(d)]=direction[d];
   }
-  std::printf("ASTR_INSITU_DEVICE_PLANE rank=%d step=%d points=%lld triangles=%lld area=%.17g "
+  std::printf("ASTR_INSITU_DEVICE_PLANE rank=%d step=%" PRId64 " points=%lld triangles=%lld area=%.17g "
     "plane_maxabs=%.17g invalid_triangles=%.0f field_download_bytes=0 geometry_host_bytes=0 q_requested=0\n",
     rank,step,static_cast<long long>(view.points),static_cast<long long>(view.cells),audit[0],audit[1],audit[2]);
   if(!retain_quantitative_product_fields()) owner->retain_display_only();
@@ -319,7 +320,7 @@ std::shared_ptr<astr_insitu::CompactMesh> runtime_compatible_geometry(
 
 void astr_insitu::clear_runtime_compatible_geometry() {runtime_compact_cache.clear();}
 #endif
-int astr_insitu::publish_runtime_product(const char* pipeline,const char* backend,const char* script,int fcomm,int step,Real time,
+int astr_insitu::publish_runtime_product(const char* pipeline,const char* backend,const char* script,int fcomm,std::int64_t step,Real time,
     astr_insitu::RuntimeProductView& context,astr_insitu::DeviceMesh mesh,std::string error,double started) {
   const auto comm=MPI_Comm_f2c(fcomm);
   const auto prepared=runtime_product_clock();
@@ -342,14 +343,14 @@ int astr_insitu::publish_runtime_product(const char* pipeline,const char* backen
     } catch(const std::exception& caught) {error=caught.what();}
     if(consensus_product_failure(comm,error)) {astr_insitu_runtime_failure(error.c_str());return 1;}
     int rank=0;MPI_Comm_rank(comm,&rank);
-    std::printf("ASTR_RUNTIME_COMPATIBLE rank=%d id=%s step=%d geometry_download_bytes=%.0f geometry_host_bytes=%.0f\n",
+    std::printf("ASTR_RUNTIME_COMPATIBLE rank=%d id=%s step=%" PRId64 " geometry_download_bytes=%.0f geometry_host_bytes=%.0f\n",
       rank,context.id.c_str(),step,packet->controls["geometry_download_bytes"],packet->controls["geometry_host_bytes"]);
     result=render_compact_products(backend,script,fcomm,step,time,"runtime_catalog",false,Real(0.),Real(0.),Real(0.),{},&context,packet);
   } else result=astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,"runtime_catalog",
     {std::move(mesh)},false,true,&context);
   if(started>=0.) {
     const double finished=runtime_product_clock();int rank=0;MPI_Comm_rank(comm,&rank);
-    std::printf("ASTR_RUNTIME_STAGE_TIMING rank=%d id=%s step=%d native_local_seconds=%.17g "
+    std::printf("ASTR_RUNTIME_STAGE_TIMING rank=%d id=%s step=%" PRId64 " native_local_seconds=%.17g "
       "consensus_seconds=%.17g consumer_inclusive_seconds=%.17g status=%d\n",rank,context.id.c_str(),step,
       prepared-started,agreed-prepared,finished-agreed,result);
   }
@@ -363,7 +364,7 @@ int astr_insitu::publish_runtime_product(const char* pipeline,const char* backen
 extern "C" void astr_insitu_device_allocation_preflight(std::size_t,const char*);
 extern "C" int astr_insitu_allocation_guard_active();
 
-void astr_insitu::prepare_runtime_product_allocations(const RuntimeProductView& context,int fcomm,int step) {
+void astr_insitu::prepare_runtime_product_allocations(const RuntimeProductView& context,int fcomm,std::int64_t step) {
 #ifdef ASTR_VISKORES_ALLOCATION_PREFLIGHT
   if(!astr_insitu_allocation_guard_active())
     throw std::runtime_error("Runtime native allocations require an active resource guard");
@@ -393,7 +394,7 @@ extern "C" const unsigned char* astr_insitu_runtime_wall_breaks() {
 }
 
 extern "C" int astr_insitu_render_wall_product(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,Real time,const char* id,const char* source,const char* definition,const char* directory,
+    int fcomm,std::int64_t step,Real time,const char* id,const char* source,const char* definition,const char* directory,
     std::int64_t version,const char* labels,const int* words,const double* settings,const Real* values,int nodes,
     int column,Real factor,int nondimensional,int provider,const Real* statistics,std::int64_t samples,std::int64_t host_budget,
     int host) {
@@ -436,7 +437,7 @@ extern "C" int astr_insitu_render_wall_product(const char* pipeline,const char* 
     mesh.draw.arity=2;
     if(cudaGetDevice(&mesh.draw.device)!=cudaSuccess) throw std::runtime_error("Cannot identify the wall chart device binding");
     std::copy_n(context.reals.begin()+6,6,mesh.draw.bounds);
-    std::printf("ASTR_RUNTIME_WALL_CHART rank=%d id=%s step=%d host_curve_points=%zu host_curve_bytes=%zu "
+    std::printf("ASTR_RUNTIME_WALL_CHART rank=%d id=%s step=%" PRId64 " host_curve_points=%zu host_curve_bytes=%zu "
       "three_dimensional_field_download_bytes=0\n",rank,id,step,runtime_wall_values->size()/4,
       runtime_wall_values->size()*sizeof(Real));
   } catch(const std::exception& caught) {error=caught.what();}
@@ -723,7 +724,7 @@ extern "C" void astr_insitu_runtime_physical_group(int begin) {
   }
 }
 
-astr_insitu::DeviceMesh astr_insitu::build_runtime_index_mesh(const RuntimeProductView& context,int step,Real time,
+astr_insitu::DeviceMesh astr_insitu::build_runtime_index_mesh(const RuntimeProductView& context,std::int64_t step,Real time,
     const int* field_ids,int fields,int width,int height,Real* coordinates,Real* values,const Real* references,int selected_field) {
     astr_insitu::DeviceMesh mesh;
     static bool initialized=false;
@@ -808,7 +809,7 @@ astr_insitu::DeviceMesh astr_insitu::build_runtime_index_mesh(const RuntimeProdu
     return mesh;
 }
 
-astr_insitu::DeviceMesh astr_insitu::build_runtime_wall_glyph_mesh(const RuntimeProductView& context,int step,Real time,
+astr_insitu::DeviceMesh astr_insitu::build_runtime_wall_glyph_mesh(const RuntimeProductView& context,std::int64_t step,Real time,
     const int* field_ids,int fields,int width,int height,Real* coordinates,Real* values,const int* first,const int* upper) {
   static bool initialized=false;
   if(!initialized) {
@@ -890,7 +891,7 @@ astr_insitu::DeviceMesh astr_insitu::build_runtime_wall_glyph_mesh(const Runtime
   return mesh;
 }
 
-astr_insitu::DeviceMesh astr_insitu::build_runtime_physical_mesh(const RuntimeProductView& context,int step,Real time,
+astr_insitu::DeviceMesh astr_insitu::build_runtime_physical_mesh(const RuntimeProductView& context,std::int64_t step,Real time,
     const int* field_ids,int fields,const int* global,const int* extent,const int* offset,
     Real* coordinates,Real* values,const Real* references,std::int64_t budget,std::int64_t retained,int selected_field) {
   static bool initialized=false;
@@ -1010,7 +1011,7 @@ astr_insitu::DeviceMesh astr_insitu::build_runtime_physical_mesh(const RuntimePr
 #endif
 
 extern "C" int astr_insitu_render_physical_product(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,Real time,const char* id,const char* source,const char* definition,const char* directory,
+    int fcomm,std::int64_t step,Real time,const char* id,const char* source,const char* definition,const char* directory,
     std::int64_t version,const char* labels,const int* words,const double* settings,
     const int* field_ids,int fields,const int* global,const int* extent,const int* offset,
     Real* coordinates,Real* values,const Real* references,int provider,const Real* statistics,std::int64_t samples,
@@ -1033,7 +1034,7 @@ extern "C" int astr_insitu_render_physical_product(const char* pipeline,const ch
     if(!physical_group.active && std::string(pipeline?pipeline:"")!="compatible")
       std::static_pointer_cast<astr_insitu::DeviceGeometryOwner>(mesh.owner)->retain_display_only();
     int rank=0;MPI_Comm_rank(comm,&rank);
-    std::printf("ASTR_RUNTIME_PHYSICAL_SURFACE rank=%d id=%s kind=%s step=%d points=%lld triangles=%lld "
+    std::printf("ASTR_RUNTIME_PHYSICAL_SURFACE rank=%d id=%s kind=%s step=%" PRId64 " points=%lld triangles=%lld "
       "field_d2h_bytes=0 geometry_host_bytes=0\n",rank,id,context.labels[0].c_str(),step,static_cast<long long>(mesh.draw.points),
       static_cast<long long>(mesh.draw.cells));
   } catch(const std::exception& caught) {error=caught.what();}
@@ -1044,7 +1045,7 @@ extern "C" int astr_insitu_render_physical_product(const char* pipeline,const ch
 }
 
 extern "C" int astr_insitu_render_index_product(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,Real time,const char* id,const char* source,const char* definition,const char* directory,
+    int fcomm,std::int64_t step,Real time,const char* id,const char* source,const char* definition,const char* directory,
     std::int64_t version,const char* labels,const int* words,const double* settings,
     const int* field_ids,int fields,int width,int height,Real* coordinates,Real* values,const Real* references,
     int provider,const Real* statistics,std::int64_t samples,int selected_field,std::int64_t host_budget,
@@ -1069,7 +1070,7 @@ extern "C" int astr_insitu_render_index_product(const char* pipeline,const char*
     const auto owner=std::static_pointer_cast<astr_insitu::DeviceGeometryOwner>(mesh.owner);
     if(!index_group.active && std::string(pipeline?pipeline:"")!="compatible") owner->retain_display_only();
     int rank=0;MPI_Comm_rank(comm,&rank);
-    std::printf("ASTR_RUNTIME_PLANE rank=%d id=%s step=%d points=%lld triangles=%lld "
+    std::printf("ASTR_RUNTIME_PLANE rank=%d id=%s step=%" PRId64 " points=%lld triangles=%lld "
       "field_d2h_bytes=0 geometry_host_bytes=0\n",rank,id,step,static_cast<long long>(mesh.draw.points),
       static_cast<long long>(mesh.draw.cells));
   } catch(const std::exception& caught) {error=caught.what();}
@@ -1080,7 +1081,7 @@ extern "C" int astr_insitu_render_index_product(const char* pipeline,const char*
 }
 
 extern "C" int astr_insitu_device_render_plane(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,Real time,int nx,int ny,int nz,int ox,int oy,int oz,
+    int fcomm,std::int64_t step,Real time,int nx,int ny,int nz,int ox,int oy,int oz,
     Real* coordinates,Real* velocity,const Real* origin,const Real* normal,
     std::int64_t budget,std::int64_t reserve,std::int64_t retained,std::int64_t host_budget)
 try {
@@ -1108,7 +1109,7 @@ extern "C" const Real* astr_insitu_sbli_wall_data(int* count,int* real_bytes) {
 }
 
 extern "C" int astr_insitu_device_render_sbli_2d(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,Real time,int nx,int ny,Real* coordinates_pointer,Real* fields_pointer,
+    int fcomm,std::int64_t step,Real time,int nx,int ny,Real* coordinates_pointer,Real* fields_pointer,
     const Real* wall,int nwall,const Real* bounds,std::int64_t budget,std::int64_t reserve,std::int64_t retained)
 try {
 #ifdef ASTR_INSITU_DEVICE_RENDERING

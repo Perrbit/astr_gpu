@@ -184,7 +184,9 @@ def test_actual_m12_jpeg_only_matches_paired_output(tmp_path, record_property):
             OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1')
         for key in ('DISPLAY', 'PYTHONPATH', 'VTK_EGL_DEVICE_INDEX', 'CATALYST_IMPLEMENTATION_PREFER_ENV'):
             env.pop(key, None)
-        command = mpi_command(mpiexec, ranks, 'device-aware') + [str(executable), 'run', 'datin/input.dat']
+        from named_fixture import prepare_named_run
+        command = mpi_command(mpiexec, ranks, 'device-aware') + [str(executable), 'run',
+            prepare_named_run(case,'datin/input.dat',env)]
         with (case/'run.log').open('wb') as stream:
             resources[mode] = run_monitored(command, case, env, stream, case/'resources.json',
                 device_reserve_bytes=args.reserve, timeout_seconds=300)

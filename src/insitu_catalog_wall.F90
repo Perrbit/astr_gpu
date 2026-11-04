@@ -135,7 +135,7 @@ contains
     if(definition%source/='reynolds'.or.definition%statistics_source/='wall-time') then
       message='existing wall means require reynolds with statistics_source=wall-time; no Favre wall accumulator';return
     endif
-    call catalog_wall_statistics_info(int(identity%step),identity%time,active,ready,frame%window,frame%duration,frame%count)
+    call catalog_wall_statistics_info(identity%step,identity%time,active,ready,frame%window,frame%duration,frame%count)
     if(.not.active) then
       message='the existing wall-time accumulation was not enabled at startup';return
     endif
@@ -214,7 +214,7 @@ contains
             ok=len_trim(message)==0
             if(ok) then
               if(s==2) then
-                call capture_catalog_sbli_wall_gpu(mode,int(identity%step),identity%time,options%host_budget_bytes, &
+                call capture_catalog_sbli_wall_gpu(mode,identity%step,identity%time,options%host_budget_bytes, &
                   options%device_budget_bytes,options%device_reserve_bytes,lines(1)%values,download,ok)
                 if(ok) then
                   lines(1)%index=0;lines(1)%side='lower';nlines=1;total_download=download
@@ -240,7 +240,7 @@ contains
             if(.not.ok) message='optional host wall source allocation would exceed its budget or available memory'
             total_download=total_download+download
             if(ok.and.s==1) then
-              call wall_statistics_render_values(int(identity%step),identity%time,means,mean_download,ok)
+              call wall_statistics_render_values(identity%step,identity%time,means,mean_download,ok)
               total_download=total_download+mean_download
               if(ok) then
                 fields(:,:,:,1:min(3,size(fields,4)))=means(:,:,:,1:min(3,size(fields,4)))
@@ -254,7 +254,7 @@ contains
           endif
 #endif
           captured=ok
-          call report_insitu_timing('runtime_wall_capture',started,int(identity%step))
+          call report_insitu_timing('runtime_wall_capture',started,identity%step)
         endif
         q=1
         do while(q<=nlines)
@@ -312,7 +312,7 @@ contains
             deallocate(lines(q)%values)
           endif
           deallocate(local,send)
-          call report_insitu_timing('runtime_wall_select_reduce',started,int(identity%step))
+          call report_insitu_timing('runtime_wall_select_reduce',started,identity%step)
         endif
         started=insitu_clock()
         if(ok) call runtime_product_segment(p,state,directory,ok,message)
@@ -323,7 +323,7 @@ contains
             call write_curve(directory,state,identity,frames(p),lines(q)%values,rank,ok,message)
           endif
         endif
-        call report_insitu_timing('runtime_wall_publication_inclusive',started,int(identity%step))
+        call report_insitu_timing('runtime_wall_publication_inclusive',started,identity%step)
         if(ok) then
           call runtime_catalog_success(p,identity%step,real(identity%time,real64))
         else
@@ -431,7 +431,7 @@ contains
     end interface
     status=0;message=''
     if(rank==0) then
-      write(filename,'("frame.step",i12.12,".csv")') identity%step
+      write(filename,'("frame.step",i0.12,".csv")') identity%step
       path=directory//'/'//trim(filename);temporary=path//'.partial'
       open(newunit=unit,file=temporary,status='new',action='write',iostat=status)
       if(status==0) then

@@ -47,7 +47,8 @@ def short_case_gate(args, out, env, report):
         command = [args.mpirun, '-np', str(np_rank)]
         if args.memcheck:
             command += ['compute-sanitizer', '--tool', 'memcheck', '--error-exitcode', '99']
-        command += [str(args.exe.resolve()), 'run', 'datin/input.shuosher']
+        from named_fixture import prepare_named_run
+        command += [str(args.exe.resolve()), 'run',prepare_named_run(case,'datin/input.shuosher',run_env)]
         result = subprocess.run(command, cwd=case, env=run_env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
         (case / 'run.log').write_text(result.stdout)

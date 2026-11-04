@@ -114,6 +114,8 @@ def run_case(args, label, kind, shape, steps, ranks=2, diagnostics=False, memche
     if continuation_probe:
         env.update(ASTR_VALIDATION_RHS_PREFIX='diagnostics/state',
                    ASTR_VALIDATION_RHS_STEP='0', ASTR_VALIDATION_RHS_STEP_END=str(steps-1))
+    from named_fixture import prepare_named_run
+    primary=prepare_named_run(case,'datin/input.dat',env)
     provenance = dict(boundary=kind, shape=shape, steps=steps, topology=topology,
                       wall_blowing='zero amplitude for partition check' if diagnostics else 'original legacy_random',
                       checkpoint_interval=checkpoint_interval, restore=str(restore) if restore else None,
@@ -130,7 +132,7 @@ def run_case(args, label, kind, shape, steps, ranks=2, diagnostics=False, memche
     if memcheck:
         command += ['compute-sanitizer', '--tool', 'memcheck', '--error-exitcode', '99',
                     '--log-file', str(case/'memcheck.%p.log')]
-    command += [str(args.executable), 'run', 'datin/input.dat']
+    command += [str(args.executable), 'run', primary]
     gate = CflGate(case/'run.log', 1., .02, first_step, steps)
     started = time.monotonic()
     with (case/'run.log').open('wb') as log:

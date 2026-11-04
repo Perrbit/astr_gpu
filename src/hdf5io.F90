@@ -6,6 +6,7 @@
 !| 02-Jun-2020  | Created by J. Fang STFC Daresbury Laboratory         |
 !+---------------------------------------------------------------------+
 module hdf5io
+  use iso_fortran_env, only: int64
   use astr_precision, only: real_kind
   !
 #ifdef HDF5
@@ -17,7 +18,7 @@ module hdf5io
                        mpi_comm_world,mpi_info_null,mpistop
   !
   implicit none
-  private :: real_kind
+  private :: real_kind,int64
   !
   Interface h5read
     !
@@ -26,6 +27,7 @@ module hdf5io
     module procedure h5ra3d_r8
     module procedure h5ra3d_i4
     module procedure h5r_int4
+    module procedure h5r_int64
     module procedure h5r_real8
     module procedure h5r_real8_1d
     !
@@ -36,6 +38,7 @@ module hdf5io
     module procedure h5wa2d_r8
     module procedure h5wa3d_r8
     module procedure h5w_int4
+    module procedure h5w_int64
     module procedure h5w_real8
     !
   end Interface h5write
@@ -45,6 +48,7 @@ module hdf5io
     module procedure h5_readarray1d
     module procedure h5_read1rl8
     module procedure h5_read1int
+    module procedure h5_read1int64
     module procedure h5_readarray2d
     module procedure h5_readarray3d
     !
@@ -53,6 +57,7 @@ module hdf5io
   Interface h5srite
     !
     module procedure h5_write1int
+    module procedure h5_write1int64
     module procedure h5_write1rl8
     module procedure h5_writearray1dint
     module procedure h5_writearray1d
@@ -430,6 +435,18 @@ module hdf5io
 #endif
     !
   end subroutine h5r_int4
+  subroutine h5r_int64(varname,var)
+    character(*),intent(in) :: varname
+    integer(int64),intent(out) :: var
+#ifdef HDF5
+    integer(int64) :: values(1)
+    integer(hsize_t) :: dims(1)=[1_hsize_t]
+    integer :: status
+    call h5ltread_dataset_f(h5file_id,varname,h5kind_to_type(int64,H5_INTEGER_KIND),values,dims,status)
+    if(status/=0) error stop 'h5r_int64: read dataset failed'
+    var=values(1)
+#endif
+  end subroutine
   !
   subroutine h5r_real8(varname,var)
     !
@@ -710,6 +727,18 @@ module hdf5io
 #endif
     !
   end subroutine h5w_int4
+  subroutine h5w_int64(varname,var)
+    character(*),intent(in) :: varname
+    integer(int64),intent(in) :: var
+#ifdef HDF5
+    integer(int64) :: values(1)
+    integer(hsize_t) :: dims(1)=[1_hsize_t]
+    integer :: status
+    values=var
+    call h5ltmake_dataset_f(h5file_id,varname,1,dims,h5kind_to_type(int64,H5_INTEGER_KIND),values,status)
+    if(status/=0) error stop 'h5w_int64: write dataset failed'
+#endif
+  end subroutine
   !
   subroutine h5w_real8(varname,var)
     !
@@ -1075,6 +1104,36 @@ module hdf5io
 #endif
     !
   end subroutine h5_write1int
+  subroutine h5_write1int64(var,varname,filename,explicit,newfile)
+    integer(int64),intent(in) :: var
+    character(*),intent(in) :: varname,filename
+    logical,optional,intent(in) :: explicit,newfile
+#ifdef HDF5
+    integer(hid_t) :: file
+    integer(hsize_t) :: dims(1)=[1_hsize_t]
+    integer(int64) :: values(1)
+    integer :: status
+    logical :: create,verbose
+    create=.false.;verbose=.true.
+    if(present(newfile)) create=newfile
+    if(present(explicit)) verbose=explicit
+    call h5open_f(status)
+    if(create) then
+      call h5fcreate_f(filename,H5F_ACC_TRUNC_F,file,status)
+    else
+      call h5fopen_f(filename,H5F_ACC_RDWR_F,file,status)
+    endif
+    if(status/=0) error stop 'h5_write1int64: open file failed'
+    values=var
+    call h5ltmake_dataset_f(file,varname,1,dims,h5kind_to_type(int64,H5_INTEGER_KIND),values,status)
+    if(status/=0) error stop 'h5_write1int64: write dataset failed'
+    call h5fclose_f(file,status)
+    if(status/=0) error stop 'h5_write1int64: close file failed'
+    call h5close_f(status)
+    if(status/=0) error stop 'h5_write1int64: close interface failed'
+    if(verbose) print *, ' << ',varname,' to ',filename
+#endif
+  end subroutine
   !
   subroutine h5_writearray1dint(var,varname,filename,explicit,newfile)
     !
@@ -1514,6 +1573,31 @@ module hdf5io
 #endif 
     !
   end subroutine h5_read1int
+  subroutine h5_read1int64(var,varname,filename,explicit)
+    integer(int64),intent(out) :: var
+    character(*),intent(in) :: varname,filename
+    logical,optional,intent(in) :: explicit
+#ifdef HDF5
+    integer(hid_t) :: file
+    integer(hsize_t) :: dims(1)=[1_hsize_t]
+    integer(int64) :: values(1)
+    integer :: status
+    logical :: verbose
+    verbose=.true.
+    if(present(explicit)) verbose=explicit
+    call h5open_f(status)
+    call h5fopen_f(filename,H5F_ACC_RDONLY_F,file,status)
+    if(status/=0) error stop 'h5_read1int64: open file failed'
+    call h5ltread_dataset_f(file,varname,h5kind_to_type(int64,H5_INTEGER_KIND),values,dims,status)
+    if(status/=0) error stop 'h5_read1int64: read dataset failed'
+    var=values(1)
+    call h5fclose_f(file,status)
+    if(status/=0) error stop 'h5_read1int64: close file failed'
+    call h5close_f(status)
+    if(status/=0) error stop 'h5_read1int64: close interface failed'
+    if(verbose) print *, ' >> ',varname,' from ',filename
+#endif
+  end subroutine
   !
   subroutine h5_read1rl8(var,varname,filename,explicit)
     !

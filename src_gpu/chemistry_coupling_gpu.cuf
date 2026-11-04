@@ -1,4 +1,5 @@
 module chemistry_coupling_gpu
+  use case_model_options, only: get_case_option
   use cudafor
   use iso_fortran_env, only: real64,int64
   use chemistry_air5_data, only: air5_num_species
@@ -88,7 +89,7 @@ contains
       case default; bad=1
       end select
     endif
-    call get_environment_variable('ASTR_AIR5_SOURCE_EVALUATION',value,length,status)
+    call get_case_option('source_evaluation',value,length,status)
     if(status/=1) then
       if(status/=0) bad=1
       select case(trim(value))

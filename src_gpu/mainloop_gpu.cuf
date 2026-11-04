@@ -1,9 +1,10 @@
 module mainloop_gpu
+  use iso_fortran_env, only: int64
   use astr_precision, only: real_kind
   use cudafor
   use boundary_high_order, only: high_order_boundary_enabled
   implicit none
-  private :: real_kind
+  private :: real_kind,int64
   private :: snapshot_wall_filter_gpu
   logical,save,private :: static_configuration_validated=.false.
 contains
@@ -279,7 +280,8 @@ contains
     integer,intent(in) :: stage
     character(*),intent(in) :: phase
     logical,optional,intent(out) :: repaired
-    integer,save :: snapshot_step=-1,snapshot_stage=-1,snapshot_event=0
+    integer(int64),save :: snapshot_step=-1
+    integer,save :: snapshot_stage=-1,snapshot_event=0
     character(48) :: snapshot_label
 
     if(present(repaired)) repaired=.false.
@@ -332,7 +334,7 @@ contains
     use upwind_flux_mode_gpu, only: resolve_gpu_fused_flux_pair
     use gpu_check, only: sync_after_kernel,check_kernel_launch,sync_gpu_boundary
     use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
-    use crashfix_gpu, only: repair_crashfix_state_gpu,repair_reconciled_state_gpu
+    use crashfix_gpu, only: repair_crashfix_state_gpu,repair_reconciled_state_gpu,crashfix_support_status_gpu
 #ifdef ASTR_BUILD_TESTING
     use mp_positivity_gpu, only: check_profile_validation_state_gpu,check_h1_validation_state_gpu, &
       check_h1_validation_properties_gpu, &
@@ -543,10 +545,12 @@ contains
     integer :: rhs_npdci,rhs_npdcj
 
     if(lcracon) then
-      if(lcomb.or.numq/=5.or.num_species/=0) &
+      select case(crashfix_support_status_gpu())
+      case(1)
         error stop 'GPU crashfix supports only non-reacting five-variable flow'
-      if(trim(conschm)/='643e'.and..not.(trim(conschm)=='743e'.and.recon_schem==5)) &
+      case(2)
         error stop 'GPU crashfix admits central 643e or MP7-LD 743e convection'
+      end select
     endif
     if(lcracon.and..not.allocated(crinod_d)) call sync_crashfix_mask_to_gpu()
 

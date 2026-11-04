@@ -149,7 +149,8 @@ def test_m12_nonzero_history_twelve_steps_match_five_plus_seven(tmp_path,backend
         controller.write_text("\n".join(lines)+"\n")
         env=runtime(f"{ranks},1,1")
         env.update(ASTR_GPU_MP_FACE_LAYOUT="x-contiguous",ASTR_GPU_MP_SPLIT_CACHE="on")
-        command=[*mpi_command(MPIEXEC,ranks,"pinned"),executable,"run","datin/input.dat"]
+        from named_fixture import prepare_named_run
+        command=[*mpi_command(MPIEXEC,ranks,"pinned"),executable,"run",prepare_named_run(case,'datin/input.dat',env)]
         with (case/"run.log").open("w") as log:
             result=subprocess.run(command,cwd=case,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=120)
         text=(case/"run.log").read_text()
@@ -205,7 +206,8 @@ def test_m12_valid_ten_step_trajectory_is_unchanged_by_enabling_repair(tmp_path,
         env = runtime(f"{ranks},1,1")
         env.update(ASTR_GPU_MP_FACE_LAYOUT="x-contiguous",ASTR_GPU_MP_SPLIT_CACHE="on",
                    ASTR_VALIDATION_RHS_PREFIX="diagnostics/state",ASTR_VALIDATION_RHS_STEP="9")
-        command = [*mpi_command(MPIEXEC,ranks,"pinned"),executable,"run","datin/input.dat"]
+        from named_fixture import prepare_named_run
+        command = [*mpi_command(MPIEXEC,ranks,"pinned"),executable,"run",prepare_named_run(case,'datin/input.dat',env)]
         with (case/"run.log").open("w") as log:
             result = subprocess.run(command,cwd=case,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=120)
         text = (case/"run.log").read_text()

@@ -738,8 +738,8 @@ contains
     state_role=1
     if (present(role)) state_role=role
     call require(state_role==1.or.(state_role==2.and.ncomp==11).or. &
-      ((state_role==3.or.state_role==4).and.ncomp==34).or.(state_role==5.and.ncomp==17).or. &
-      (state_role==6.and.ncomp==44).or.(state_role==7.and.(ncomp==34.or.ncomp==35)).or. &
+      ((state_role==3.or.state_role==4).and.ncomp==34).or.(state_role==5.and.(ncomp==17.or.ncomp==32)).or. &
+      (state_role==6.and.(ncomp==44.or.ncomp==58)).or.(state_role==7.and.(ncomp==34.or.ncomp==35)).or. &
       (state_role==8.and.ncomp==26).or.(state_role==9.and.(ncomp==34.or.ncomp==204)).or. &
       (state_role==10.and.ncomp==136).or.(state_role==11.and.ncomp==5.and.lean), &
       comm,'state component role')

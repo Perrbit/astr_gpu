@@ -1,4 +1,5 @@
 module chemistry_flow_runtime
+  use case_model_options, only: get_case_option
   use iso_fortran_env, only: real64
   use chemistry_air5_data, only: air5_num_species
   use chemistry_model, only: chemistry_status_ok
@@ -56,7 +57,7 @@ contains
 
     if(integration_control_configured) return
     local=0
-    call get_environment_variable('ASTR_AIR5_FILTER_MODE',value,status=status)
+    call get_case_option('filter_mode',value,status=status)
     if(status/=1) then
       if(status/=0) local(3)=1
       select case(trim(value))
@@ -65,7 +66,7 @@ contains
       case default; local(3)=1
       end select
     endif
-    call get_environment_variable('ASTR_AIR5_CHEMISTRY_TOLERANCE',value,status=status)
+    call get_case_option('chemistry_tolerance',value,status=status)
     if(status/=1) then
       if(status/=0) local(3)=1
       select case(trim(value))
@@ -75,7 +76,7 @@ contains
       case default; local(3)=1
       end select
     endif
-    call get_environment_variable('ASTR_AIR5_STEP_HISTORY',value,status=status)
+    call get_case_option('step_history',value,status=status)
     if(status/=1) then
       if(status/=0) local(3)=1
       select case(trim(value))
@@ -84,7 +85,7 @@ contains
       case default; local(3)=1
       end select
     endif
-    call get_environment_variable('ASTR_AIR5_LOW_ACTIVITY',value,status=status)
+    call get_case_option('low_activity_threshold',value,status=status)
     if(status/=1) then
       if(status/=0) local(3)=1
       if(trim(value)/='off') then
@@ -204,7 +205,7 @@ contains
 
     if(source_mode_configured) return
     value=''
-    call get_environment_variable('ASTR_AIR5_SOURCE_MODE',value,status=status)
+    call get_case_option('source_mode',value,status=status)
     choice=-1
     if(status==1 .or. (status==0 .and. len_trim(value)==0)) then
       choice=air5_source_mode_coupled
@@ -249,7 +250,7 @@ contains
 
     if(convection_limiter_configured) return
     value=''
-    call get_environment_variable('ASTR_AIR5_CONVECTION_LIMITER',value,status=status)
+    call get_case_option('convection_limiter',value,status=status)
     choice=-1
     if(status==1 .or. (status==0 .and. len_trim(value)==0)) then
       value='full_state'
@@ -303,7 +304,7 @@ contains
 
     if(.not.diffusion_limiter_configured) then
       value=''
-      call get_environment_variable('ASTR_AIR5_DIFFUSION_LIMITER',value,status=status)
+      call get_case_option('diffusion_limiter',value,status=status)
       choice=-1
       if(status==1 .or. (status==0 .and. len_trim(value)==0)) then
         value='full_state'

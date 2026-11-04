@@ -19,12 +19,16 @@ SPEC.loader.exec_module(QUICK)
 @pytest.mark.parametrize("mode", ["cpu", "gpu"])
 def test_complete_input_and_topology(case, mode, tmp_path):
     dst = QUICK.prepare(case, tmp_path / case, mode, 2, "2,1,1", 3)
-    text = (dst / "datin/input.dat").read_text()
+    text = (dst / "datin/input.case").read_text()
     assert "\r" not in text
-    lines = text.splitlines()
-    assert lines[5] in ("tgv", "channel", "bl", "air5tgv", "air5hbl")
-    assert lines[14].split(",")[-1] == ("t" if mode == "gpu" else "f")
-    assert (dst / "datin/controller").read_text().splitlines()[8].startswith("2,2,")
+    assert QUICK.template_value(text, "flowtype").strip("'") in ("tgv", "channel", "bl", "air5tgv", "air5hbl")
+    assert QUICK.template_value(text, "use_gpu") == (".true." if mode == "gpu" else ".false.")
+    runtime = (dst / "datin/input.run").read_text()
+    assert int(QUICK.template_value(runtime, "max_steps")) == 3
+    assert int(QUICK.template_value(runtime, "reload_steps")) == 2
+    assert not (dst / "datin/controller").exists() and not (dst / "datin/input.dat").exists()
+    if case.startswith('air5_'):
+        assert 'exact_restart=.true.' in (dst / 'datin/input.output').read_text()
     if case == "flatplate":
         import h5py
         with h5py.File(dst / "datin/grid.h5") as handle:

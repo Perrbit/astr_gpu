@@ -330,9 +330,11 @@ contains
       call check(ok,'cannot create archive segment')
       ok=.true.
       if(mpirank==0) then
-        call get_command_argument(2,source,status=err)
-        ok=err==0
-        if(ok) call copy_batch_file(trim(source),trim(roots(p))//'/input.txt',ok)
+        block
+          use cmdefne, only: case_input_path
+          source=case_input_path
+        end block
+        call copy_batch_file(trim(source),trim(roots(p))//'/input.txt',ok)
         bytes=0; crc=0
         if(ok.and.len_trim(options%restore_directory)>0) &
           call file_fingerprint(trim(options%restore_directory)//'/MANIFEST',bytes,crc,ok)
@@ -482,7 +484,7 @@ contains
       if(.not.emit.or.last_steps(p)==identity%step) cycle
       started=insitu_clock()
       call write_frame(p,identity)
-      call report_insitu_timing('archive_'//trim(labels(p))//'_inclusive',started,int(identity%step))
+      call report_insitu_timing('archive_'//trim(labels(p))//'_inclusive',started,identity%step)
       if(products(p)%adaptive%enabled) then
         if(mpirank==0) write(*,'(a,a,a,i0,a,es24.16,a,l1,a,i0,a,i0,a,es24.16)') &
           'ASTR_AP_PRODUCT id=',trim(labels(p)),' step=',identity%step,' time=',identity%time, &
@@ -514,7 +516,7 @@ contains
     units='dimensionless'
     if(.not.nondimen) units='si'
     call plane_selections(product,axes,indices,n)
-    write(name,'("step",i12.12)') identity%step
+    write(name,'("step",i0.12)') identity%step
     path=trim(roots(product))//'/'//trim(name)//'.tmp'
     call create_batch(trim(path),MPI_COMM_WORLD,ok)
     call check(ok,'cannot create exclusive frame candidate')

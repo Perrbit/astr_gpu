@@ -2,6 +2,7 @@
 #include <mpi.h>
 #include <cstdlib>
 #include <cstdio>
+#include <cinttypes>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -63,7 +64,8 @@ Json::Value preview_source;
 conduit_node* detached_device_node=nullptr;
 bool resident_inputs_detached=false;
 bool resident_frame_open=false;
-int resident_frame_step=0,resident_frame_groups=0;
+std::int64_t resident_frame_step=0;
+int resident_frame_groups=0;
 double resident_frame_time=0.,resident_execute_seconds=0.;
 std::string runtime_context,runtime_error;
 int runtime_result=0;
@@ -266,7 +268,7 @@ try {
 
 // Synchronous lifecycle; backend-visible storage survives between frames.
 static int mesh_execute(const char* backend, const char* script,
-    int fcomm, int nx, int ny, int nz, int step, Real time,
+    int fcomm, int nx, int ny, int nz, std::int64_t step, Real time,
     Real* xyz, Real* fields, Real* derived, int has_mean, Real* mean_fields, int profile)
 try {
   MPI_Comm comm = MPI_Comm_f2c(fcomm);
@@ -326,7 +328,7 @@ try {
       std::string(timing)=="on" || std::string(timing)=="ON")) {
     int rank;
     check_mpi(MPI_Comm_rank(comm,&rank),"query initialize rank",comm);
-    std::printf("ASTR_INSITU_STAGE_TIMING catalyst_initialization_inclusive %d %d %.16e\n",
+    std::printf("ASTR_INSITU_STAGE_TIMING catalyst_initialization_inclusive %" PRId64 " %d %.16e\n",
         step,rank,MPI_Wtime()-initialize_start);
   }
   }
@@ -459,7 +461,7 @@ try {
   const double execute_start = MPI_Wtime();
   check(catalyst_execute(params));
   const double execute_seconds = MPI_Wtime()-execute_start;
-  std::printf("ASTR_INSITU_BRIDGE_TIMING rank=%d step=%d copy=%.9g execute_inclusive=%.9g copy_bytes=%zu\n",
+  std::printf("ASTR_INSITU_BRIDGE_TIMING rank=%d step=%" PRId64 " copy=%.9g execute_inclusive=%.9g copy_bytes=%zu\n",
       rank,step,copy_seconds,execute_seconds,
       copied_values*sizeof(Real));
 #ifdef ASTR_CUDA_RENDERER
@@ -473,21 +475,21 @@ try {
 }
 
 extern "C" int astr_insitu_mesh_probe(const char* backend, const char* script,
-    int fcomm, int nx, int ny, int nz, int step, Real time,
+    int fcomm, int nx, int ny, int nz, std::int64_t step, Real time,
     Real* xyz, Real* fields, Real* derived, int has_mean, Real* mean_fields)
 {
   return mesh_execute(backend,script,fcomm,nx,ny,nz,step,time,xyz,fields,derived,has_mean,mean_fields,0);
 }
 
 extern "C" int astr_insitu_mesh_selected(const char* backend, const char* script,
-    int fcomm, int nx, int ny, int nz, int step, Real time,
+    int fcomm, int nx, int ny, int nz, std::int64_t step, Real time,
     Real* xyz, Real* velocity, Real* q, int profile)
 {
   return mesh_execute(backend,script,fcomm,nx,ny,nz,step,time,xyz,velocity,q,0,nullptr,profile);
 }
 
 extern "C" int astr_insitu_mesh_wall_statistics(const char* backend, const char* script,
-    int fcomm, int nx, int ny, int nz, int step, Real time,
+    int fcomm, int nx, int ny, int nz, std::int64_t step, Real time,
     Real* xyz, Real* fields, Real* statistics, int profile)
 {
   return mesh_execute(backend,script,fcomm,nx,ny,nz,step,time,xyz,fields,nullptr,2,statistics,profile);
@@ -610,7 +612,7 @@ extern "C" void astr_insitu_runtime_error(char* buffer,int capacity) {
   if(capacity>0) std::snprintf(buffer,capacity,"%s",runtime_error.c_str());
 }
 
-extern "C" int astr_insitu_runtime_catalog_cleanup(int fcomm,int step,Real time) try {
+extern "C" int astr_insitu_runtime_catalog_cleanup(int fcomm,std::int64_t step,Real time) try {
   if(!active) return 0;
   if(selected_profile!=8 && !(selected_profile==7 && resident_pipeline=="compatible"))
     return allocation_failure("runtime catalog","another renderer owns the session",MPI_Comm_f2c(fcomm));
@@ -620,7 +622,7 @@ extern "C" int astr_insitu_runtime_catalog_cleanup(int fcomm,int step,Real time)
   conduit_node_set_path_double(params,"catalyst/state/time",time);
   check(catalyst_execute(params));conduit_node_destroy(params);runtime_context.clear();
   if(const char* trace=std::getenv("ASTR_INSITU_MEMORY_TRACE")) if(std::string(trace)=="1")
-    std::printf("ASTR_RUNTIME_CATALOG_CLEANUP step=%d actor_keys=%zu\n",step,device_actors.size());
+    std::printf("ASTR_RUNTIME_CATALOG_CLEANUP step=%" PRId64 " actor_keys=%zu\n",step,device_actors.size());
   return runtime_result;
 } catch(const std::exception& error) {
   return allocation_failure("runtime catalog cleanup",error.what(),MPI_Comm_f2c(fcomm));
@@ -646,7 +648,7 @@ extern "C" void astr_insitu_retire_resident_views() {
 }
 
 int astr_insitu::render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,
-    int step,Real time,const char* profile,std::vector<DeviceMesh> products,bool covered,bool complete,
+    std::int64_t step,Real time,const char* profile,std::vector<DeviceMesh> products,bool covered,bool complete,
     const RuntimeProductView* runtime)
 try {
   const auto comm=MPI_Comm_f2c(fcomm);
@@ -769,12 +771,12 @@ try {
   nvtxRangePop();
   resident_execute_seconds+=MPI_Wtime()-start;
   if(const char* trace=std::getenv("ASTR_INSITU_MEMORY_TRACE")) if(std::string(trace)=="1") {
-    std::printf("ASTR_INSITU_RESIDENT_GROUP rank=%d step=%d group=%d complete=%d arrays_detached=1 owners_retained=0\n",
+    std::printf("ASTR_INSITU_RESIDENT_GROUP rank=%d step=%" PRId64 " group=%d complete=%d arrays_detached=1 owners_retained=0\n",
       rank,step,resident_frame_groups,int(complete));
-    if(complete) std::printf("ASTR_INSITU_RESIDENT_RETIRE rank=%d step=%d arrays_detached=1 owners_retained=0\n",rank,step);
+    if(complete) std::printf("ASTR_INSITU_RESIDENT_RETIRE rank=%d step=%" PRId64 " arrays_detached=1 owners_retained=0\n",rank,step);
   }
   if(complete) {
-    std::printf("ASTR_INSITU_RESIDENT_BRIDGE rank=%d step=%d pipeline=%s geometry_host_bytes=0 execute_inclusive=%.9g\n",
+    std::printf("ASTR_INSITU_RESIDENT_BRIDGE rank=%d step=%" PRId64 " pipeline=%s geometry_host_bytes=0 execute_inclusive=%.9g\n",
       rank,step,route.c_str(),resident_execute_seconds);
     astr_insitu_resource_check("frame_after");
     resident_frame_open=false;
@@ -819,7 +821,7 @@ static void initialize_compact_renderer(const char* backend,const char* script,i
 }
 
 #ifdef ASTR_INSITU_DEVICE_RENDERING
-extern "C" int astr_insitu_runtime_host_begin(const char* backend,const char* script,int fcomm,int step,Real time) try {
+extern "C" int astr_insitu_runtime_host_begin(const char* backend,const char* script,int fcomm,std::int64_t step,Real time) try {
   if(!native || !backend || !script || (active && (selected_profile!=7 || resident_pipeline!="compatible")))
     return allocation_failure("host products","invalid compatible renderer session",MPI_Comm_f2c(fcomm));
   if(!active) {
@@ -832,7 +834,7 @@ extern "C" int astr_insitu_runtime_host_begin(const char* backend,const char* sc
 #endif
 
 int astr_insitu::render_compact_products(const char* backend,const char* script,int fcomm,
-    int step,Real time,const char* profile,bool covered,Real duration,
+    std::int64_t step,Real time,const char* profile,bool covered,Real duration,
     Real window_start,Real window_end,std::vector<CompactMesh> products,
     const RuntimeProductView* runtime,std::shared_ptr<CompactMesh> frozen)
 try {
@@ -937,7 +939,7 @@ try {
     if(retained) conduit_node_destroy(retained);
     retained=params;retained_products=std::move(products);retained_runtime_compact=std::move(frozen);
   }
-  std::printf("ASTR_INSITU_COMPACT_BRIDGE rank=%d step=%d final_geometry_bytes=%zu execute_inclusive=%.9g\n",
+  std::printf("ASTR_INSITU_COMPACT_BRIDGE rank=%d step=%" PRId64 " final_geometry_bytes=%zu execute_inclusive=%.9g\n",
     rank,step,copy_bytes,MPI_Wtime()-started);
 #ifdef ASTR_CUDA_RENDERER
   astr_insitu_resource_check("frame_after");

@@ -88,7 +88,9 @@ def run_case(args, label, topology, *, reverse=False, steps=10, restore=None,
                ASTR_VALIDATION_RHS_STEP=str(steps-1))
     if backflow_mach is not None:
         env['ASTR_VALIDATION_RHS_STEP_SECONDARY'] = '0'
-    command = [*mpi_command(args.mpirun, ranks, 'pinned'), str(args.exe.resolve()), 'run', 'datin/input.dat']
+    from named_fixture import prepare_named_run
+    command = [*mpi_command(args.mpirun, ranks, 'pinned'), str(args.exe.resolve()), 'run',
+               prepare_named_run(case,'datin/input.dat',env)]
     result = subprocess.run(command, cwd=case, env=env, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     (case / 'run.log').write_text(result.stdout)

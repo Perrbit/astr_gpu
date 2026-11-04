@@ -40,9 +40,11 @@ def run(output, executable, mpiexec):
             env.update(ASTR_VALIDATION_RHS_PREFIX='validation/tgv', ASTR_VALIDATION_RHS_STEP='2',
                        ASTR_GPU_HALO_TRANSPORT=transport, ASTR_GPU_SYNC_MODE='explicit')
             np_ = str(int(np.prod([int(n) for n in topology.split(',')])))
+            from named_fixture import prepare_named_run
+            primary=prepare_named_run(case,'datin/input.tgv',env)
             with (case/'run.log').open('w') as log:
                 subprocess.run([str(mpiexec), '--oversubscribe', '-np', np_, str(executable),
-                                'run', 'datin/input.tgv'], cwd=case, env=env, stdout=log,
+                                'run', primary], cwd=case, env=env, stdout=log,
                                stderr=subprocess.STDOUT, timeout=180, check=True)
             halos = [check(case, 2, stage, (0, 1, 2), 'tgv') for stage in (1, 2, 3)]
             if not all(row['passed'] for row in halos):

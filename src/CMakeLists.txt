@@ -69,6 +69,12 @@ set(ASTR_SOURCES
   comsolver.F90
   commcal.F90
   cfl_spectrum.F90
+  timestep_control.F90
+  run_control_config.F90
+  run_control_runtime.F90
+  case_model_options.F90
+  mean_statistics_math.F90
+  mean_statistics_schedule.F90
   commfunc.F90
   commtype.F90
   commvar.F90
@@ -1463,6 +1469,8 @@ install(TARGETS astr
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+install(FILES ../scripts/input/convert_legacy_input.py ../scripts/input/README.md
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/input COMPONENT InputTools)
 install(FILES
   ../scripts/output/export_checkpoint.py
   ../scripts/output/repair_series.py
@@ -1503,7 +1511,7 @@ if(ASTR_WITH_CATALYST)
     ../scripts/insitu/start_tgv_acceptance.py
     DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu
     COMPONENT InsituTools)
-  install(FILES ../scripts/insitu/presets/tgv32/controller ../scripts/insitu/presets/tgv32/input.tgv
+  install(FILES ../scripts/insitu/presets/tgv32/input.run ../scripts/insitu/presets/tgv32/input.case
     ../scripts/insitu/presets/tgv32/input.output ../scripts/insitu/presets/tgv32/insitu.nml.in
     DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu/presets/tgv32 COMPONENT InsituTools)
   if(ASTR_WITH_INSITU_DEVICE_RENDERING)
@@ -1516,6 +1524,38 @@ if(ASTR_WITH_CATALYST)
 endif()
 
 if(BUILD_TESTING)
+add_library(adaptive_control_replay SHARED EXCLUDE_FROM_ALL ../tests/gpu_validation/checkpoint_fault_preload.c)
+target_link_libraries(adaptive_control_replay PRIVATE ${CMAKE_DL_LIBS})
+
+add_executable(transport_config_probe EXCLUDE_FROM_ALL
+  perfect_gas_transport.F90 ../tests/gpu_validation/transport_config_probe.F90)
+
+add_executable(mean_statistics_schedule_probe EXCLUDE_FROM_ALL
+  timestep_control.F90 run_control_config.F90 insitu_schedule.F90 mean_statistics_schedule.F90
+  ../tests/gpu_validation/mean_statistics_schedule_probe.F90)
+
+add_executable(run_control_collective_probe EXCLUDE_FROM_ALL
+  timestep_control.F90 run_control_config.F90 insitu_schedule.F90 mean_statistics_schedule.F90 run_control_runtime.F90
+  ../tests/gpu_validation/run_control_collective_probe.F90)
+set_target_properties(run_control_collective_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/run_control_collective_probe_modules")
+target_include_directories(run_control_collective_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/run_control_collective_probe_modules")
+
+add_executable(run_control_config_probe EXCLUDE_FROM_ALL
+  timestep_control.F90 run_control_config.F90 ../tests/gpu_validation/run_control_config_probe.F90)
+set_target_properties(run_control_config_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/run_control_config_probe_modules")
+target_include_directories(run_control_config_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/run_control_config_probe_modules")
+
+add_executable(timestep_control_probe EXCLUDE_FROM_ALL
+  timestep_control.F90 ../tests/gpu_validation/timestep_control_probe.F90)
+set_target_properties(timestep_control_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/timestep_control_probe_modules")
+target_include_directories(timestep_control_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/timestep_control_probe_modules")
+
 add_executable(rectilinear_metric_halo_probe EXCLUDE_FROM_ALL
   rectilinear_metric_halo.F90 ../tests/gpu_validation/rectilinear_metric_halo_probe.F90)
 set_target_properties(rectilinear_metric_halo_probe PROPERTIES
@@ -1539,7 +1579,7 @@ target_include_directories(centered_diffusion_response_probe PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/diffusion_response_modules")
 endif()
 
-# Standalone Fortran probes need the same kinds as their production sources.
+# Standalone probes use the same kinds and startup options as production.
 get_property(ASTR_LOCAL_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(ASTR_TARGET IN LISTS ASTR_LOCAL_TARGETS)
   get_target_property(ASTR_TARGET_SOURCES ${ASTR_TARGET} SOURCES)
@@ -1568,6 +1608,9 @@ foreach(ASTR_TARGET IN LISTS ASTR_LOCAL_TARGETS)
     endif()
     if(NOT "astr_precision_io.F90" IN_LIST ASTR_TARGET_SOURCES)
       target_sources(${ASTR_TARGET} PRIVATE astr_precision_io.F90)
+    endif()
+    if(NOT "case_model_options.F90" IN_LIST ASTR_TARGET_SOURCES)
+      target_sources(${ASTR_TARGET} PRIVATE case_model_options.F90)
     endif()
     target_link_libraries(${ASTR_TARGET} PRIVATE MPI::MPI_Fortran)
   endif()

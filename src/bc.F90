@@ -6,6 +6,8 @@
 !| 13-02-2021: Created by J. Fang @ Warrington                         |
 !+---------------------------------------------------------------------+
 module bc
+  use iso_fortran_env, only: int64
+  use case_model_options, only: get_case_option
   use astr_precision, only: real_kind,clock_kind
   use boundary_high_order, only: high_order_boundary_enabled,boundary_derivative6, &
     boundary_neumann7,boundary_incoming_rate7,boundary_normal_terms6,high_order_wall_enabled, &
@@ -79,7 +81,7 @@ module bc
                                           bvec_j0,bvec_jm,             &
                                           bvec_k0,bvec_km
   real(real_kind),allocatable,target :: flowvarins(:,:,:,:),timeins(:)
-  integer,private,save :: inflow_last_step=-1
+  integer(int64),private,save :: inflow_last_step=-1
   logical,private,save :: inflow_load_initial=.true.
   logical,private,save :: inflow_first_call=.true.
   !
@@ -170,7 +172,7 @@ module bc
     high_order_adiabatic_wall_enabled=.false.
     high_order_slip_wall_enabled=.false.
     high_order_wall_axis=2
-    call get_environment_variable('ASTR_HIGH_ORDER_WALL_MODE',mode,status=status)
+    call get_case_option('high_order_wall_mode',mode,status=status)
     if(status==1.or.trim(mode)=='off'.or.trim(mode)=='') return
     if(status/=0.or.trim(mode)/='hermite7') error stop 'Unknown ASTR_HIGH_ORDER_WALL_MODE'
     homogeneous=[lihomo,ljhomo,lkhomo]
@@ -429,7 +431,7 @@ module bc
 
     if(mpirank==0) then
       mode='complete_state'
-      call get_environment_variable('ASTR_PROFILE_INFLOW_MODE',mode,   &
+      call get_case_option('profile_inflow_mode',mode,   &
                                     length=env_length,status=env_status)
       if(env_status/=0 .or. env_length<=0) mode='complete_state'
       do i=1,len_trim(mode)
@@ -480,7 +482,7 @@ module bc
 
     if(mpirank==0) then
       mode='current'
-      call get_environment_variable('ASTR_WALL_BLOWING_MODE',mode, &
+      call get_case_option('wall_blowing_mode',mode, &
                                     length=env_length,status=env_status)
       if(env_status==1 .or. env_length==0) then
         mode='current'
@@ -586,7 +588,7 @@ module bc
 
     if(mpirank==0) then
       mode='compatibility'
-      call get_environment_variable('ASTR_NSCBC_FARFIELD_MODE',mode,    &
+      call get_case_option('nscbc_farfield_mode',mode,    &
                                     length=env_length,status=env_status)
       if(env_status/=0 .or. env_length<=0) mode='compatibility'
       do i=1,len_trim(mode)
@@ -627,25 +629,25 @@ module bc
       nscbc_farfield_t_target=tinf
       if(nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_TARGET_RELAXATION.or. &
          nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_GRCBC) then
-        call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_RHO',        &
+        call read_nscbc_farfield_real('nscbc_farfield_rho',            &
                                       nscbc_farfield_rho_target)
-        call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_U',          &
+        call read_nscbc_farfield_real('nscbc_farfield_u',              &
                                       nscbc_farfield_u_target)
-        call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_V',          &
+        call read_nscbc_farfield_real('nscbc_farfield_v',              &
                                       nscbc_farfield_v_target)
-        call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_W',          &
+        call read_nscbc_farfield_real('nscbc_farfield_w',              &
                                       nscbc_farfield_w_target)
-        call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_T',          &
+        call read_nscbc_farfield_real('nscbc_farfield_t',              &
                                       nscbc_farfield_t_target)
         if(nscbc_farfield_rho_target<=0.e0_real_kind .or.                          &
            nscbc_farfield_t_target<=0.e0_real_kind) then
           stop 'NSCBC farfield target rho and T must be positive'
         endif
         if(nscbc_farfield_sbli_shock) then
-          call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_SHOCK_X',  &
+          call read_nscbc_farfield_real('nscbc_farfield_shock_x',      &
                                         nscbc_farfield_shock_x)
           call read_nscbc_farfield_real(                               &
-               'ASTR_NSCBC_FARFIELD_SHOCK_ANGLE_DEG',                  &
+               'nscbc_farfield_shock_angle_deg',                      &
                nscbc_farfield_shock_angle)
           if(nscbc_farfield_shock_angle<=0.e0_real_kind .or.                     &
              nscbc_farfield_shock_angle>=90.e0_real_kind) then
@@ -973,7 +975,7 @@ module bc
     integer :: env_status,env_length,ios
 
     text=''
-    call get_environment_variable(name,text,length=env_length,status=env_status)
+    call get_case_option(name,text,length=env_length,status=env_status)
     if(env_status/=0 .or. env_length<=0) return
     read(text(1:env_length),*,iostat=ios) value
     if(ios/=0) stop 'invalid ASTR_NSCBC_FARFIELD target value'

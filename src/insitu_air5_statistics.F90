@@ -14,7 +14,8 @@ module insitu_air5_statistics
   type(velocity_statistics),save :: regional
   real(real_kind),allocatable,save :: weights(:,:,:)
   real(real_kind),save :: window_saved(2)=0.e0_real_kind,previous_time=0.e0_real_kind,covered_duration=0.e0_real_kind,volume_saved=0.e0_real_kind
-  integer,save :: extent(3)=0,last_step=-1
+  integer,save :: extent(3)=0
+  integer(int64),save :: last_step=-1
   integer(int64),save :: samples=0
   logical,save :: reduction_saved=.false.
 contains
@@ -156,7 +157,7 @@ contains
 #ifdef _CUDA
     use insitu_air5_statistics_gpu, only: push_air5_statistics_gpu
 #endif
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: time,window(2)
     logical,intent(in) :: reduction
     real(real_kind),allocatable :: signals(:,:)
@@ -328,7 +329,7 @@ contains
     if(reduction_saved) ok=ok.and.regional_values(3)==identity%time.and.regional_values(8)==covered_duration
     if(.not.reduction_saved) ok=ok.and.regional_values(34)==0.e0_real_kind.and.regional_values(8)==0.e0_real_kind
     call require(ok,'invalid regional volume statistics')
-    samples=metadata(7); last_step=int(identity%step); previous_time=identity%time
+    samples=metadata(7); last_step=identity%step; previous_time=identity%time
   end subroutine
 
   subroutine finish_air5_statistics(prefix)

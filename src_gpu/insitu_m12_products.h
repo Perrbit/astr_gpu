@@ -63,7 +63,7 @@ struct M12AuxiliaryColors {
   viskores::cont::ArrayHandle<DisplayColor> colors;
   viskores::cont::Token token;
 };
-inline void append_m12_planes(std::vector<DeviceMesh>& meshes,MPI_Comm comm,int step,Real time,
+inline void append_m12_planes(std::vector<DeviceMesh>& meshes,MPI_Comm comm,std::int64_t step,Real time,
     const viskores::Id3& global,const viskores::Id3& extent,const viskores::Id3& offset,
     Real* xyz_pointer,Real* velocity_pointer,Real* temperature_pointer,int plane_j,
     std::uint64_t budget,std::uint64_t retained,bool packed_planes=false) {

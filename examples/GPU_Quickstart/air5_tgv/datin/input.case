@@ -1,0 +1,74 @@
+&case_options
+  flowtype = 'air5tgv'
+  ltimrpt = .true.
+  use_gpu = .true.
+  iomode = 'h'
+/
+
+&mesh
+  ia = 16
+  ja = 16
+  ka = 16
+  lihomo = .true.
+  ljhomo = .true.
+  lkhomo = .true.
+  lreadgrid = .false.
+  lfftk = .false.
+  gridfile = 'datin/grid.h5'
+/
+
+&physics
+  nondimen = .false.
+  diffterm = .true.
+  lcomb = .true.
+  ref_tem = 1000.d0
+  ref_vel = 10.d0
+  ref_len = 1.d-2
+  ref_den = 1.d0
+  num_species = 5
+  turbmode = 'none'
+/
+
+&numerics
+  lfilter = .false.
+  alfa_filter = 0.49d0
+  kcutoff = 48
+  conschm = '643e'
+  difschm = '643e'
+  rkscheme = 'rk3'
+  recon_schem = 5
+  lchardecomp = .false.
+  bfacmpld = 0.3d0
+  shkcrt = 0.05d0
+/
+
+&boundary
+  bctype = 1, 1, 1, 1, 1, 1
+  twall = 0, 0, 0, 0, 0, 0
+/
+
+&initialization
+  limmbou = .false.
+  lrestart = .false.
+  ninit = 0
+/
+
+&sponge
+  spg_i0 = 0
+  spg_im = 0
+  spg_j0 = 0
+  spg_jm = 0
+  spg_k0 = 0
+  spg_km = 0
+  spg_def = 'layer'
+/
+
+&species_transport
+  schmidt = 1.d0, 1.d0, 1.d0, 1.d0, 1.d0
+/
+
+&chemistry
+  source_mode = 'coupled'
+  convection_limiter = 'symmetric_species'
+  diffusion_limiter = 'layered'
+/

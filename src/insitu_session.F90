@@ -64,7 +64,7 @@ module insitu_session
   logical,save :: native_bridge_configured=.false.
   logical,save :: render_final=.false.
   real(real_kind),allocatable,save :: last_xyz(:,:,:,:),last_fields(:,:,:,:),last_derived(:,:,:,:)
-  integer,save :: last_step=-1
+  integer(int64),save :: last_step=-1
   real(real_kind),save :: last_time=0.e0_real_kind
   type(velocity_statistics),allocatable,save :: point_statistics(:,:,:)
   type(velocity_statistics),save :: regional_statistics
@@ -72,7 +72,7 @@ module insitu_session
   logical,save :: oracle_io=.true.
   real(real_kind),save :: statistics_window(2)=0.e0_real_kind
   integer(int64),save :: statistics_host_limit=0
-  integer,save :: statistics_step=-1,restore_step=-1
+  integer(int64),save :: statistics_step=-1,restore_step=-1
   real(real_kind),save :: statistics_time=0.e0_real_kind,restore_time=0.e0_real_kind
   integer(int64),save :: statistics_segment_step=0,statistics_parent_time=0
   real(real_kind),save :: statistics_segment_time=0.e0_real_kind
@@ -120,25 +120,28 @@ module insitu_session
     end function
     integer(c_int) function mesh_probe(backend,script,comm,nx,ny,nz,step,t,xyz,f,d,has_mean,means) &
         bind(C,name='astr_insitu_mesh_probe')
-      import c_int,c_real_kind,c_char
+      import c_int,c_int64_t,c_real_kind,c_char
       character(c_char),intent(in) :: backend(*),script(*)
-      integer(c_int),value :: comm,nx,ny,nz,step,has_mean
+      integer(c_int64_t),value :: step
+      integer(c_int),value :: comm,nx,ny,nz,has_mean
       real(c_real_kind),value :: t
       real(c_real_kind),intent(in) :: xyz(*),f(*),d(*),means(*)
     end function
     integer(c_int) function mesh_selected(backend,script,comm,nx,ny,nz,step,t,xyz,f,d,profile) &
         bind(C,name='astr_insitu_mesh_selected')
-      import c_int,c_real_kind,c_char
+      import c_int,c_int64_t,c_real_kind,c_char
       character(c_char),intent(in) :: backend(*),script(*)
-      integer(c_int),value :: comm,nx,ny,nz,step,profile
+      integer(c_int64_t),value :: step
+      integer(c_int),value :: comm,nx,ny,nz,profile
       real(c_real_kind),value :: t
       real(c_real_kind),intent(in) :: xyz(*),f(*),d(*)
     end function
     integer(c_int) function mesh_wall_statistics(backend,script,comm,nx,ny,nz,step,t,xyz,f,statistics,profile) &
         bind(C,name='astr_insitu_mesh_wall_statistics')
-      import c_int,c_real_kind,c_char
+      import c_int,c_int64_t,c_real_kind,c_char
       character(c_char),intent(in) :: backend(*),script(*)
-      integer(c_int),value :: comm,nx,ny,nz,step,profile
+      integer(c_int64_t),value :: step
+      integer(c_int),value :: comm,nx,ny,nz,profile
       real(c_real_kind),value :: t
       real(c_real_kind),intent(in) :: xyz(*),f(*),statistics(*)
     end function
@@ -154,7 +157,7 @@ contains
 
   subroutine catalog_wall_statistics_info(step,time,active,ready,window,duration,count)
     use insitu_wall_statistics, only: wall_statistics_catalog_info
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: time
     logical,intent(out) :: active,ready
     real(real_kind),intent(out) :: window(2),duration
@@ -225,7 +228,7 @@ contains
     use insitu_products_gpu, only: begin_preview_state_check,end_preview_state_check
 #endif
 #endif
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     integer :: status
     character(1024) :: directory
@@ -580,7 +583,7 @@ contains
   end function
 
   subroutine complete_output_insitu(step,t,final)
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     logical,intent(in) :: final
     if(.not.native_output.or..not.formal.or..not.enabled.or..not.options%render.or..not.final) return
@@ -612,7 +615,7 @@ contains
     call require_sample(formal.and.enabled.and.statistics_enabled,'statistics provider is not active')
     if(options%products=='catalog_stats') then
       call selected_runtime_file(path,writing,identity,budget,allow_repartition)
-      statistics_step=int(identity%step);statistics_time=identity%time
+      statistics_step=identity%step;statistics_time=identity%time
       if(.not.writing) output_statistics_restored=.true.
       return
     endif
@@ -625,7 +628,7 @@ contains
         options%air5_volume_statistics,options%wall_separation,options%postprocess_transport)
       if(options%air5_volume_statistics) call air5_statistics_file(path,writing,identity,budget,statistics_window, &
         options%air5_volume_reduction)
-      statistics_step=int(identity%step); statistics_time=identity%time
+      statistics_step=identity%step; statistics_time=identity%time
       if(.not.writing) output_statistics_restored=.true.
       return
     endif
@@ -743,7 +746,7 @@ contains
       call require_sample(all_ok,'cannot restore point statistics')
     endif
     regional_statistics=region
-    statistics_step=int(identity%step)
+    statistics_step=identity%step
     statistics_time=identity%time
     output_statistics_restored=.true.
     if(options%products=='channel_walls') call wall_statistics_file(path,.false.,identity,budget,statistics_window, &
@@ -1205,7 +1208,7 @@ contains
     use insitu_statistics_gpu, only: write_statistics_gpu_state,restore_statistics_gpu_state
 #endif
     character(*),intent(in) :: path
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     logical,intent(in) :: writing
     character(64) :: identity
@@ -1357,7 +1360,7 @@ contains
     close(unit)
     call require_sample(status==0,'cannot read paired batch identity')
     call require_sample(magic=='ASTRB001'.and.step>=0.and.step<=huge(restore_step),'invalid paired batch identity')
-    restore_step=int(step)
+    restore_step=step
     call paired_inventory(files)
     call validate_batch(trim(restore_batch),trim(identity),step,restore_time,[isize,jsize,ksize], &
       trim(paired_backend()),files,MPI_COMM_WORLD,ok)
@@ -1497,7 +1500,7 @@ contains
 #endif
     use commarray, only: x
     use parallel, only: mpirank,ig0,jg0,kg0
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t,fields(0:im,0:jm,0:km,11)
     type(velocity_statistics_result) :: result,regional
     real(real_kind),allocatable :: weights(:),values(:,:),output(:,:,:,:)
@@ -1738,7 +1741,7 @@ contains
     use commvar, only: lreadgrid
     use insitu_statistics_gpu, only: accumulate_statistics_gpu,spatial_statistics_gpu
     use commarray, only: x
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     real(real_kind) :: cell_volume,volume,mean(3),variance(3)
     type(velocity_statistics_result) :: regional
@@ -1763,7 +1766,7 @@ contains
     if(ok) final_statistics_meta=[t,statistics_window,volume,sqrt(variance),regional%rms_r]
     call report_insitu_timing('statistics_inclusive',statistics_started,step)
 #else
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     call require_sample(.false.,'device statistics require CUDA')
 #endif
@@ -1814,7 +1817,7 @@ contains
     use insitu_sample_gpu, only: derive_sample_gpu
     use insitu_products_gpu, only: render_device_sample_gpu,render_device_walls_gpu,render_device_plane_gpu
 #endif
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     logical,intent(in) :: final
     type(sample_schedule) :: preview
@@ -1928,7 +1931,7 @@ contains
   subroutine render_channel_walls(step,t)
     use insitu_fields, only: capture_channel_walls
     use parallel, only: mpirank
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     real(real_kind),allocatable :: coordinates(:,:,:,:),fields(:,:,:,:),means(:,:,:,:)
     logical,allocatable :: owned(:,:,:)
@@ -1964,7 +1967,7 @@ contains
   subroutine render_air5_walls(step,t)
     use insitu_fields, only: capture_air5_walls
     use parallel, only: mpirank
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     real(real_kind),allocatable :: coordinates(:,:,:,:),fields(:,:,:,:),means(:,:,:,:)
     logical,allocatable :: owned(:,:,:)
@@ -2000,7 +2003,7 @@ contains
   subroutine render_index_plane(step,t)
     use insitu_fields, only: capture_index_plane
     use parallel, only: mpirank
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     real(real_kind),allocatable :: coordinates(:,:,:),velocity(:,:,:)
     real(real_kind) :: unused(1)
@@ -2042,7 +2045,7 @@ contains
 #ifdef _CUDA
     use insitu_sample_gpu, only: derive_selected_sample_gpu
 #endif
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     real(real_kind),allocatable :: velocity(:,:,:,:),qfield(:,:,:,:)
     real(clock_kind) :: started,capture_seconds,derived_seconds,render_seconds
@@ -2094,7 +2097,7 @@ contains
 
   subroutine restart_output_statistics(step,t,parent_bytes,parent_time_word)
     use commvar, only: im,jm,km
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     integer,optional,intent(in) :: parent_bytes
     integer(int64),optional,intent(in) :: parent_time_word
@@ -2147,7 +2150,7 @@ contains
 
   subroutine begin_insitu(step,t)
     use parallel, only: mpirank
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     character(128) :: flag
     character(1200) :: filename
@@ -2193,7 +2196,7 @@ contains
     call require_sample(trim(flag)==''.or.trim(flag)=='0'.or.trim(flag)=='1','invalid initial sampling flag')
     if(trim(flag)/='1'.and..not.statistics_enabled) return
     call require_sample(step==0.and.t==0.e0_real_kind,'initial sampling gate does not support restart')
-    call sample_insitu_step(0,t,0.e0_real_kind)
+    call sample_insitu_step(0_int64,t,0.e0_real_kind)
   end subroutine
   subroutine configure_render_schedule()
     character(128) :: step_text,time_text,initial_text,final_text
@@ -2323,7 +2326,7 @@ contains
 #endif
 #endif
     use parallel, only: mpirank
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t,xyz(0:im,0:jm,0:km,3),fields(0:im,0:jm,0:km,11)
     real(real_kind),intent(in) :: derived(0:im,0:jm,0:km,14)
     logical,optional,intent(in) :: is_final
@@ -2475,7 +2478,7 @@ contains
   subroutine write_channel_wall_sample(step,t,dt)
     use insitu_fields, only: capture_channel_walls
     use parallel, only: mpirank,ig0,jg0,kg0
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t,dt
     real(real_kind),allocatable :: coordinates(:,:,:,:),fields(:,:,:,:)
     logical,allocatable :: owned(:,:,:)
@@ -2505,7 +2508,7 @@ contains
   subroutine write_air5_wall_sample(step,t,dt)
     use insitu_fields, only: capture_air5_walls
     use parallel, only: mpirank,ig0,jg0,kg0
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t,dt
     real(real_kind),allocatable :: coordinates(:,:,:,:),fields(:,:,:,:)
     logical,allocatable :: owned(:,:,:)
@@ -2536,7 +2539,7 @@ contains
     use bc, only: bctype
     use commarray, only: x
     use parallel, only: mpirank,ig0,jg0,kg0
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: time_end,step_dt
     real(real_kind),allocatable :: fields(:,:,:,:),derived(:,:,:,:),manufactured(:,:,:,:)
     character(1024) :: root_prefix

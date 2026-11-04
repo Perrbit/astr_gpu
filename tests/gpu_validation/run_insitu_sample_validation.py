@@ -216,8 +216,10 @@ def main():
                         else:
                             runtime['ASTR_INSITU_TEST_STEP_INTERVAL']=str(interval)
                         launch = [sys.executable, str(root/'tests/gpu_validation/insitu_device_identity.py'), '--']
+                    from named_fixture import prepare_named_run
+                    primary=prepare_named_run(case,'datin/input.tgv',runtime)
                     resources = run([str(args.mpiexec.resolve()), "--mca", "coll_hcoll_enable", "0", "-np", str(ranks),
-                         *launch, str(exe.resolve()), "run", "datin/input.tgv"], case, case/"run.log", runtime,
+                         *launch, str(exe.resolve()), "run", primary], case, case/"run.log", runtime,
                          observe=args.observe_resources and backend=='gpu', baseline=baseline_resources)
                     if not sampling:
                         baseline_resources = resources

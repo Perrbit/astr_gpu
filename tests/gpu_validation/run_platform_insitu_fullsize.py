@@ -216,7 +216,9 @@ def run_m12(args, label, shape, steps, images, baseline=None, checkpoint=False):
     if args.component_only:
         # Shared allocation accounting uses MPI_Win_allocate_shared locally.
         env['OMPI_MCA_osc'] = 'sm'
-    command = [str(args.mpiexec), '--bind-to', 'none', '-np', '4', str(executable), 'run', 'datin/input.dat']
+    from named_fixture import prepare_named_run
+    command = [str(args.mpiexec), '--bind-to', 'none', '-np', '4', str(executable), 'run',
+               prepare_named_run(case,'datin/input.dat',env)]
     receipt = dict(status='running', intervals=shape, topology=[4,1,1], steps=steps, dt=.02,
         images=images, checkpoint=checkpoint, command=command,
         boundary=getattr(args, 'm12_boundary', 'original'), product_profile=getattr(args, 'm12_products', 'all'),

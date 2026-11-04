@@ -15,14 +15,14 @@ module insitu_m12_gpu
   integer,parameter :: probes=72
   integer,device,allocatable,save :: indices_d(:,:)
   real(real_kind),device,allocatable,save :: probe_d(:,:),blocks_d(:,:),summary_d(:),wall_d(:,:)
-  integer,save :: local_indices(3,probes)=0,owners(probes)=0,last_step=-1
-  integer,save :: segment_start_step=0
+  integer,save :: local_indices(3,probes)=0,owners(probes)=0
+  integer(int64),save :: last_step=-1,segment_start_step=0
   integer,save :: probe_unit=0
   real(real_kind),save :: velocity_scale=0.e0_real_kind
   logical,save :: initialized=.false.,probe_open=.false.
 contains
   subroutine begin_m12_completed_gpu(completed_step)
-    integer,intent(in) :: completed_step
+    integer(int64),intent(in) :: completed_step
     call checkpoint_state_require(completed_step>=0,MPI_COMM_WORLD,'invalid M12 initial completed-step identity')
     last_step=completed_step
     segment_start_step=completed_step
@@ -87,7 +87,7 @@ contains
     use commarray, only: x
     use parallel, only: ig0,mpirank
     character(*),intent(in) :: directory
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
     real(real_kind) :: local(6,probes),values(6,probes),summary(4),minimum(4),wall(3,im+1)
     integer :: status,ierr,n,i,unit,closed,nb

@@ -6,13 +6,14 @@
 ! Contact       : fangjian19@gmail.com
 !=======================================================================
 program astr
+  use iso_fortran_env, only: int64
 
   !---------------------------------------------------------------------
   ! Module usage
   !---------------------------------------------------------------------
   use parallel,      only: mpiinitial,mpistop,mpisizedis,lio,          &
                            parallelini,parapp
-  use readwrite,     only: statement,readinput,readcont,fileini,infodisp
+  use readwrite,     only: statement,readinput,read_run_input,fileini,infodisp
   use commarray,     only: allocommarray
   use commvar,       only: use_gpu,prandtl,flowtype,ndims,lihomo,     &
                            ljhomo,lkhomo,nstep,time
@@ -116,7 +117,7 @@ program astr
 #endif
 
     if(preview_mode) then
-      call readcont
+      call read_run_input()
       call configure_preview_runtime()
     endif
     if(.not.preview_mode) call fileini
@@ -152,14 +153,14 @@ program astr
     if(use_gpu) call gpu_after_flowinit()
 #endif
 
-    call report_insitu_timing('solver_initialization',initialization_started,-1)
+    call report_insitu_timing('solver_initialization',initialization_started,-1_int64)
     call steploop
     endif
 #ifdef _CUDA
     if(use_gpu) call gpu_before_finalize()
 #endif
 
-    call report_insitu_timing('solver_total_after_mpi',solver_started,-1)
+    call report_insitu_timing('solver_total_after_mpi',solver_started,-1_int64)
     call mpistop
 
   else

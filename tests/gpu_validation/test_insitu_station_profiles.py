@@ -183,9 +183,11 @@ def test_flatplate_station_profiles(tmp_path, backend, topology, record_property
                ASTR_GPU_HALO_TRANSPORT="pinned", ASTR_GPU_SYNC_MODE="explicit",
                ASTR_INSITU_CONFIG="datin/input.insitu", ASTR_INSITU_TIMING="1")
     args = arguments(case.parent)
+    from named_fixture import prepare_named_run
+    primary=prepare_named_run(case,'datin/input.dat',env)
     with (case / "run.log").open("w") as log:
         result = subprocess.run([str(args.mpiexec), "--mca", "coll_hcoll_enable", "0", "--oversubscribe",
-                                 "-np", str(np.prod(topology)), str(Path(EXE).resolve()), "run", "datin/input.dat"],
+                                 "-np", str(np.prod(topology)), str(Path(EXE).resolve()), "run", primary],
                                 cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT)
     assert result.returncode == 0, (case / "run.log").read_text()
     assert "The job is done!" in (case / "run.log").read_text()

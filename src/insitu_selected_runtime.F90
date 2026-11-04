@@ -268,7 +268,7 @@ contains
       0.e0_real_kind,0.e0_real_kind,reference,ok)
     message='wall_units reference has no representable nonzero statistical shear scale'
     if(ok.and.reference%scale_available) message=''
-    call report_insitu_timing('station_wall_reference',started,int(series%groups(g)%last_step))
+    call report_insitu_timing('station_wall_reference',started,series%groups(g)%last_step)
   end subroutine
 
   subroutine selected_runtime_profile(definition,profile,ok,message,retained_host)
@@ -533,7 +533,7 @@ contains
         enddo
       enddo
     endif
-    call report_insitu_timing('selected_statistics_sample',started,int(step))
+    call report_insitu_timing('selected_statistics_sample',started,step)
   end subroutine
 
   subroutine disable_selected(step,time,message)

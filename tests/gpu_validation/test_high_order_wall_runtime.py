@@ -17,6 +17,7 @@ from run_m12_mp7_nscbc_performance import runtime,mpi_command
 from run_native_precision_tgv_gate import physical_state,rhs_state
 from run_output_restart_validation import compare_fields
 from compare_flowstate import read_flowstate
+from named_fixture import prepare_named_run
 
 ROOT=Path(__file__).resolve().parents[2]
 EXE=os.environ.get('ASTR_HB1B_EXE')
@@ -150,7 +151,7 @@ def launch(tmp_path_factory):
             env['ASTR_INSITU_SAMPLE_PREFIX']='diagnostics/wall'
             if backend=='gpu' and wall_samples is True:
                 env['ASTR_INSITU_TEST_DEVICE_TRANSPORT']='pinned'
-        application=[str(Path(EXE).resolve()),'run','datin/input.chl']
+        application=[str(Path(EXE).resolve()),'run',prepare_named_run(case,'datin/input.chl',env)]
         if sanitizer:
             application=['/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/compilers/bin/compute-sanitizer',
                 '--tool','memcheck','--error-exitcode','77','--log-file','memcheck.%p.log']+application

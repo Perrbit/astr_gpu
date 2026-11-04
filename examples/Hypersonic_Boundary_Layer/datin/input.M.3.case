@@ -1,0 +1,65 @@
+&case_options
+  flowtype = 'bl'
+  ltimrpt = .false.
+  use_gpu = .false.
+  iomode = 'h'
+/
+
+&mesh
+  ia = 440
+  ja = 260
+  ka = 0
+  lihomo = .false.
+  ljhomo = .false.
+  lkhomo = .true.
+  lreadgrid = .true.
+  lfftk = .false.
+  gridfile = './datin/grid.M.3'
+/
+
+&physics
+  nondimen = .true.
+  diffterm = .true.
+  lcomb = .false.
+  ref_tem = 226.65d0
+  reynolds = 10000.d0
+  mach = 0.3d0
+  num_species = 0
+  turbmode = 'none'
+/
+
+&numerics
+  lfilter = .true.
+  alfa_filter = 0.49d0
+  kcutoff = 48
+  conschm = '643c'
+  difschm = '643c'
+  rkscheme = 'rk3'
+  recon_schem = 5
+  lchardecomp = .false.
+  bfacmpld = 0.5d0
+  shkcrt = 0.001d0
+/
+
+&boundary
+  bctype = 11, 22, 41, 52, 1, 1
+  twall = 0, 0, 1.01d0, 0, 0, 0
+  turbinf = 'free'
+  pout = 1
+/
+
+&initialization
+  limmbou = .false.
+  lrestart = .false.
+  ninit = 0
+/
+
+&sponge
+  spg_i0 = 0
+  spg_im = 0
+  spg_j0 = 0
+  spg_jm = 0
+  spg_k0 = 0
+  spg_km = 0
+  spg_def = 'layer'
+/

@@ -24,6 +24,9 @@ module test
     use parallel,  only : mpistop, bcast
     use cmdefne,   only : readkeyboad
 #ifdef ASTR_BUILD_TESTING
+    use readwrite, only: readinput
+#endif
+#ifdef ASTR_BUILD_TESTING
     use boundary_rhs_manufactured, only: check_boundary_rhs,check_boundary_stage, &
       check_initial_profile_mpi,check_conservative_admission,                     &
       check_nscbc_characteristic_policy,check_thermal_roundtrip
@@ -45,6 +48,8 @@ module test
     !-------------------------------------------------------------------
     select case (trim(testmode))
 #ifdef ASTR_BUILD_TESTING
+    case ('case')
+      call readinput(inspect=.true.)
     case ('eosr')
       call check_thermal_roundtrip()
     case ('bcad')

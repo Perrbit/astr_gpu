@@ -1,4 +1,5 @@
 module perfect_gas_transport
+  use case_model_options, only: get_case_option
   use astr_precision, only: real_kind
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
@@ -13,10 +14,10 @@ contains
     prandtl=0.72e0_real_kind
     sutherland_k=110.3e0_real_kind
     changed=.false.
-    call read_positive_real('ASTR_PERFECT_GAS_PRANDTL',prandtl,supplied,status)
+    call read_positive_real('perfect_gas_prandtl',prandtl,supplied,status)
     changed=changed.or.supplied
     if(status/=0) return
-    call read_positive_real('ASTR_SUTHERLAND_TEMPERATURE_K',sutherland_k,supplied,status)
+    call read_positive_real('sutherland_temperature_k',sutherland_k,supplied,status)
     changed=changed.or.supplied
   end subroutine read_transport_environment
 
@@ -28,7 +29,7 @@ contains
     character(len=256) :: token,extra
     integer :: length,env_status,ios
     real(real_kind) :: parsed
-    call get_environment_variable(name,token,length=length,status=env_status)
+    call get_case_option(name,token,length=length,status=env_status)
     supplied=env_status/=1
     status=0
     if(.not.supplied) return

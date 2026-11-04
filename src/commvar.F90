@@ -6,6 +6,7 @@
 !| 06-02-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module commvar
+  use iso_fortran_env, only: int64
   use astr_precision, only: real_kind,clock_kind
   !
   use commtype
@@ -15,7 +16,7 @@ module commvar
 #endif
   !
   implicit none
-  private :: real_kind,clock_kind
+  private :: real_kind,clock_kind,int64
   !
   integer :: ia,ja,ka,im,jm,km,is,ie,js,je,ks,ke
   integer :: hm
@@ -62,7 +63,8 @@ module commvar
   !|                lavg | average the flow field or not .             |
   !+---------------------+---------------------------------------------+
   !
-  integer :: feqchkpt,feqwsequ,feqslice,feqlist,feqavg
+  integer(int64) :: feqchkpt,feqlist,feqavg
+  integer :: feqwsequ,feqslice
   !+---------------------+---------------------------------------------+
   !|            feqchkpt | frequency of writing checkpoint             |
   !|            feqwsequ | frequency of writing flowfield sequence     |
@@ -88,7 +90,8 @@ module commvar
   !|              voldom | total volume of the domain.                 |
   !|     dxyzmax,dxyzmin | characteristic grid spacing.                |
   !+---------------------+---------------------------------------------+
-  integer :: nstep,nsrpt,maxstep,filenumb,nmonitor,fnumslic,rkstep
+  integer(int64) :: nstep,nsrpt,maxstep
+  integer :: filenumb,nmonitor,fnumslic,rkstep
   integer :: islice,jslice,kslice
   integer,allocatable :: imon(:,:)
   real(real_kind) :: time,deltat

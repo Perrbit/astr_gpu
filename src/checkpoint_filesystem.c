@@ -111,15 +111,18 @@ int astr_output_frame_catalog(const char *path, int64_t *steps, int capacity, in
         const char *name = member->d_name;
         struct stat st;
         if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
-        int frame = !strncmp(name, "step", 4) && strlen(name) >= 16;
+        int frame = !strncmp(name, "step", 4);
+        size_t end = 4;
         int64_t step = 0;
-        for (int i = 4; frame && i < 16; ++i) {
-            if (name[i] < '0' || name[i] > '9') frame = 0;
-            else step = step * 10 + name[i] - '0';
+        while (frame && name[end] >= '0' && name[end] <= '9') {
+            int digit = name[end] - '0';
+            if (step > (INT64_MAX - digit) / 10) frame = 0;
+            else step = step * 10 + digit;
+            ++end;
         }
-        if (frame && (!name[16] || !strcmp(name + 16, ".tmp"))) {
+        if (frame && end >= 16 && (!name[end] || !strcmp(name + end, ".tmp"))) {
             if (fstatat(dirfd(directory), name, &st, AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode)) goto done;
-            if (name[16]) continue;
+            if (name[end]) continue;
             if (*count >= capacity) goto done;
             steps[(*count)++] = step;
         } else {

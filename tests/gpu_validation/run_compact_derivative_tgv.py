@@ -126,8 +126,10 @@ def main():
                            UCX_CUDA_COPY_ENABLE_FABRIC="no", UCX_CUDA_COPY_DMABUF="no",
                            UCX_CUDA_IPC_ENABLE_MNNVL="no", OMPI_MCA_coll_hcoll_enable="0")
                 env.pop("OMPI_MCA_opal_cuda_support", None)
+            from named_fixture import prepare_named_run
+            primary=prepare_named_run(case,'datin/input.tgv',env)
             command = ["mpirun", "--oversubscribe", "--bind-to", "none", "-np", str(ranks),
-                       str(exe.resolve()), "run", "datin/input.tgv"]
+                       str(exe.resolve()), "run", primary]
             if args.gpu_sanitizer and backend == "gpu":
                 if args.compact_transport == 'pinned':
                     env.update(OMPI_MCA_pml="ob1", OMPI_MCA_btl="self,vader,tcp", OMPI_MCA_osc="pt2pt",
@@ -140,7 +142,7 @@ def main():
                     command += ["--leak-check", "full"]
                 if args.compact_transport == 'device-aware':
                     command += ['--suppressions',str(ROOT/'tests/gpu_validation/compute_sanitizer_ucx_cuda_aware.supp.xml')]
-                command += [str(exe.resolve()), "run", "datin/input.tgv"]
+                command += [str(exe.resolve()), "run", primary]
             with (case / "run.log").open("w") as log:
                 subprocess.run(command, cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
         text = (case / "run.log").read_text(errors="replace")

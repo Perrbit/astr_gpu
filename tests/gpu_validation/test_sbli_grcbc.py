@@ -39,7 +39,8 @@ def launch(case,backend,steps=12,topology=(1,1,1),restore=None,mode='sbli_grcbc'
     command=mpi_command(MPIEXEC,int(np.prod(topology)),transport)
     if memcheck:
         command+=['compute-sanitizer','--tool','memcheck','--error-exitcode','99']
-    command += [str(Path(EXE).resolve()),'run','datin/input.flatplate']
+    from named_fixture import prepare_named_run
+    command += [str(Path(EXE).resolve()),'run',prepare_named_run(case,'datin/input.flatplate',env)]
     with (case/'run.log').open('w') as log:
         result=subprocess.run(command,cwd=case,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=180)
     text=(case/'run.log').read_text()

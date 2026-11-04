@@ -1,4 +1,5 @@
 module benchmark_runtime
+  use iso_fortran_env, only: int64
   use mpi
   implicit none
   private
@@ -38,7 +39,7 @@ contains
   subroutine report_insitu_timing(stage,started,step)
     character(*),intent(in) :: stage
     real(8),intent(in) :: started
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     if(.not.insitu_timing_enabled) return
     ! Local durations only: aggregate whole windows offline, without new barriers.
     write(*,'(A,1X,A,1X,I0,1X,I0,1X,ES24.16E3)') &
@@ -165,7 +166,7 @@ contains
   end subroutine begin_complete_step_timing
 
   subroutine end_complete_step_timing(step)
-    integer,intent(in) :: step
+    integer(int64),intent(in) :: step
     real(8) :: elapsed
     if(.not.complete_step_timing_enabled) return
     elapsed=MPI_Wtime()-complete_step_start

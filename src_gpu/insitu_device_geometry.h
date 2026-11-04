@@ -157,7 +157,8 @@ struct DeviceGeometryView {
   const viskores::UInt32* display_connectivity=nullptr;
   viskores::Id points=0,cells=0;
   int arity=3;
-  int device=-1,step=0;
+  int device=-1;
+  std::int64_t step=0;
   Real time=Real(0.);
   Real bounds[6]={Real(0.),Real(0.),Real(0.),Real(0.),Real(0.),Real(0.)};
   Real speed_range[2]={Real(0.),Real(0.)};
@@ -300,7 +301,7 @@ class DeviceGeometryOwner {
       viskores::cont::DeviceAdapterTagCuda{},token));
   }
 public:
-  DeviceGeometryOwner(const viskores::cont::DataSet& data,int step,Real time,int empty_arity=3,
+  DeviceGeometryOwner(const viskores::cont::DataSet& data,std::int64_t step,Real time,int empty_arity=3,
       const char* scalar_field=nullptr,bool image_only=false,
       const std::vector<std::string>& point_fields={},const std::vector<std::string>& cell_fields={},bool native_only=false) {
     if(empty_arity!=2 && empty_arity!=3) throw std::invalid_argument("Invalid device product arity");

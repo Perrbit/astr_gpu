@@ -55,9 +55,10 @@ def rejected(args,label,source,message,topology='1,1,1',mode='legacy_random'):
     env.update(ASTR_FORCE_MPI_TOPOLOGY=topology,ASTR_WALL_BLOWING_MODE=mode,
                ASTR_GPU_SYNC_MODE='explicit',ASTR_GPU_PRECISION_MODE='fp64')
     ranks=int(np.prod([int(v) for v in topology.split(',')]))
+    from named_fixture import prepare_named_run
     command=[str(args.mpiexec),'--mca','pml','ob1','--mca','btl','self,vader,tcp',
         '--mca','coll_hcoll_enable','0','--oversubscribe','-np',str(ranks),
-        str(args.executable),'run','datin/input.dat']
+        str(args.executable),'run',prepare_named_run(case,'datin/input.dat',env)]
     with (case/'run.log').open('wb') as log:
         result=subprocess.run(command,cwd=case,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=60)
     text=(case/'run.log').read_text()

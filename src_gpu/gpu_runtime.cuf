@@ -1,14 +1,16 @@
 module gpu_runtime
+  use iso_fortran_env, only: int64
   use astr_precision, only: real_kind,clock_kind
   implicit none
-  private :: real_kind,clock_kind
+  private :: real_kind,clock_kind,int64
   logical,save :: prepared_halo_ready = .false.
   logical,save :: stats_snapshot_ready = .false.
   logical,save :: rk_timing_configured = .false.
   logical,save :: rk_timing_enabled = .false.
   logical,save :: rank_rk_timing_enabled = .false.
   logical,save :: benchmark_state_check = .false.
-  integer,save :: statistics_interval=1,timing_last=-1
+  integer,save :: statistics_interval=1
+  integer(int64),save :: timing_last=-1
   logical,save :: tgv_conservation=.false.
   real(clock_kind),allocatable,save :: timing_records(:,:)
   logical,save :: complete_step_timing_configured = .false.
@@ -131,7 +133,7 @@ contains
       .not.(lihomo.and.ljhomo.and.lkhomo).or.any(bctype/=1))) &
       error stop 'TGV conservative means require a Cartesian triply periodic box'
     if(benchmark_buffered_output_enabled()) then
-      allocate(timing_records(3,nstep:maxstep))
+      allocate(timing_records(3,nstep:nstep+1023))
       timing_last=nstep-1
     endif
     rk_timing_configured=.true.
@@ -140,9 +142,9 @@ contains
   subroutine flush_rk_timing()
     use parallel, only: mpirank,lio
     implicit none
-    integer :: step
+    integer(int64) :: step
     if(.not.allocated(timing_records)) return
-    do step=lbound(timing_records,2),timing_last
+    do step=lbound(timing_records,2,kind=int64),timing_last
       if(lio) write(*,'(A,1X,I0,3(1X,ES24.16E3))') 'ASTR_GPU_RK_TIMING',step,timing_records(:,step)
       if(rank_rk_timing_enabled) write(*,'(A,2(1X,I0),3(1X,ES24.16E3))') &
         'ASTR_GPU_RANK_RK_TIMING',mpirank,step,timing_records(:,step)
@@ -308,6 +310,7 @@ contains
     use halo_exchange_gpu, only: release_halo_exchange_buffers_gpu
     use mp_positivity_gpu, only: release_mp_positivity_gpu
     use crashfix_gpu, only: release_crashfix_gpu
+    use cfl_gpu, only: release_timestep_rates_gpu
     use commarray_gpu, only: release_gpu_arrays
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_hbl_boundary_gpu, only: release_air5_hbl_boundary_gpu
@@ -333,6 +336,7 @@ contains
     call release_halo_exchange_buffers_gpu()
     call release_mp_positivity_gpu()
     call release_crashfix_gpu()
+    call release_timestep_rates_gpu()
     call release_compact_operator_gpu()
     call release_gpu_arrays()
 #ifdef ASTR_AIR5_CHEMISTRY
@@ -454,6 +458,7 @@ contains
     logical,intent(in),optional :: first_stage_prepared
     logical,intent(in),optional :: copy_back
     real(clock_kind) :: integration_start,integration_seconds,total_seconds
+    real(clock_kind),allocatable :: enlarged_records(:,:)
 
     if(rk_timing_enabled) integration_start=ptime()
     call time_integration_rk_gpu(first_stage_prepared,copy_back)
@@ -462,8 +467,12 @@ contains
       integration_seconds=ptime()-integration_start
       total_seconds=rk_prepare_seconds+integration_seconds
       if(allocated(timing_records)) then
-        if(nstep<lbound(timing_records,2).or.nstep>ubound(timing_records,2)) &
-          error stop 'Buffered RK timing requires an unchanged step window'
+        if(nstep>ubound(timing_records,2)) then
+          allocate(enlarged_records(3,lbound(timing_records,2,kind=int64): &
+            lbound(timing_records,2,kind=int64)+2*size(timing_records,2,kind=int64)-1))
+          enlarged_records(:,:timing_last)=timing_records(:,:timing_last)
+          call move_alloc(enlarged_records,timing_records)
+        endif
         timing_records(:,nstep)=[rk_prepare_seconds,integration_seconds,total_seconds]
         timing_last=nstep
       else
@@ -510,7 +519,7 @@ contains
 
     call compute_gradcal_gpu()
     if(tgv_conservation) call gpu_write_tgv_conservation()
-    if(nstep<=0.or.nstep>maxstep) return
+    if(nstep<=0) return
     call gpu_kenergy_scalar(statistics(1))
     call gpu_enstophy_scalar(statistics(2))
     call gpu_dissipation_scalar(statistics(3))

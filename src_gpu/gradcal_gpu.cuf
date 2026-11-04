@@ -691,6 +691,7 @@ contains
   end subroutine compute_gradcal_gpu
 
   subroutine write_gradient_validation_gpu(step,stage)
+    use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,npdcj
     use commarray, only: dvel,dtmp,bnorm_j0,bnorm_jm
     use comsolver, only: gradcal_cpu=>gradcal
@@ -698,7 +699,8 @@ contains
       gpu_mixed_derivative_workspace_enabled
     use validation_io, only: write_gradient_validation_snapshot
     implicit none
-    integer,intent(in) :: step,stage
+    integer(int64),intent(in) :: step
+    integer,intent(in) :: stage
     real(real_kind),allocatable :: gradient(:,:,:,:,:),temperature_gradient(:,:,:,:)
     real(real_kind),allocatable :: lower_normal(:,:,:),upper_normal(:,:,:)
     real(4),allocatable :: gradient_sp(:,:,:,:,:),temperature_sp(:,:,:,:)

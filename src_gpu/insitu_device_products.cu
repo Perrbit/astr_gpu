@@ -16,6 +16,7 @@
 #include <viskores/cont/cuda/internal/CudaAllocator.h>
 #include <nvtx3/nvToolsExt.h>
 #include <cstdio>
+#include <cinttypes>
 #include <cstdlib>
 #include <tuple>
 #include <fstream>
@@ -34,7 +35,7 @@ namespace {
 struct RuntimeTraceStages {
   MPI_Comm comm;
   const char* id;
-  int step;
+  std::int64_t step;
   template<class Operation>
   auto operator()(const char* stage,Operation operation) const -> decltype(operation()) {
     using Result=decltype(operation());
@@ -67,10 +68,11 @@ bool initialized=false;
 
 struct ProductStage {
   const char* name;
-  int rank,step;
+  int rank;
+  std::int64_t step;
   double started;
   bool running=true;
-  ProductStage(const char* label,const char* range,int communicator,int frame):name(label),step(frame) {
+  ProductStage(const char* label,const char* range,int communicator,std::int64_t frame):name(label),step(frame) {
     MPI_Comm_rank(MPI_Comm_f2c(communicator),&rank);
     started=MPI_Wtime();nvtxRangePushA(range);
   }
@@ -81,7 +83,7 @@ struct ProductStage {
     const char* option=std::getenv("ASTR_INSITU_TIMING");
     if(option && (std::string(option)=="1" || std::string(option)=="true" || std::string(option)=="TRUE" ||
        std::string(option)=="t" || std::string(option)=="T" || std::string(option)=="on" || std::string(option)=="ON"))
-      std::printf("ASTR_INSITU_STAGE_TIMING %s %d %d %.17g\n",name,step,rank,seconds);
+      std::printf("ASTR_INSITU_STAGE_TIMING %s %" PRId64 " %d %.17g\n",name,step,rank,seconds);
   }
   ~ProductStage() {finish();}
 };
@@ -265,7 +267,7 @@ astr_insitu::ProductAudit audit_physical_trace(const astr_insitu::DeviceGeometry
 }
 
 astr_insitu::DeviceMesh resident_mesh(const char* name,const viskores::cont::DataSet& data,
-    int step,Real time,int arity=3,const Real* audit_halo=nullptr,
+    std::int64_t step,Real time,int arity=3,const Real* audit_halo=nullptr,
     const astr_insitu::DeviceDiagnostics* audit_diagnostics=nullptr,
     viskores::Id3 extent={0,0,0},viskores::Id3 offset={0,0,0},int global_cells=32,int rank=0,
     const astr_insitu::NativeVector* physical_source=nullptr,std::uint64_t host_budget=0,
@@ -298,7 +300,7 @@ astr_insitu::DeviceMesh resident_mesh(const char* name,const viskores::cont::Dat
       astr_insitu::audit_device_product(view,audit_halo,audit_diagnostics,
       extent,offset,global_cells,std::string(name)=="q_surface",std::string(name)=="velocity_slice",
       std::string(name)=="crossing_streamlines",computational,physical_source,iso);
-    std::printf("ASTR_INSITU_RESIDENT_AUDIT rank=%d step=%d product=%s field_maxabs=%.17g "
+    std::printf("ASTR_INSITU_RESIDENT_AUDIT rank=%d step=%" PRId64 " product=%s field_maxabs=%.17g "
       "display_maxabs=%.17g points=%lld\n",rank,step,name,result.field,result.display,
       static_cast<long long>(view.points));
   }
@@ -356,7 +358,7 @@ void report_resident_trace(const astr_insitu::DeviceStreamlines& trace,const cha
 }
 
 extern "C" int astr_insitu_device_render_walls(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,Real time,int im,int km,int nw,int wall_kind,Real* coordinates,Real* fields,
+    int fcomm,std::int64_t step,Real time,int im,int km,int nw,int wall_kind,Real* coordinates,Real* fields,
     int mean_requested,int covered,Real duration,Real window_start,Real window_end,Real* means,
     std::int64_t budget,std::int64_t reserve,std::int64_t retained)
 try {
@@ -434,12 +436,12 @@ try {
     }
     products.push_back(std::move(mesh));
     if(placeholder) continue;
-    std::printf("ASTR_INSITU_DEVICE_WALL_GEOMETRY rank=%d step=%d product=%s points=%lld triangles=%lld "
+    std::printf("ASTR_INSITU_DEVICE_WALL_GEOMETRY rank=%d step=%" PRId64 " product=%s points=%lld triangles=%lld "
       "local_area=%.17g global_area=%.17g invalid_triangles=%.0f geometry_host_bytes=0\n",rank,step,name.c_str(),
       static_cast<long long>(view.points),static_cast<long long>(view.cells),product.audit[0],total_area,product.audit[1]);
-    std::printf("ASTR_INSITU_DEVICE_WALL_MEASURE rank=%d step=%d product=%s curve=%d "
+    std::printf("ASTR_INSITU_DEVICE_WALL_MEASURE rank=%d step=%" PRId64 " product=%s curve=%d "
       "local_quad_area=%.17g global_quad_area=%.17g\n",rank,step,name.c_str(),int(curve),product.measure[0],quadrature_area);
-    std::printf("ASTR_INSITU_DEVICE_WALL_SCALAR rank=%d step=%d product=%s minimum=%.17g maximum=%.17g "
+    std::printf("ASTR_INSITU_DEVICE_WALL_SCALAR rank=%d step=%" PRId64 " product=%s minimum=%.17g maximum=%.17g "
       "display_minimum=%.17g display_maximum=%.17g control_values=2 field_download_bytes=0\n",
       rank,step,name.c_str(),view.speed_range[0],view.speed_range[1],ranges[c][0],ranges[c][1]);
     if(!astr_insitu::retain_quantitative_product_fields()) owner->retain_display_only();
@@ -459,7 +461,7 @@ try {
 }
 
 extern "C" int astr_insitu_device_render_m12_planes(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,Real time,int nx,int ny,int nz,int ox,int gy,int gz,int global_cells,int plane_j,
+    int fcomm,std::int64_t step,Real time,int nx,int ny,int nz,int ox,int gy,int gz,int global_cells,int plane_j,
     Real* positions,Real* fields,std::int64_t budget,std::int64_t reserve,std::int64_t retained)
 try {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
@@ -506,7 +508,7 @@ try {
 }
 
 extern "C" int astr_insitu_device_render(const char* pipeline,const char* backend,const char* script,const char* profile,
-    int fcomm,int step,Real time,int nx,int ny,int nz,int ox,int oy,int oz,int global_cells,int global_y,int global_z,
+    int fcomm,std::int64_t step,Real time,int nx,int ny,int nz,int ox,int oy,int oz,int global_cells,int global_y,int global_z,
     Real* velocity,Real* halo,Real* diagnostic,Real* reynolds_halo,Real* favre_halo,
     int covered,Real duration,Real window_start,Real window_end,std::int64_t host_budget,
     int curve,Real* coordinates,Real* coordinate_halo,std::int64_t budget,std::int64_t reserve,std::int64_t retained,
@@ -692,7 +694,7 @@ try {
       });
       if(!ok) meshes.resize(before);
     }
-    if(curve) std::printf("ASTR_INSITU_CURVE_SURFACE_FRAME rank=%d step=%d physical_coordinates=1 "
+    if(curve) std::printf("ASTR_INSITU_CURVE_SURFACE_FRAME rank=%d step=%" PRId64 " physical_coordinates=1 "
       "field_download_bytes=0 geometry_host_bytes=0\n",rank,step);
     }
     if(slice || surface) {
@@ -732,7 +734,7 @@ try {
 #ifdef ASTR_BUILD_TESTING
         if(test_step_scale && rank==0) for(int i=0;i<trace.particles;++i) {
           const auto& s=trace.final_state[i];
-          std::printf("ASTR_INSITU_CURVE_STEP_SENSITIVITY step=%d product=%s scale=%.17g particle=%d "
+          std::printf("ASTR_INSITU_CURVE_STEP_SENSITIVITY step=%" PRId64 " product=%s scale=%.17g particle=%d "
             "status=%d x=%.17g y=%.17g z=%.17g length=%.17g\n",step,name,physical_step_scale,i,
             s.status,s[0],s[1],s[2],s[4]);
         }
@@ -819,7 +821,7 @@ try {
             const int status=astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,
               profile,std::move(frame),covered);
             if(status) return status;
-            std::printf("ASTR_INSITU_PREVIEW_CACHE rank=%d step=%d candidate=%s velocity=%s seeds=%s integrated=%d\n",
+            std::printf("ASTR_INSITU_PREVIEW_CACHE rank=%d step=%" PRId64 " candidate=%s velocity=%s seeds=%s integrated=%d\n",
               rank,step,candidate.id.c_str(),candidate.velocity.c_str(),candidate.seeds.c_str(),j==i);
           }
         }
@@ -840,7 +842,7 @@ try {
         if(reynolds) meshes.push_back(add_trace("mean_reynolds_streamlines",astr_insitu::view_component_halo(reynolds_halo,halo_dimensions),false,true,reynolds_halo,seed_layout));
         if(favre) meshes.push_back(add_trace("mean_favre_streamlines",astr_insitu::view_component_halo(favre_halo,halo_dimensions),false,true,favre_halo,seed_layout));
       }
-      if(curve) std::printf("ASTR_INSITU_CURVE_TRACE_FRAME rank=%d step=%d physical_coordinates=1 "
+      if(curve) std::printf("ASTR_INSITU_CURVE_TRACE_FRAME rank=%d step=%" PRId64 " physical_coordinates=1 "
         "physical_hexahedral_interpolation=1 field_download_bytes=0 geometry_host_bytes=0\n",rank,step);
     }
     if(traces || group_count==0) return render_group();
@@ -1025,7 +1027,7 @@ RuntimeTrajectoryKey trajectory_key(const std::string& source,const std::string&
 }
 
 void runtime_line_oracle(const astr_insitu::RuntimeProductView& context,const astr_insitu::DeviceGeometryView& view,
-    int fcomm,int step,std::int64_t host_budget) {
+    int fcomm,std::int64_t step,std::int64_t host_budget) {
   const char* prefix=std::getenv("ASTR_INSITU_TEST_RUNTIME_LINE_PREFIX");
   if(!prefix || !*prefix) return;
 #ifdef ASTR_BUILD_TESTING
@@ -1050,7 +1052,7 @@ void runtime_line_oracle(const astr_insitu::RuntimeProductView& context,const as
   if(!values.empty()) file.write(reinterpret_cast<const char*>(values.data()),values.size()*sizeof(Real));
   if(!indices.empty()) file.write(reinterpret_cast<const char*>(indices.data()),indices.size()*sizeof(viskores::Id));
   file.close();if(!file) throw std::runtime_error("Cannot publish the streamline validation oracle");
-  std::printf("ASTR_RUNTIME_LINE_ORACLE rank=%d id=%s step=%d oracle_download_bytes=%llu runtime_zero_readback_evidence=0\n",
+  std::printf("ASTR_RUNTIME_LINE_ORACLE rank=%d id=%s step=%" PRId64 " oracle_download_bytes=%llu runtime_zero_readback_evidence=0\n",
     rank,context.id.c_str(),step,static_cast<unsigned long long>(bytes));
 #else
   throw std::invalid_argument("Runtime streamline validation oracle is unavailable in this production build");
@@ -1114,7 +1116,7 @@ extern "C" int astr_insitu_runtime_line_metadata(const char* source,const char* 
 }
 
 extern "C" int astr_insitu_render_line_product(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,Real time,const char* id,const char* source,const char* definition,const char* directory,
+    int fcomm,std::int64_t step,Real time,const char* id,const char* source,const char* definition,const char* directory,
     std::int64_t version,const char* labels,const int* words,const double* settings,const int* global,const int* local,
     const int* start,int physical,Real* halo,Real* coordinate_halo,Real* coordinates,const Real* references,
     int provider,const Real* statistics,std::int64_t samples,std::int64_t host_budget) {
@@ -1372,7 +1374,7 @@ extern "C" void astr_insitu_runtime_wall_line_group(int begin) {
 }
 
 extern "C" int astr_insitu_render_wall_trace_product(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,Real time,const char* id,const char* source,const char* definition,const char* directory,
+    int fcomm,std::int64_t step,Real time,const char* id,const char* source,const char* definition,const char* directory,
     std::int64_t version,const char* labels,const int* words,const double* settings,const int* field_ids,int fields,
     int width,int height,Real* coordinates,Real* values,const int* first,const int* origin,const int* cells,
     const int* ranges,const Real* physical,int provider,const Real* statistics,std::int64_t samples,std::int64_t host_budget) {

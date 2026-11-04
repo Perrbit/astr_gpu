@@ -1,11 +1,14 @@
 # 可直接启动的 ASTR 示例
 
-2026-10-04输出接口变更：前三套非反应示例自动复制必需的
+2026-11-04输入接口：生成器直接读取命名input.case/input.run模板，
+不再生成或读取controller。保留原模板固定步长，max_steps直接填写完整更新次数。
+输出接口：四套已接通示例自动复制必需的
 `datin/input.output`，正常结束保存完整步checkpoint，不再生成旧
 `flowfield.h5/auxiliary.txt`。无须设置 `ASTR_OUTPUT_CONFIG`。
 旧checkpoint不再接受，重启必须使用新批次及其共享资源。
-下面两套AIR5历史模板尚未补齐新接口所需的完整配置/冻结资源，
-现阶段不能按下列旧启动命令直接运行；保留文件供后续迁移，不作为新版本启动验收。
+AIR5平板采用exact_restart=t并生成所需域/剖面资源。
+AIR5 TGV已转换为命名模板，但其新检查点生命周期尚未接入，启动仍由
+既有输出接口拒绝；本目录不把它列为当前可执行示例，不为转换输入扩展准入。
 AIR5当前新格式支持范围见主使用说明10.6节。
 
 本目录提供五套小网格、短时间启动示例。所有输入、启动脚本及附加数据生成代码
@@ -15,14 +18,14 @@ AIR5当前新格式支持范围见主使用说明10.6节。
 ## 1. 示例一览
 
 网格列是主输入的 ia,ja,ka；非周期方向包括两端节点，不能直接当成存储数组长度。
-默认从 step=0 做 **3 次完整更新**，controller 的 maxstep=2。
+默认从step=0做**3次完整更新**，input.run的max_steps=3。
 
 | 目录 | 物理设置 | 网格 | deltat | 六面边界（x-/x+/y-/y+/z-/z+） | 滤波 |
 |---|---|---|---|---|---|
 | tgv | 单组分，Re=1600、Ma=0.1 | 32,32,32 | 1e-3，无量纲 | 1/1/1/1/1/1 | 十阶显式 |
 | channel | 单组分，Re=3000、Ma=0.3、壁温=1、固定驱动力=1e-4 | 32,32,32 | 5e-4，无量纲 | 1/1/41/41/1/1 | 十阶显式 |
 | flatplate | 单组分，Re=1000、Ma=0.3、壁温=1 | 32,64,16 | 1e-5，无量纲 | 11(prof)/21/41/51/1/1 | 十阶显式 |
-| air5_tgv | 高温五组分双温周期涡，化学与振动能交换开启 | 16,16,16 | 2e-10 s | 1/1/1/1/1/1 | 关闭 |
+| air5_tgv（仅模板） | 高温五组分双温周期涡；新检查点生命周期未接通 | 16,16,16 | 2e-10 s | 1/1/1/1/1/1 | 关闭 |
 | air5_flatplate | Ma=4、p=20000 Pa、T=Tv=1500 K、壁温=3000 K | 31,63,15 | 2.5e-10 s | 11(free)/50/41/51/1/1 | 十阶显式，补偿开启 |
 
 **不提供 AIR5 槽道模板**：当前没有已完成的 AIR5 槽道驱动力、双壁热化学处理及验证组合。
@@ -38,7 +41,7 @@ AIR5 编译开启的同一个二进制可以运行前三个非反应算例，lco
 # 默认：CUDA 非反应流构建，运行前三套单组分示例。
 bash examples/GPU_Quickstart/build.sh
 
-# 可选实验功能：另外构建 AIR5，支持全部五套示例。
+# 可选实验功能：另外构建AIR5，支持air5_flatplate；air5_tgv仍仅为模板。
 AIR5=ON BUILD_DIR="$PWD/build_air5" bash examples/GPU_Quickstart/build.sh
 
 # 可选：纯 CPU 二进制。运行时还需 MODE=cpu。
@@ -67,23 +70,21 @@ bash examples/GPU_Quickstart/tgv/run.sh
 bash examples/GPU_Quickstart/channel/run.sh
 bash examples/GPU_Quickstart/flatplate/run.sh
 # 先完成上面的 AIR5=ON 构建，再显式选择该可执行文件。
-EXE="$PWD/build_air5/bin/astr" bash examples/GPU_Quickstart/air5_tgv/run.sh
 EXE="$PWD/build_air5/bin/astr" bash examples/GPU_Quickstart/air5_flatplate/run.sh
 ```
 
-每条命令会建立不同的新目录，复制完整主输入与 controller，生成必要的附加文件，
+每条命令会建立不同的新目录，复制input.case/input.run/input.output，生成必要的附加文件，
 再调用 MPI 启动器。目录已存在时直接报错，不清空或覆盖旧结果。
 
 默认单 rank、GPU、FP64、显式同步、pinned 主机中转通信。
 脚本默认不设置 ASTR_GPU_FILTER_WORKSPACE，使用更新后求解器的 scalar 默认值。
 
-双卡示例（对五套模板均采用流向二分）：
+双卡示例（采用流向二分）：
 
 ```bash
 NP=2 TOPOLOGY=2,1,1 bash examples/GPU_Quickstart/tgv/run.sh
 NP=2 TOPOLOGY=2,1,1 bash examples/GPU_Quickstart/channel/run.sh
 NP=2 TOPOLOGY=2,1,1 bash examples/GPU_Quickstart/flatplate/run.sh
-EXE="$PWD/build_air5/bin/astr" NP=2 TOPOLOGY=2,1,1 bash examples/GPU_Quickstart/air5_tgv/run.sh
 EXE="$PWD/build_air5/bin/astr" NP=2 TOPOLOGY=2,1,1 bash examples/GPU_Quickstart/air5_flatplate/run.sh
 ```
 
@@ -93,7 +94,6 @@ CPU 使用同一套输入，只改变 usegpu；CUDA 编译的二进制也可这�
 MODE=cpu bash examples/GPU_Quickstart/tgv/run.sh
 MODE=cpu bash examples/GPU_Quickstart/channel/run.sh
 MODE=cpu bash examples/GPU_Quickstart/flatplate/run.sh
-EXE="$PWD/build_air5/bin/astr" MODE=cpu bash examples/GPU_Quickstart/air5_tgv/run.sh
 EXE="$PWD/build_air5/bin/astr" MODE=cpu bash examples/GPU_Quickstart/air5_flatplate/run.sh
 ```
 
@@ -118,8 +118,8 @@ FILTER_WORKSPACE=full NP=2 TOPOLOGY=2,1,1 \
 | MODE | gpu | cpu 或 gpu，写入运行副本的 usegpu |
 | NP | 1 | MPI 进程数 |
 | TOPOLOGY | 1,1,1 | 三方向进程数，乘积必须等于 NP；模板要求最小局部索引跨度至少为 6 |
-| STEPS | 3（由模板给定） | 从零开始的更新次数，转换为 maxstep=STEPS-1；不是重启追加步数 |
-| DELTAT | 各模板数值 | 可填 Fortran d 指数；必须有限且为正 |
+| STEPS | 3（由模板给定） | 写入input.run的max_steps，不是重启追加步数 |
+| DELTAT | 各模板数值 | 写入显式固定模式的fixed_dt；可填Fortran d指数，必须有限且为正 |
 | FILTER_WORKSPACE | default | default 不设置求解器变量；scalar/full 显式设置；CPU 不设置该变量 |
 | HALO_TRANSPORT | pinned | pageable、pinned、device-aware；最后一种需自行确认 MPI 支持，默认示例不依赖它 |
 | RUN_DIR | 本目录 runs 下的唯一目录 | 必须不存在，可指定外部目录 |
@@ -129,7 +129,8 @@ FILTER_WORKSPACE=full NP=2 TOPOLOGY=2,1,1 \
 脚本在自己的进程中清除继承的 ASTR_* 环境变量，再设置本算例需要的值。
 这样不会误继承另一个任务的无输出、混合精度、反应源项或特征顶面配置；
 **也意味着在命令前直接设置 ASTR_* 不会覆盖本脚本**。
-需要自定义原生开关时，采用第 7 节的手动启动方式，而不是删除保护检查。
+物理/数值选项直接修改运行副本input.case；运行控制改input.run。
+需要自定义执行环境时，采用第7节的手动启动方式。
 
 不会清除调度器/MPI、CUDA_VISIBLE_DEVICES、PATH、LD_LIBRARY_PATH 等平台环境。
 在 Slurm 等平台先申请资源，使用平台规定的 MPI 启动方法。
@@ -188,30 +189,28 @@ rho 由 p、T 和当前 AIR5 的混合气体常数计算，五组分和为 1。
 不能按单组分 free 入口理解。顶面为直接给定状态 prescribed，出口为 50。
 没有入射激波，也没有启用特征顶面。
 
-本模板显式启用 symmetric_species、layered、COMPENSATION=on 和
+本模板在chemistry组显式启用symmetric_species、layered、compensation='on'，环境保留
 FILTER_VALIDATION=on。最后一个值表示用户允许进入已实现的组合，
 不表示程序已替用户完成物理验证。
 
 ## 6. 输出与结果检查
 
 各次运行保留：
-- datin/input.dat、controller 和全部生成的数据。
+- datin/input.case、input.run、input.output和全部生成的数据，不复制旧位置式输入。
 - case.json：步数、时间步、网格、拓扑和预期终点。
 - runtime.env：实际 ASTR 开关及 GPU 可见设备设置。
 - libraries.txt、launch.txt：依赖库和启动二进制信息。
 - run.log、flowstate.dat、outdat/ 等求解器输出。
 
-lwsequ/lwslic/lavg 默认关闭，但 checkpoint 和网格输出仍保留。
-短跑最后一次更新安排 checkpoint；CPU/GPU 精确场差必须另行核对写出相位。
-checkpoint 的步号、文件 time 与程序最终完成的更新时间需要分别核对。
-case.json 的 expected_final_time 表示计划完成全部更新后的积分时长；程序可能在
-写出 checkpoint 后继续推进，不能据此要求二者始终相等。
-同相位场比较应匹配 checkpoint 状态及边界处理阶段，而非仅比较文件名或步号。
-非反应流 GPU 精确续算还需同代的全部 restart_q 文件，不能只复制展示场。
+三维场、切片和旧统计默认关闭，但checkpoint及网格输出仍保留。
+checkpoint保存完整步状态；最终checkpoint的时间与固定步长计划终点一致。
+同相位场比较仍须匹配实际完整步/时间、模型与配置，而非只看文件名。
+新检查点依赖同批次控制和resources，不能只复制state.h5，也不使用旧restart_q附属文件。
 AIR5 平板每步记录专用监测量，不等于已进行 Favre 统计或展向平均。
 
 检查正常结束、实际 usegpu、绑定、CFL、温度/组分和滤波存储日志。
-增大步数或修改 dt 前先观察 CFL；本脚本不自动搜索稳定时间步。
+增大步数或修改dt前先观察CFL。模板显式固定步长；改input.run的mode='auto'
+可启用每完整步C_upper控制，默认目标0.5、增长系数1.1，仅约束对流/声学速率。
 比较 full/scalar 应使用相同初场、拓扑、步数及物理选项。
 标量工作区减少的是滤波辅助数组，不保证所有硬件上耗时更短。
 
@@ -224,15 +223,13 @@ python3 examples/GPU_Quickstart/prepare.py flatplate \
 cd /absolute/new/flatplate
 export ASTR_FORCE_MPI_TOPOLOGY=2,1,1
 export ASTR_GPU_FILTER_WORKSPACE=scalar
-export ASTR_GPU_PRECISION_MODE=fp64
 export ASTR_GPU_SYNC_MODE=explicit
 export ASTR_GPU_HALO_TRANSPORT=pinned
-export ASTR_PROFILE_INFLOW_MODE=complete_state
-mpirun -np 2 /absolute/path/to/astr run datin/input.dat >run.log 2>&1
+mpirun -np 2 /absolute/path/to/astr run datin/input.case >run.log 2>&1
 ```
 
-手动启动须自行清除不相关环境变量。AIR5 和槽道所需开关完整列在 run_case.sh，
-不得只复制上面的单组分平板设置。
+手动启动须自行清除不相关执行环境。AIR5和槽道物理选项已保存在各自
+input.case中，不再通过环境变量选择；AIR5滤波的既有显式测试允许项仍见run_case.sh。
 
 这些脚本只处理全新启动，不自动恢复 checkpoint。
 重启应按 [使用说明](../../USER_GUIDE.md) 成套复制状态和辅助文件，
@@ -240,12 +237,16 @@ mpirun -np 2 /absolute/path/to/astr run datin/input.dat >run.log 2>&1
 
 ## 8. 已验证范围
 
-在 NVHPC、MPI 和 HDF5 的兼容环境中，五套模板完成过 CPU NP1、
+输入改造前，在NVHPC、MPI和HDF5兼容环境中，五套旧模板曾完成CPU NP1、
 GPU NP1 和 GPU NP2（2×1×1）三次更新的启动检查。
 启用滤波的四套模板还完成 full/scalar 对照，对应输出数值字段最大绝对差为零。
 AIR5 TGV 模板关闭滤波，不计入滤波对照。
 
-这些结果用于说明模板可以启动及受测存储方式一致，不代表长时物理收敛、
+新命名入口已完成TGV CPU NP2、槽道GPU NP2、平板GPU NP2、AIR5平板GPU NP2
+各三次完整更新，最终检查点步号均为3。生成器21项测试核对CPU/GPU选择、
+完整步数、输入文件、网格和入口数据。AIR5 TGV的新输出拒绝记录保留，未称为通过。
+
+这些结果不代表长时物理收敛、
 所有 CPU/GPU 输出同相位，或其他平台的通信与性能已经验收。
 非反应流的较长短窗、同相位场和重启结果见
 [验证摘要](../../documents/ASTR_RELEASE_LOCAL_REGRESSION_20260929.md)。

@@ -160,11 +160,11 @@ contains
       extent(1),extent(2),extent(3),0,selected_gpu_count,im,jm,km, &
       private_types_gpu(1),private_types_gpu(2),private_types_gpu(3))
     call sync_after_kernel('private diagnostic tile',.true.)
-    call report_insitu_timing('diagnostic_compute_pack_sync',started,-1)
+    call report_insitu_timing('diagnostic_compute_pack_sync',started,-1_int64)
     started=insitu_clock()
     status=cudaMemcpy(values,packed_d,count,cudaMemcpyDeviceToHost)
     call local_require(status==cudaSuccess,'private diagnostic tile download')
-    call report_insitu_timing('diagnostic_d2h',started,-1)
+    call report_insitu_timing('diagnostic_d2h',started,-1_int64)
     transferred=transferred+count*real_bytes
   end subroutine
 

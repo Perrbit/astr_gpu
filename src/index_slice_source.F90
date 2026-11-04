@@ -102,11 +102,11 @@ contains
           message='solver-samples does not accumulate the requested mean field';return
         endif
       enddo
-      call legacy_info(active,covered,window,count)
+      call legacy_info(active,covered,window,count,measure)
       if(.not.active) then
         message='pointwise solver-samples is unavailable; spanwise-reduced statistics are not 3D means';return
       endif
-      source=merge(4,3,wants_favre);ready=covered;ok=.true.;measure=0;return
+      source=merge(4,3,wants_favre);ready=covered;ok=.true.;return
     endif
     message='requested mean accumulation is not enabled'
   end subroutine
@@ -144,22 +144,24 @@ contains
 #endif
   end function
 
-  subroutine legacy_info(active,covered,window,count)
-    use statistic, only: nsamples,lmeanallocated,liosta,time_sbeg,mean_last_sample_identity
+  subroutine legacy_info(active,covered,window,count,duration)
+    use statistic, only: nsamples,lmeanallocated,liosta,time_sbeg,mean_last_sample_identity,mean_time_weight
 #if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
     use chemistry_mean_statistics_gpu, only: slice_air5_mean_info_gpu
 #endif
     logical,intent(out) :: active,covered
     real(real_kind),intent(out) :: window(2)
+    real(real_kind),intent(out) :: duration
     integer(int64),intent(out) :: count
 #if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
     if(use_gpu.and.numq==11) then
-      call slice_air5_mean_info_gpu(active,covered,count,window);return
+      call slice_air5_mean_info_gpu(active,covered,count,window,duration);return
     endif
 #endif
     active=lavg.and..not.use_gpu
     count=int(nsamples,int64);window=[time_sbeg,mean_last_sample_identity()]
-    covered=active.and.lmeanallocated.and.liosta.and.nsamples>0
+    duration=mean_time_weight
+    covered=active.and.lmeanallocated.and.liosta.and.mean_time_weight>0.e0_real_kind
   end subroutine
 
   real(real_kind) function slice_source_value_cpu(i,j,k,field,source) result(value)
@@ -170,7 +172,7 @@ contains
 #ifdef ASTR_AIR5_CHEMISTRY
     use commarray, only: tve,spc
 #endif
-    use statistic, only: nsamples,rom,u1m,u2m,u3m,pm,tm,u1rem,u2rem,u3rem
+    use statistic, only: mean_time_weight,rom,u1m,u2m,u3m,pm,tm,u1rem,u2rem,u3rem
     integer,intent(in) :: i,j,k,field,source
     real(real_kind) :: current(1),density,local_q(5)
     logical :: ok
@@ -190,27 +192,27 @@ contains
     if(source==3.or.source==4) then
       select case(field)
       case(1)
-        value=rom(i,j,k)/real(nsamples,real_kind)
+        value=rom(i,j,k)/mean_time_weight
       case(2)
         if(source==4) then
           value=u1m(i,j,k)/rom(i,j,k)
         else
-          value=u1rem(i,j,k)/real(nsamples,real_kind)
+          value=u1rem(i,j,k)/mean_time_weight
         endif
       case(3)
         if(source==4) then
           value=u2m(i,j,k)/rom(i,j,k)
         else
-          value=u2rem(i,j,k)/real(nsamples,real_kind)
+          value=u2rem(i,j,k)/mean_time_weight
         endif
       case(4)
         if(source==4) then
           value=u3m(i,j,k)/rom(i,j,k)
         else
-          value=u3rem(i,j,k)/real(nsamples,real_kind)
+          value=u3rem(i,j,k)/mean_time_weight
         endif
       case(5)
-        value=pm(i,j,k)/real(nsamples,real_kind)
+        value=pm(i,j,k)/mean_time_weight
       case(6)
         value=tm(i,j,k)/rom(i,j,k)
       end select

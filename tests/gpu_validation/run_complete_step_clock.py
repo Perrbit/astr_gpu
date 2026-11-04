@@ -1,4 +1,4 @@
-"""Check the solver clock during live controller timestep reloads (Linux)."""
+"""Check complete-step clocks during live input.run updates (Linux)."""
 import argparse
 import errno
 import json
@@ -8,22 +8,23 @@ from pathlib import Path
 import pty
 import re
 import select
-import shutil
 import signal
 import struct
 import subprocess
 import sys
 import time
 
-from prepare_tgv_case import set_controller_deltat
+from named_fixture import prepare_named_run
+from convert_legacy_input import convert_controller,namelist,real
 
 
-CLOCK = re.compile(r"ASTR_CFL complete_step=(\d+) state_time=\s*(\S+) dt=\s*(\S+)")
-MAXSTEP = 11  # The existing loop includes step label MAXSTEP.
+CLOCK = re.compile(r"ASTR_TIMESTEP complete_step=(\d+) time_start=\s*\S+"
+                   r" time_end=\s*(\S+) dt_used=\s*(\S+)")
+MAXSTEP = 11  # Positional fixture conversion produces 12 complete updates.
 
 
 def check_clock(records, step, state_time, dt):
-    if step != len(records) or not math.isfinite(dt) or dt <= 0:
+    if step != len(records)+1 or not math.isfinite(dt) or dt <= 0:
         raise ValueError(f"invalid clock record: {step}, {state_time}, {dt}")
     expected = (records[-1]['expected_time'] if records else 0.0) + dt
     error = abs(state_time - expected)
@@ -45,8 +46,10 @@ def run_case(root, args, backend, ranks, mode):
     env.update(ASTR_FORCE_MPI_TOPOLOGY=f'{ranks},1,1', ASTR_GPU_SYNC_MODE='explicit',
                ASTR_GPU_HALO_TRANSPORT='pinned', ASTR_GPU_PRECISION_MODE='fp64',
                ASTR_INSITU_SAMPLE_PREFIX='outdat/clock_sample')
+    primary=prepare_named_run(case,'datin/input.tgv',env)
+    settings=convert_controller((case/'datin/controller').read_text())
     command = [str(args.mpiexec), '--mca', 'coll_hcoll_enable', '0', '-np', str(ranks),
-               str(args.executable), 'run', 'datin/input.tgv']
+               str(args.executable), 'run', primary]
     report = dict(status='running', backend=backend, np=ranks, mode=mode,
                   command=command, records=[], changes=[])
     master, slave = pty.openpty()
@@ -85,13 +88,13 @@ def run_case(root, args, backend, ranks, mode):
                     record = check_clock(report['records'], step, float(match[2]), float(match[3]))
                     report['records'].append(record)
                     # Replace atomically: a rank reads either complete old or new input.
-                    target = '2.d-3' if step == 0 else '5.d-4' if step == 5 else None
+                    target = '2.d-3' if step == 1 else '5.d-4' if step == 6 else None
                     if mode == 'reload' and target:
-                        controller = case / 'datin/controller'
-                        temporary = controller.with_name('controller.next')
-                        shutil.copyfile(controller, temporary)
-                        set_controller_deltat(temporary, target)
-                        temporary.replace(controller)
+                        runtime = case / 'datin/input.run'
+                        temporary = runtime.with_name('input.run.next')
+                        settings['timestep']['fixed_dt']=real(target)
+                        temporary.write_text(namelist(settings))
+                        temporary.replace(runtime)
                         report['changes'].append(dict(after_record=step, requested_dt=target))
             if process.wait(timeout=10) != 0:
                 raise RuntimeError(f'solver failed; see {case / "run.log"}')
@@ -101,16 +104,16 @@ def run_case(root, args, backend, ranks, mode):
         observed = {r['dt'] for r in records}
         expected = {0.001, 0.002, 0.0005} if mode == 'reload' else {0.001}
         if observed != expected:
-            raise ValueError(f'controller changes were not exercised: {observed}')
+            raise ValueError(f'input.run changes were not exercised: {observed}')
         for record in records:
             for rank in range(ranks):
                 path = case / 'outdat' / (
-                    f'clock_sample.step{record["step"] + 1:08d}.rank{rank:08d}.bin')
+                    f'clock_sample.step{record["step"]:08d}.rank{rank:08d}.bin')
                 with path.open('rb') as stream:
                     magic = stream.read(8)
                     header = struct.unpack('<9i', stream.read(36))
                     clock = struct.unpack('<2d', stream.read(16))
-                if (magic != b'ASTRIS01' or header[:3] != (1, record['step'] + 1, rank)
+                if (magic != b'ASTRIS01' or header[:3] != (1, record['step'], rank)
                         or clock != (record['time'], record['dt'])):
                     raise ValueError(f'completed-step sample/CFL clock mismatch: {path}')
         report.update(status='passed', samples_checked=len(records) * ranks,

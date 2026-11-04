@@ -40,7 +40,7 @@ def test_visualization_benchmark_no_large_io_at_bounded_grid(tmp_path,pipeline):
     config.write_text(config.read_text().replace('host_budget_bytes=17179869184','host_budget_bytes=4294967296').replace(
         'device_budget_bytes=6442450944','device_budget_bytes=2147483648').replace(
         'device_reserve_bytes=2147483648','device_reserve_bytes=1073741824'))
-    command=[str(MPIEXEC),'--mca','coll_hcoll_enable','0','-np','2',str(Path(EXE).resolve()),'run','datin/input.tgv']
+    command=[str(MPIEXEC),'--mca','coll_hcoll_enable','0','-np','2',str(Path(EXE).resolve()),'run','datin/input.case']
     with (case/'run.log').open('w') as log:
         subprocess.run(command,cwd=case,env=benchmark.environment(case,'pinned'),stdout=log,stderr=subprocess.STDOUT,
             check=True,timeout=180)

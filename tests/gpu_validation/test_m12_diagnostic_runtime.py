@@ -26,7 +26,8 @@ def launch(case,executable,steps,checkpoint=False,restore=None,trace=False):
                OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1')
     for key in ('DISPLAY','PYTHONPATH','CATALYST_IMPLEMENTATION_PREFER_ENV','VTK_EGL_DEVICE_INDEX'):
         env.pop(key,None)
-    solver=[str(executable),'run','datin/input.dat']
+    from named_fixture import prepare_named_run
+    solver=[str(executable),'run',prepare_named_run(case,'datin/input.dat',env)]
     if trace:
         wrapper=case/'trace.sh'
         wrapper.write_text('#!/bin/sh\nexec strace -e trace=openat -o '+

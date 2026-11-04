@@ -163,7 +163,9 @@ def run(args):
                 restore=str(args.restore) if args.restore else None,snapshots=args.snapshots,
                 wall_mode=args.wall_mode)
     (output/'case.json').write_text(json.dumps(config,indent=2)+'\n')
-    command=mpi_command(MPIEXEC,prod(args.topology),'pinned')+[str(executable),'run','datin/input.chl']
+    from named_fixture import prepare_named_run
+    command=mpi_command(MPIEXEC,prod(args.topology),'pinned')+[str(executable),'run',
+        prepare_named_run(output,'datin/input.chl',env)]
     with (output/'run.log').open('w') as log:
         completed=subprocess.run(command,cwd=output,env=env,stdout=log,stderr=subprocess.STDOUT)
     text=(output/'run.log').read_text()

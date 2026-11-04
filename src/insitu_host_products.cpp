@@ -1,4 +1,5 @@
 #include "insitu_compact_mesh.h"
+#include <cinttypes>
 #include "insitu_product_failure.h"
 #include "insitu_streamline_seeds.h"
 #include <vtkAOSDataArrayTemplate.h>
@@ -278,7 +279,7 @@ extern "C" void astr_insitu_runtime_host_group(int begin) {
   group=HostGroup{};group.active=begin!=0;
 }
 
-extern "C" int astr_insitu_render_host_product(const char* backend,const char* script,int fcomm,int step,Real time,
+extern "C" int astr_insitu_render_host_product(const char* backend,const char* script,int fcomm,std::int64_t step,Real time,
     const char* id,const char* source,const char* definition,const char* directory,std::int64_t version,
     const char* labels,const int* words,const double* settings,const int* field_ids,int nfields,const int* extent,
     int axis,Real* coordinates,Real* values,const Real* references,int provider,const Real* statistics,
@@ -334,7 +335,7 @@ extern "C" int astr_insitu_render_host_product(const char* backend,const char* s
   const double prepared=MPI_Wtime();
   const int status=astr_insitu::render_compact_products(backend,script,fcomm,step,time,"runtime_catalog",false,Real(0.),Real(0.),Real(0.),{},&context,result);
   int rank=0;MPI_Comm_rank(comm,&rank);
-  std::printf("ASTR_RUNTIME_HOST_TIMING rank=%d id=%s step=%d prepare_inclusive_seconds=%.17g consumer_inclusive_seconds=%.17g status=%d\n",
+  std::printf("ASTR_RUNTIME_HOST_TIMING rank=%d id=%s step=%" PRId64 " prepare_inclusive_seconds=%.17g consumer_inclusive_seconds=%.17g status=%d\n",
     rank,id,step,prepared-started,MPI_Wtime()-prepared,status);
   return status;
 }
