@@ -1,6 +1,6 @@
 # ASTR GPU 使用说明
 
-文档版次：2026-09-29。适用于随本说明交付的 CUDA Fortran/MPI 源码。
+文档版次：2026-11-04。适用于随本说明交付的CUDA Fortran/MPI源码及命名输入接口。
 本说明覆盖部署、输入配置、算例启动、边界条件、可选功能、输出与恢复。
 基础配置面向非反应流；AIR5 和受限性能选项的使用条件在相应章节中单独列明。
 完成部署和短时数值对照不等于目标物理工况已经达到统计收敛。
@@ -140,13 +140,13 @@ user_define_module/userdefine.F90。关闭测试不关闭 CUDA-aware MPI 检测�
 两种精度共享源码，使用独立构建目录和可执行程序；不在运行时切换主状态的精度。
 在第2.2节配置命令中加入 `-DASTR_NUMERICAL_PRECISION=fp32`，并将构建目录换为
 `build_fp32`，即可选择FP32。省略该参数或显式设为`fp64`均保留FP64。
-CPU/GPU执行后端仍由输入文件的`usegpu`决定。
+CPU/GPU执行后端仍由输入文件的`use_gpu`决定。
 
 FP32构建面向非反应五变量，要求`CHEMISTRY=OFF`、`ASTR_WITH_AIR5_CHEMISTRY=OFF`。
 主状态、几何、物理时间、在线统计和已适配数值工作区使用同一种精度；性能时钟独立保留FP64。
-旧`ASTR_GPU_PRECISION_MODE`不能把原生FP32程序改成FP64，也不会另建混合精度工作区。
+旧`precision_options.gpu_precision_mode`不能把原生FP32程序改成FP64，也不会另建混合精度工作区。
 FP32构建通常不设置这个旧选择器。保留旧合法值`fp64`或`mixed_workspace`时，只说明一次并忽略其数值分派；
-启动日志中的`fp32`表示实际构建精度，不是这个旧环境变量的合法输入值。
+启动日志中的fp32表示实际构建精度，不是这个运行时选择器的合法输入值。
 自定义Fortran代码应从`astr_precision`导入`real_kind`，C互操作使用`c_real_kind`。
 不要使用旧`mpiio`模块的固定FP64参数`rk`作为新程序的精度选择。
 
@@ -168,8 +168,9 @@ FP32与FP64之间切换必须使用`exact_restart=f`，按目标类型恢复并�
 ```text
 case_name/
   datin/
-    input.dat          主输入，可换名称
-    controller         固定名称
+    input.case         命名主输入，可显式指定其他文件名
+    input.run          与主输入同目录的运行控制，固定名称
+    input.output       完整步输出及重启配置
     grid.h5            读网格时需要
     monitor.dat        可选监测点
     slice.dat          可选切片设置
@@ -190,14 +191,13 @@ export CASE=/absolute/path/to/case_name
 cd "$CASE"
 export OMP_NUM_THREADS=1
 export ASTR_FORCE_MPI_TOPOLOGY=1,1,1
-export ASTR_GPU_PRECISION_MODE=fp64
 export ASTR_GPU_FILTER_WORKSPACE=scalar
 export ASTR_GPU_SYNC_MODE=explicit
 export ASTR_GPU_HALO_TRANSPORT=pinned
-mpirun -np 1 "$ROOT/build_prod/bin/astr" run datin/input.dat >run.log 2>&1
+mpirun -np 1 "$ROOT/build_prod/bin/astr" run datin/input.case >run.log 2>&1
 ```
 
-需预先提供有效输入，并设置 usegpu=t。纯 CPU 用 usegpu=f，清除不适用 GPU 环境变量，
+需预先提供有效输入，并在case_options组设置use_gpu=t。纯CPU用use_gpu=f，清除不适用GPU环境变量，
 尤其 device-aware 会在 MPI_Init 前触发设备预绑定。
 主命令为 run、test、pp。生产版保留原 CPU 内置测试，但新增
 bcad/bciv/bcst/bcrh/bcgc 要求 BUILD_TESTING=ON，否则明确报错。
@@ -205,114 +205,70 @@ pp 是遗留后处理入口，不表示已实现 ParaView 原位可视化。
 
 ## 4. 主输入文件
 
-### 4.1 固定行序
+### 4.1 命名输入与迁移
 
-readinput 使用固定跳行和 list-directed 读取，**不是键值配置**。
-注释标题不驱动解析，不能任意插入空行或重排字段。
-沿用模板，采用 LF、无 BOM，逻辑值 t/f，双精度实数如 1.d-3。
-部分字符串处理了 CRLF，但不能保证所有路径都能容忍回车符。
+主程序只接受Fortran namelist命名组，不再接受位置式主输入或controller。
+组和字段可重排，字符值须加引号，逻辑值使用t/f或.true./.false.，
+实数可用1.d-3。推荐LF、无BOM；主输入已检查CRLF读取和跨rank广播。
+`astr run`默认读datin/input.case；显式指定主输入时，input.run仍在该输入同目录。
 
-### 4.2 字段读取顺序
+旧文件通过一次性工具生成新文件，不覆盖原文件，也不转换网格、入口或检查点：
 
-| 顺序 | 字段 | 说明 |
-|---:|---|---|
-| 1 | flowtype | 区分大小写，控制初场、部分源项和 GPU 配置检查，不能随意改名 |
-| 2 | ia,ja,ka | 全局索引上限/分段数；物理节点常为 0:ia 等，不直接等于 HDF5 数组尺寸 |
-| 3 | lihomo,ljhomo,lkhomo | 齐次/周期方向，与边界和平均方向一致 |
-| 4 | 九个逻辑开关 | 见下表，旧示例可能缺少 usegpu |
-| 5 | lrestart | 必须为 f；旧 checkpoint 恢复已关闭，新恢复点由 input.output 指定 |
-| 6 | alfa_filter,kcutoff | 遗留滤波/频谱参数；不是当前显式滤波任意强度开关 |
-| 7 | 参考量 | 无量纲：ref_tem,Re,Mach；有量纲：ref_tem,ref_vel,ref_len,ref_den |
-| 8 | conschm,difschm,rkscheme | 对流、扩散、时间格式；遗留 Cantera 构建还读取 odetype |
-| 9 | recon_schem,lchardecomp,bfacmpld,shkcrt | 重构方法、特征分解及相关参数，必须与所选对流格式及算例配置一致 |
-| 10 | num_species[,Schmidt...] | 基础单组分填 0；AIR5 按其布局填写 |
-| 11 | turbmode,iomode | GPU 基础通常 none,h；h 为 HDF5 |
-| 12 | 六行 bctype | 六面顺序固定 |
-| 13 | ninit | 0 内置初场；1/2/3 读取相应维数初场 |
-| 14 | 六个 sponge 宽度[,spg_def] | 六面顺序，0 不设置；非零值会启用边界缓冲区，并触发相应 GPU 配置检查 |
-| 15 | gridfile | 即使 lreadgrid=f，模板中这一行仍保留 |
-
-开关顺序：
-
-```text
-nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb,usegpu
+```bash
+python scripts/input/convert_legacy_input.py old/datin/input.dat \
+  --controller old/datin/controller --output new/datin/input.case \
+  --run-output new/datin/input.run
 ```
 
-| 开关 | 含义 |
-|---|---|
-| nondimen | 无量纲设置，影响参考量与物理解释 |
-| diffterm | 黏性/扩散 |
-| lfilter | 滤波 |
-| lreadgrid | 外部网格，否则按算例生成 |
-| lfftk | 遗留 Fourier 相关开关，GPU 基础保持 false |
-| limmbou | 浸入边界，当前 GPU 不支持 |
-| ltimrpt | 时间开销报告 |
-| lcomb | 化学布局/路径，还需编译选项与 flowtype 配合 |
-| usegpu | 运行时 GPU 开关 |
+旧物理/数值环境选项也须迁入主输入；旧环境名被提示并忽略。
+工具可显式读取`--environment old/runtime.env`中的字面赋值，不执行Shell。
+硬件、通信、线程布局及诊断环境保留。完整字段映射和转换限制见
+[命名输入说明](scripts/input/README.md)。
 
-示例标题可能写 lfftz，源码实际变量为 lfftk。旧八字段输入最后一项是 lcomb，
-不是 usegpu；此时 GPU 开关保持 false。输入文件表面包含 GPU 参数并不足以启用 GPU，
-要核对日志实际路径。
+### 4.2 分组与关键字段
+
+| 组 | 关键字段及含义 |
+|---|---|
+| case_options | flowtype控制初场/源项及能力检查；use_gpu是运行时设备选择；ltimrpt开销报告；iomode='h' |
+| mesh | ia/ja/ka仍是全局索引跨度；lihomo/ljhomo/lkhomo为齐次方向；lreadgrid/gridfile选择外部网格 |
+| physics | nondimen、diffterm、lcomb、num_species、turbmode；无量纲提供ref_tem/reynolds/mach，有量纲提供ref_tem/ref_vel/ref_len/ref_den |
+| numerics | conschm/difschm/rkscheme、重构/传感器参数、lfilter/alfa_filter及lfftk/kcutoff |
+| boundary | bctype(6)按x-/x+/y-/y+/z-/z+排列；twall(6)给对应壁温；turbinf、pout、xslip等保留既有共享标量含义 |
+| initialization | ninit=0内置，1/2/3读相应初场；lrestart=f，新检查点由input.output指定；limmbou及几何数据不扩展GPU能力 |
+| sponge | 六方向spg_i0/spg_im/spg_j0/spg_jm/spg_k0/spg_km及spg_def |
+| species_transport | 非反应被动组分的schmidt数组；不代替AIR5物性模型 |
+| boundary_options | 入口/远场/高阶壁面/吹吸等命名选项；具体物理含义仍见边界章节 |
+| transport_options | Prandtl、Sutherland参考温度、槽道驱动力选择 |
+| precision_options | 现有运行时精度候选及MP保正选择，不改变构建时real_kind |
+| chemistry | AIR5源项、限制器、补偿、容差及特征顶面参数，不改变固定五组分机理 |
+
+必需组为case_options、mesh、physics、numerics、boundary。
+启用模型所需的数据仍须齐全。未知/重复组或未知字段启动报错，不按旧格式重试。
 
 ### 4.3 显式周期 TGV 模板
 
-以下为显式周期 TGV 输入模板。复制时保留头部、字段顺序和空行。
+以下为显式周期TGV输入模板，组内字段按名字读取，不依赖注释或空行。
 完整生成与启动方法见 [GPU Quickstart](examples/GPU_Quickstart/README.md)。
 
-```text
-########################################################################
-# ASTR explicit GPU TGV
-########################################################################
-
-# flowtype
-tgv
-
-# ia,ja,ka
-32,32,32
-
-# lihomo,ljhomo,lkhomo
-t,t,t
-
-# nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb,usegpu
-t,t,t,f,f,f,t,f,t
-
-# lrestart
-f
-
-# alfa_filter,kcutoff
-0.49d0,48
-
-# ref_tem,reynolds,mach
-273.15d0,1600.d0,0.1d0
-
-# conschm,difschm,rkscheme
-643e,643e,rk3
-
-# recon_schem,lchardecomp,bfacmpld,shkcrt
-3,f,0.3d0,0.05d0
-
-# num_species
-0
-
-# turbmode,iomode
-none,h
-
-# bctype: x-min,x-max,y-min,y-max,z-min,z-max
-1
-1
-1
-1
-1
-1
-
-# ninit
-0
-
-# sponge widths
-0,0,0,0,0,0
-
-# gridfile
-datin/grid.h5
+```fortran
+&case_options
+ flowtype='tgv',use_gpu=t,ltimrpt=t,iomode='h'
+/
+&mesh
+ ia=32,ja=32,ka=32,lihomo=t,ljhomo=t,lkhomo=t,lreadgrid=f
+/
+&physics
+ nondimen=t,diffterm=t,lcomb=f,num_species=0,turbmode='none',
+ ref_tem=273.15d0,reynolds=1600.d0,mach=0.1d0
+/
+&numerics
+ conschm='643e',difschm='643e',rkscheme='rk3',
+ recon_schem=3,lchardecomp=f,bfacmpld=0.3d0,shkcrt=0.05d0,
+ lfilter=t,alfa_filter=0.49d0
+/
+&boundary
+ bctype=1,1,1,1,1,1
+/
 ```
 
 examples/ 是原 CPU 算例集合，不是 GPU 白名单。将 c 后缀改为 e 后，
@@ -320,46 +276,51 @@ examples/ 是原 CPU 算例集合，不是 GPU 白名单。将 c 后缀改为 e 
 
 ## 5. 控制文件与时间步
 
-datin/controller 的文档模板：
+datin/input.run的命名模板。默认自动步长；此处不限制首步或最大时间步：
 
-```text
-############################################################
-# ASTR controller
-############################################################
-
-# lwsequ,lwslic,lavg,lcracon
-f,f,f,f
-
-# maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg
-9,10,100,50,1,50
-
-# deltat
-1.d-3
+```fortran
+&run_control
+ max_steps=10,reload_steps=100
+/
+&timestep
+ mode='auto',cfl_target=0.5d0,growth_factor=1.1d0
+/
+&logging
+ list_steps=1
+/
+&repair
+ crashfix=f
+/
+&statistics
+ enabled=f,sample_clock='steps',sample_steps=1,write_clock='steps',write_steps=0
+/
 ```
 
 | 字段 | 含义 |
 |---|---|
-| lwsequ | 遗留字段，忽略并提示；三维场改由 input.output 配置 |
-| lwslic | 遗留字段，忽略并提示；切片改由 input.output 的全局索引配置 |
-| lavg | 统计累计，不等于统计已收敛 |
-| lcracon | 邻点平均式崩溃修复，默认 false；GPU 暂支持非反应五变量的 643e 中心对流或 743e MP7-LD。先按原 CPU 顺序做 26 邻点平均，若仍非法则逐层扩大范围并经 halo 获取其他 rank 的合法状态，直到结果有限且物理量为正，或已无法找到新的合法平均。均在 GPU 执行，不回读或回传整场，不保证守恒。MP7-LD 的边界输入修复不依赖启用 MP 通量保正。新检查点保存压缩节点修复历史；不支持旧式自动整步回退。AIR5 不使用此修复 |
-| maxstep | 绝对步号上限，不是追加步数或终止物理时间 |
-| feqchkpt | 控制文件重读与CFL检查频率，不是新checkpoint保存间隔 |
-| feqwsequ/feqslice | 保留的旧场/切片频率，不控制新产品 |
-| feqlist | 日志/诊断频率 |
-| feqavg | 统计采样频率 |
-| deltat | 时间步，单位随模型设置 |
+| run_control.max_steps | 最大累计完整步数；从0到10恰好十次更新，不是旧maxstep的含义；重启不归零 |
+| run_control.stop_time | 可选结束物理时间；与max_steps至少设置一项，同时设置时先达到者结束。末步允许越过目标，不截断步长 |
+| run_control.reload_steps | 每N个完整步由主rank读取整份input.run并广播，默认100；与波速估计和文件输出频率无关 |
+| timestep.mode | 默认auto，每完整步按方向最大对流/声学速率和的C_upper选择下一步；fixed必须显式给正fixed_dt |
+| timestep.cfl_target | 自动模式目标，默认0.5，仅限对流/声学约束，不包含黏性、热扩散或化学刚性限制 |
+| timestep.growth_factor | 默认1.1，仅限制步长增大，缩小立即执行 |
+| timestep.initial_dt/max_dt | 自动首步/全程可选上限，省略或0不设限；固定模式不受它们或增长系数截断 |
+| logging.list_steps | 日志/详细CFL频率，0关闭详细列表；每个完整步仍输出实际时间和dt_used/dt_next |
+| repair.crashfix | 既有非反应流邻点平均修复，默认f；可扩大范围并更新halo，不保证守恒。AIR5不使用此修复，不执行整步回滚 |
+| statistics.enabled | 启停旧均值/应力累计，不等于统计已收敛；不代替原位后处理的独立统计配置 |
+| statistics.sample_clock/sample_steps/sample_time | 以steps或time触发样本；相邻完整步样本按真实时间梯形积分，首样本只建立端点、覆盖时长为0 |
+| statistics.write_clock/write_steps/write_time | 独立统计写盘时钟；周期0关闭该类写盘，不关闭采样；不是checkpoint或图像频率 |
 
-频率使用正整数，**不要填 0 关闭输出**，路径存在 mod(nstep,frequency)。
-三类文件输出分别由 `input.output` 的 `enabled` 控制，不由这些遗留字段控制。
+有效热更新为完整快照，省略字段回到声明默认值；整份文件缺失、语法
+错误或统计时钟无法表示时整次拒绝，继续使用上次配置。建议原子替换
+文件，不在被读取时逐行改写。主输入的物理/格式配置不支持热改。
+关闭三维场或checkpoint仍由input.output控制，二维产品由独立清单控制。
+时间统计关闭再开启会建立新窗口，改频率不抹掉既有时间积分。
 
-主循环为 nstep<=maxstep。从 0 开始且无其他停止条件，maxstep=9 对应十次循环更新。
-重启时核对 checkpoint 实际步号和相位，以日志 state_time、HDF5 time 为准。
-controller 在指定步号重读，不是逐步实时监控。主输入和多数环境变量不能动态更改。
-需要改 controller 时原子替换，避免读入半写文件；不要强杀进程代替完整 checkpoint 停止计划。
-
-固定 deltat 不会自动变为 CFL 自适应步长。检查局部网格、黏性限制和化学状态。
-上面的 1.d-3 仅为 TGV 示例，不能用于有量纲 AIR5 高焓边界层。
+精确恢复使用保存的有效步长参数及dt_next作为首步，首步后继续估计；
+非精确恢复采用当前input.run，自动首步重新估计、不受旧增长历史限制。
+一次性转换器保留旧固定deltat并写max_steps=旧maxstep+1，不自动改成auto。
+自动CFL控制不保证任意黏性、化学或边界组合稳定；那些限制仍须单独检查。
 
 ## 6. 边界条件调用
 
@@ -423,7 +384,7 @@ AIR5 入射激波使用独立状态文件格式。CPU intx 和 udef 入口也不
 
 ### 6.3 特征远场与专用边界
 
-`ASTR_NSCBC_FARFIELD_MODE` 改变 bctype=52 的计算方法，不是性能开关。
+`boundary_options.nscbc_farfield_mode` 改变 bctype=52 的计算方法，不是性能开关。
 
 | 取值 | 实际作用 |
 |---|---|
@@ -457,7 +418,7 @@ CPU 原有 12/22/52 compatibility 算法未整体随 GPU 修复改写，不能�
 
 另支持无量纲非反应三维 `bl` 的联合入射激波组合：
 `11,prof / 22,pout / 41,Twall / 52 / 1 / 1`，
-`ASTR_NSCBC_FARFIELD_MODE=sbli_shock`，
+`boundary_options.nscbc_farfield_mode=sbli_shock`，
 `543e/643e,recon_schem=3` 或 `743e/643e,recon_schem=5`，均要求
 `lchardecomp=t,diffterm=t,lfilter=f`、无海绵层、z 周期、笛卡尔可分离拉伸网格。
 这条路径不再把出口限定为 21，也不再因选择入射激波目标而排除 MP7-LD。
@@ -503,22 +464,22 @@ HCW示例选择此预设，每100步写JPEG，流线与Q关闭；检查点独立
 热流为流体传向底壁为正，按`rho_inf U_inf^3`归一化，不能直接当作W/m²。
 曲线绘制额外需要Catalyst Python环境中的Matplotlib、SciencePlots及其TeX依赖。
 
-incoming_only、sbli_shock 和 sbli_grcbc 读取 `ASTR_NSCBC_FARFIELD_RHO`、
-`ASTR_NSCBC_FARFIELD_U`、`ASTR_NSCBC_FARFIELD_V`、
-`ASTR_NSCBC_FARFIELD_W`、`ASTR_NSCBC_FARFIELD_T`。
+incoming_only、sbli_shock 和 sbli_grcbc 读取 `boundary_options.nscbc_farfield_rho`、
+`boundary_options.nscbc_farfield_u`、`boundary_options.nscbc_farfield_v`、
+`boundary_options.nscbc_farfield_w`、`boundary_options.nscbc_farfield_t`。
 分别指定目标密度、三个速度分量和温度；未设置项沿用算例自由来流值，
 单位与算例一致，密度和温度必须为正。压力由当前理想气体状态方程计算。
-sbli_shock 和 sbli_grcbc 还读取 `ASTR_NSCBC_FARFIELD_SHOCK_X`（流向分界位置）和
-`ASTR_NSCBC_FARFIELD_SHOCK_ANGLE_DEG`（激波角，度，严格介于 0 和 90 之间）。
+sbli_shock 和 sbli_grcbc 还读取 `boundary_options.nscbc_farfield_shock_x`（流向分界位置）和
+`boundary_options.nscbc_farfield_shock_angle_deg`（激波角，度，严格介于 0 和 90 之间）。
 角度不是壁面转角，位置和角度应在运行配置中明确记录。
 
-`ASTR_CONSERVATIVE_BOUNDARY_FILE` 的值是配置文件路径；设置后启用
+`boundary_options.conservative_boundary_file` 的值是配置文件路径；设置后启用
 OpenSBLI 固定工况处理，并检查 Mach 数、Re、格式和边界组合。
 它不是通用 SBLI 参数文件，具体固定条件见第 11 节。
 
 ### 6.4 可选高阶壁面与相容滤波
 
-`ASTR_HIGH_ORDER_WALL_MODE=hermite7` 显式启用已支持的高阶壁面闭合。
+`boundary_options.high_order_wall_mode=hermite7` 显式启用已支持的高阶壁面闭合。
 未设置、设置为空或 `off` 时仍使用原壁面路径。此选项改变离散算法，不是性能开关，
 也不表示所有算子都具有七阶精度。测试构建和非测试构建均可使用下列受限组合。
 
@@ -543,12 +504,17 @@ OpenSBLI 固定工况处理，并检查 Mach 数、Re、格式和边界组合。
 切换为此算法后仍按同算法精确续算恢复。
 例如在已准备好的相容槽道目录中启动：
 
-```bash
-ASTR_HIGH_ORDER_WALL_MODE=hermite7 \
-  mpiexec -np 2 ./build/bin/astr run datin/input.chl
+```fortran
+&boundary_options
+ high_order_wall_mode='hermite7'
+/
 ```
 
-`usegpu` 仍由主输入选择。该子集已通过本地CPU/GPU、代表MPI分解、存储模式、
+```bash
+mpiexec -np 2 ./build/bin/astr run datin/input.chl.case
+```
+
+`use_gpu` 仍由主输入选择。该子集已通过本地CPU/GPU、代表MPI分解、存储模式、
 同算法精确续算及有限时间窗检查。真实层流参考采用Re_ref=1000、M_ref=0.3、
 固定体积力和同温41壁面；42/421另有无外力非定常检查，不把它们称为受驱热定常。
 滤波和壁面恢复可产生离散质量／能量增量，系数和为1不等于全域严格守恒。
@@ -578,7 +544,7 @@ lreadgrid=f 根据 flowtype 生成网格，不代表域长可由输入中任意�
 网格、静态剖面、切片和 AIR5 数据的具体字段见
 [部署输入数据字典](documents/ASTR_DEPLOYMENT_INPUT_CONTRACT.md)。
 
-`ASTR_PROFILE_INFLOW_MODE` 用于已实现的 x-min、bctype=11 入口：
+`boundary_options.profile_inflow_mode` 用于已实现的 x-min、bctype=11 入口：
 
 | 取值 | 实际作用 |
 |---|---|
@@ -592,7 +558,7 @@ mach_pressure 不表示固定 Mach 数或固定压力；当前实现要求法向
 
 ```bash
 export ASTR_FORCE_MPI_TOPOLOGY=1,1,2
-mpirun -np 2 /absolute/path/to/astr run datin/input.dat >run.log 2>&1
+mpirun -np 2 /absolute/path/to/astr run datin/input.case >run.log 2>&1
 ```
 
 拓扑乘积等于 MPI rank 数，对应 i/j/k 分解。未设置时使用自动分解。
@@ -649,14 +615,14 @@ CUDA-aware MPI 不是 NCCL，也不自动证明跨节点 GPUDirect RDMA 生效�
 | TGV | `643c,643c,rk3` | 三方向周期 |
 | profile 平板 | `743e,643c,rk3` | 笛卡尔拉伸网格、z 挤出周期、`recon_schem=5,lchardecomp=t`、静态 `prof` 入口；`11/21/41/50/1/1` 或 `11/22/41/52/1/1` |
 
-后一组特征边界须显式设置 `ASTR_NSCBC_FARFIELD_MODE=incoming_only`，
+后一组特征边界须显式设置 `boundary_options.nscbc_farfield_mode=incoming_only`，
 并给出已验证的全局常数远场目标，不包含入射激波目标或任意曲面开放边界。
 TGV 的紧致导数同时用于中央对流、梯度和黏性；平板对流保持显式 MP7-LD，
 只将梯度和黏性切换为紧致导数。上述组合在 `lfilter=t` 时使用配套紧致滤波，
 没有独立的显式导数/紧致滤波交叉开关。
 
 选择这些格式后自动使用全局耦合的两层 PCR，不使用 MPI 接口上的独立局部闭合。
-CPU 使用同一全局数值算子的独立求解实现，`usegpu` 仅选择执行后端。
+CPU 使用同一全局数值算子的独立求解实现，`use_gpu` 仅选择执行后端。
 支持合法的非二次幂线长和不等长分区，不需将物理网格补成二次幂。
 
 | 选项 | 取值和作用 |
@@ -667,7 +633,7 @@ CPU 使用同一全局数值算子的独立求解实现，`usegpu` 仅选择执�
 | `ASTR_GPU_FILTER_WORKSPACE` | 紧致滤波也支持 `scalar` 默认和 `full`；两者是工作区选择，不改变滤波算子 |
 
 `alfa_filter` 控制紧致滤波，已验证基线为 `0.49`。显式和紧致滤波均没有一般保正保证。
-允许在上述紧致平板中用原 controller 的 `lcracon=t` 开启既有 crashfix，
+允许在上述紧致平板中用input.run的repair.crashfix=t开启既有crashfix，
 全域滤波后先刷新 halo/物性、用邻点平均恢复非法状态，再刷新并继续边界和 RHS；
 原 RK 阶段末修复保留。GPU 修复在设备执行，不回读整场调用 CPU。
 关闭 `lcracon` 不修复；单圈失败后自动扩大邻域，耗尽可用合法供体仍无法修复时停止。
@@ -680,7 +646,7 @@ CPU 使用同一全局数值算子的独立求解实现，`usegpu` 仅选择执�
 当前本地紧致路径不保证比显式更快；性能和具体配置见
 [紧致实施结果](documents/ASTR_GPU_COMPACT_SCHEME_RESULTS.md)。
 
-**MP7-LD 通量保正候选：`ASTR_GPU_MP_POSITIVITY=off|flux`**
+**MP7-LD 通量保正候选：`precision_options.gpu_mp_positivity=off|flux`**
 
 默认 `off`，保持原通量计算。`flux` 在 GPU 上构造局部 Lax--Friedrichs
 低阶通量，并用界面统一系数限制高阶通量修正，检查密度和内能严格为正。
@@ -726,21 +692,22 @@ RK 阶段末只有实际修复过节点才额外执行上述协调，健康轨�
 新模式的精确续算。当前属于有界验证候选，不是已通过长时 M12 验收的默认格式。
 
 MP7-LD 的边界输入修复由 `lcracon=t` 独立控制，不再依赖启用通量限制器。
-显式设置 `ASTR_GPU_MP_POSITIVITY=off` 时，程序使用未加该可选限制器的 MP7-LD 通量，
+显式设置 `precision_options.gpu_mp_positivity=off` 时，程序使用未加该可选限制器的 MP7-LD 通量，
 仍保留坏边界输入和 RK 更新后的 GPU crashfix；修复失败仍报错，不保证全域守恒。
 
 ### 9.2 运行时选项
 
-以下“默认”指未设置环境变量时的程序行为，不等于所有算例的推荐选择。
-各 rank 应使用相同配置；按表中小写值填写，不假定所有读取器都忽略大小写或空值。
-可先用 `unset 变量名` 清除上次运行的设置。多数选项只在初始化时读取。
+带组名前缀的项（如precision_options.gpu_precision_mode）写在input.case
+对应namelist组内，只有ASTR_开头的项才是环境变量。下文默认指未配置时
+的行为，不等于每个算例的推荐选择。各rank配置须一致；值按表中小写填写。
+物理/数值字段只在初始化时读取，不能用旧环境变量覆盖或热改。
 
-**精度：`ASTR_GPU_PRECISION_MODE`**
+**精度：`precision_options.gpu_precision_mode`**
 
 - `fp64`（默认）：使用双精度数值实现。
 - `mixed_workspace`：主守恒状态和 RK 更新仍为 FP64，只将指定中间数组及对应计算改用 FP32。不是将整个求解器改为单精度。
 
-`ASTR_GPU_MIXED_CANDIDATE` 指定哪一类中间量使用 FP32，每次只能选一项：
+`precision_options.gpu_mixed_candidate` 指定哪一类中间量使用 FP32，每次只能选一项：
 
 | 取值 | 改动对象与使用条件 |
 |---|---|
@@ -785,24 +752,24 @@ AIR5 不在这里的混合精度支持范围。FP64构建的这些混合工作�
 
 **物性参数**
 
-- `ASTR_PERFECT_GAS_PRANDTL`：指定单组分理想气体的正 Prandtl 数，改变热传导与黏性输运的比例。
-- `ASTR_SUTHERLAND_TEMPERATURE_K`：指定 Sutherland 定律中的正温度常数，单位 K；不是自由来流温度或壁温。
+- `transport_options.perfect_gas_prandtl`：指定单组分理想气体的正 Prandtl 数，改变热传导与黏性输运的比例。
+- `transport_options.sutherland_temperature_k`：指定 Sutherland 定律中的正温度常数，单位 K；不是自由来流温度或壁温。
 
 未设置时保留原算例物性设置。改变这两项会改变物理模型，不应归入不改变结果的性能选项。
 
-**槽道驱动：`ASTR_CHANNEL_FORCE_MODE`**
+**槽道驱动：`transport_options.channel_force_mode`**
 
 | 取值 | 实际作用 |
 |---|---|
 | `feedback`（默认） | 根据当前质量流率与目标值的偏差及壁面摩擦，更新驱动力。 |
-| `fixed` | 保持给定驱动力；优先读取 ASTR_CHANNEL_FORCE_FIXED，未提供时使用现有 force 值，不自动生成推荐数值。 |
+| `fixed` | 保持给定驱动力；优先读取 transport_options.channel_force_fixed，未提供时使用现有 force 值，不自动生成推荐数值。 |
 | `frozen`（也接受 freeze） | 首次调用时计算一次反馈驱动力，此后保持该值。不同于由用户直接指定固定数值。 |
 
-`ASTR_CHANNEL_FORCE_FIXED` 是实数。一旦提供，即使 MODE=feedback 或 frozen，
+`transport_options.channel_force_fixed` 是实数。一旦提供，即使 MODE=feedback 或 frozen，
 也优先使用这个固定力值。它不是指定速度；动量方向和单位按槽道源项定义。
 槽道源项采用体积力，动量源为F，总能量源为逐点机械功F·u，不是按密度
 相乘的固定加速度，也不再使用全域bulk速度代替局部速度。新算例先将驱动力
-置零；需要非零固定驱动时显式设置ASTR_CHANNEL_FORCE_FIXED，该值从首个RK阶段生效。
+置零；需要非零固定驱动时显式设置transport_options.channel_force_fixed，该值从首个RK阶段生效。
 新检查点的驱动身份含`-localwork-v1`，不接受旧bulk功批次恢复到这一算法。
 当前读取器对无法识别的 MODE 会落到反馈分支，因此尤其要检查拼写和实际驱动力。
 外部脚本的 CHANNEL_FORCE_MODE 等别名不能直接当成求解器环境变量。
@@ -905,7 +872,7 @@ AIR5 补偿余量、已登记边界历史和累计统计由同一批次负责恢
 没有自动转换或失败后的旧格式回退；旧结果若需续算，应保留匹配的旧程序。
 
 每个新 checkpoint 保存 `state.h5` 和版本化控制/清单文件，按需保存统计、
-动态入口及AIR5记录。输入和入口源在运行级 `resources/`，精确模式另存共享几何，
+动态入口及AIR5记录。输入和入口源在运行级resources/，精确模式及AIR5完整状态模式另存共享几何，
 其余历史段由相对引用连接。整体搬移必须保留这些依赖，不能只拿一个HDF5。
 
 检查点保存以实际文件写入和关闭成功为准，不计算 CRC 或程序、输入、资源
@@ -926,11 +893,10 @@ AIR5 补偿余量、已登记边界历史和累计统计由同一批次负责恢
 
 ### 10.5 正常停止与失败恢复
 
-生产运行宜在启动前设置明确的绝对 maxstep 和 `input.output` 中正的checkpoint间隔，确保
-计划停止前有完整恢复点。controller 并非每步读取：主循环按旧控制频率
-`feqchkpt` 对应的步号重新读取它，与新保存频率相互独立。
-修改 controller 不等于即时停止，也不保证额外生成
-用户指定时刻的 checkpoint；不要在并发读取期间逐行改写该文件。
+生产运行启动前在input.run设置累计max_steps或stop_time，并在input.output
+配置checkpoint间隔。主rank按reload_steps在完整步后检查input.run，
+下一完整步采用有效更新。结束条件达到时由统一结束事件处理最终输出；
+不为凑输出时刻改变dt，也不在RK阶段中间停止。不要并发逐行改写input.run。
 
 进程退出码为零仍需检查正常结束标记、错误信息、场是否有限和恢复文件是否
 配套。文件写出失败、MPI 中止或强制终止后，不使用最新但未完成的文件组，
@@ -975,16 +941,20 @@ AIR5 补偿余量、已登记边界历史和累计统计由同一批次负责恢
 精确模式不能从轻量检查点恢复；非精确模式可读取含 `ASTRIR07` 控制的完整检查点并重建物性。
 新版本检查点始终保存动态产品控制，包括空清单；不再兼容此前的控制格式。
 随机吹吸 RNG、驱动和调度状态及已有的压缩修复历史仍保存，不能删去。
-此轮轻量实现限非反应五变量；AIR5 检查点仍须显式 `exact_restart=t`，
-保留化学补偿及必要历史。仅字段归档而不保存/恢复检查点不受此限制。
+轻量实现仍限非反应五变量。AIR5的exact_restart=f不启用轻量存储：
+仍完整保存守恒量、化学补偿余量、子步历史、物性缓存、halo及共享几何。
+它采用当前input.run的步长控制并建立新的时间统计窗口，不承诺精确数值轨迹。
+exact_restart=t才恢复原步长控制及统计历史。AIR5机理、边界及化学策略仍须
+与源批次一致，当前不提供跨精度或CPU/GPU切换恢复；本轮非精确数值验证
+覆盖CPU/GPU各NP2x同拓扑。仅字段归档而不保存/恢复检查点不受此存储选择影响。
 轻量检查点不提供现有只读预览/离线导出所需的完整几何和物性布局；
 这些工具仍使用精确检查点，常规后处理请独立开启三维场或切片归档。
 
 这是已完成首期有界本地验收的可选接口，不是所有算例和拓扑的通用保证。
 首期交付范围按用户确认的方案A冻结，见输出重设计计划第10.77–10.78节；
-旧controller的 `lwsequ/lwslic` 被忽略并提示；`feqchkpt` 仍控制既有的
-controller重读与CFL检查，不控制新checkpoint频率。`lavg/feqavg` 的
-统计定义和采样相位不变。关闭 checkpoint/三维场分别设 `enabled=f`，关闭数值截面则发布仅含格式头的空清单，
+controller已退出运行入口，不再使用lwsequ/lwslic/feqchkpt/feqavg配置。
+input.run独立控制热更新、日志和完整步时间统计；每步自动估计波速。
+关闭checkpoint/三维场分别设enabled=f，关闭数值截面则发布仅含格式头的空清单，
 仍需提供合法配置和当前接口要求的预算，不能靠删除文件关闭输出。
 
 **固定索引数值截面**
@@ -1038,12 +1008,12 @@ HBL 的 NP=1/2 z，SBLI 的 NP=1/2 x，y 方向均须完整。
 
 启动顺序：
 
-1. 按正常算例准备输入和 controller，主输入 `lrestart=f`。
+1. 按正常算例准备input.case和input.run，initialization组保持lrestart=f。
 2. 建立新的 `outdat/new`，其产品子目录不能预先存在。
 3. 从 `scripts/output/input.output.tgv.example` 选择基础字段，或从
    `input.output.tgv.derived.example` 选择派生量，作为 `datin/input.output`。
-4. 按正常命令 `astr run datin/input.tgv` 启动，不再要求设置输出环境变量。
-   主输入中的 `usegpu` 仍决定 CPU/GPU，示例频率和预算不是生产推荐值。
+4. 按正常命令astr run datin/input.case启动，不再要求设置输出环境变量。
+   主输入中的 `use_gpu` 仍决定 CPU/GPU，示例频率和预算不是生产推荐值。
 
 AIR5 登记短测可用 `scripts/output/input.output.air5.derived.example`，
 但该文件只配置输出，不代替 AIR5 物理输入、补偿及特征顶面的匹配设置。
@@ -1098,7 +1068,7 @@ checkpoint 时正常结束必须保存末步。`keep=1|2` 只轮换 checkpoint�
 周期五变量 TGV NP=1↔2 x/y/z 和 NP=2 分解方向互换。
 另开放严格限定的槽道短测配置：内部生成 16³ 网格、ninit=3、无量纲、
 bc=[1,1,41,41,1,1]、643e/643e、滤波和黏性开启、
-ASTR_CHANNEL_FORCE_MODE=fixed、ASTR_CHANNEL_FORCE_FIXED=1.d-4，
+transport_options.channel_force_mode=fixed、transport_options.channel_force_fixed=1.d-4，
 支持同后端 NP=1↔2 x/z 及 NP=2 x↔z。源/目标 y 方向都不能分区，
 不支持反馈/冻结驱动、紧致或原位累计统计；CPU 已登记 mean44 可迁移。
 静态 CURVE 剖面平板另有已验证的有界配置：16³、无量纲、ninit=0、
@@ -1632,7 +1602,7 @@ ParaView 使用 XDMF3 读取单帧 `data.xdmf` 或段内 `series.xdmf`。
 ## 11. 算例选择与专用处理
 
 完整可启动包见 [GPU_Quickstart](examples/GPU_Quickstart/README.md)：
-提供单组分 TGV、槽道、平板，以及 AIR5 TGV、平板的主输入、controller、
+提供单组分TGV、槽道、平板，以及AIR5 TGV、平板的input.case/input.run、
 启动脚本和附加数据生成器。可选 CPU/GPU、NP=1/2、full/scalar，
 不依赖 tests/。默认仅三次更新，用于安装和启动检查。
 当前没有可直接启用的 AIR5 槽道实现，不能只改 lcomb 来构造反应槽道。
@@ -1658,7 +1628,7 @@ OpenSBLI 专用模式固定 Mach 2、Re=950、壁温 1.676194、顶面分界 x=4
 对流、`643e` 黏性、RK3、Sutherland 和 `11/21/41/50/1/1` 边界，关闭滤波。
 根 CMake 的 `ASTR_USERDEFINE_SOURCE` 选择提供二维网格挤出逻辑的用户模块。
 首次启动需要 `datin/grid.2d`、`flowini2d.h5`、`inlet.prof`、`wallbs.dat`，
-并明确设置 `ASTR_WALL_BLOWING_MODE=legacy_random`。此模式在每次实际底壁
+并明确设置 `boundary_options.wall_blowing_mode=legacy_random`。此模式在每次实际底壁
 更新时重新抽样，CPU/GPU 共用主机生成器，GPU 只接收本地二维壁面速度。
 临时种子为1，rank种子为rank+1；默认 `current` 是其他模态/空间扰动模式，
 不能用它替代原随机驱动。
@@ -1686,27 +1656,27 @@ ROS-2 局部 6x6 求解属于化学积分，与空间紧致格式的线系统相
 air5reactor、air5postshock、air5normalshock、air5tgv、air5hbl、air5sbli
 与冻结输运类型需区分；lcomb=t 不保证任意 flowtype 启用同样的反应路径。
 
-| 环境变量 | 可选值 | 默认/限制 |
+| input.case字段或执行环境变量 | 可选值 | 默认/限制 |
 |---|---|---|
-| ASTR_AIR5_SOURCE_MODE | coupled / chemical / vt / frozen | 默认 coupled；各值含义见下文，仍受 flowtype 控制 |
-| ASTR_AIR5_CONVECTION_LIMITER | full_state / species_budget / consistent_species / symmetric_species | 默认 full_state；各值采用不同的界面通量限制方法，见下文 |
-| ASTR_AIR5_DIFFUSION_LIMITER | full_state / layered | 默认 full_state；全通量共用限制系数，或分开限制组分扩散及能量 |
-| ASTR_AIR5_COMPENSATION | off / on | 默认 off；on 保存并传播浮点更新中损失的低位余量，不是添加物理补偿源项 |
-| ASTR_AIR5_COMPENSATION_RESTART | initialize | 旧恢复接口参数；不用于新批次，旧checkpoint恢复已关闭 |
-| ASTR_AIR5_TOP_MODE | prescribed / characteristic | 默认 prescribed，直接指定顶面状态；characteristic 按特征波传播方向推进顶面状态 |
-| ASTR_AIR5_TOP_TAU | 有限正实数，秒 | characteristic 必须给定的松弛时间尺度；减小值会增大基础松弛率 1/tau，不是自动优化参数 |
+| chemistry.source_mode | coupled / chemical / vt / frozen | 默认 coupled；各值含义见下文，仍受 flowtype 控制 |
+| chemistry.convection_limiter | full_state / species_budget / consistent_species / symmetric_species | 默认 full_state；各值采用不同的界面通量限制方法，见下文 |
+| chemistry.diffusion_limiter | full_state / layered | 默认 full_state；全通量共用限制系数，或分开限制组分扩散及能量 |
+| chemistry.compensation | off / on | 默认 off；on 保存并传播浮点更新中损失的低位余量，不是添加物理补偿源项 |
+| chemistry.compensation_restart | initialize | 旧恢复接口参数；不用于新批次，旧checkpoint恢复已关闭 |
+| chemistry.top_mode | prescribed / characteristic | 默认 prescribed，直接指定顶面状态；characteristic 按特征波传播方向推进顶面状态 |
+| chemistry.top_tau | 有限正实数，秒 | characteristic 必须给定的松弛时间尺度；减小值会增大基础松弛率 1/tau，不是自动优化参数 |
 | ASTR_AIR5_PRIMITIVE_REUSE | off / chemistry | 默认 off，重新恢复原始变量；chemistry 复用化学积分已恢复的同一状态原始变量，避免重复计算 |
 | ASTR_AIR5_CHEMISTRY_REDUCTIONS | baseline / packed | 默认 baseline；有诊断的半步用4次归约，packed 合并为2次。report-steps 的非报告半步只作1次失败状态归约，两种模式都不跳过失败检查 |
-| ASTR_AIR5_SOURCE_EVALUATION | joint / source-only | 默认 joint；source-only 仅供 GPU，将 ROS-2 第二阶段改为只计算实际使用的源项，不计算未使用的 Jacobian |
+| chemistry.source_evaluation | joint / source-only | 默认 joint；source-only 仅供 GPU，将 ROS-2 第二阶段改为只计算实际使用的源项，不计算未使用的 Jacobian |
 | ASTR_AIR5_CHEMISTRY_BLOCK_SIZE | 128 / 32 | 默认 128；GPU 化学核的每块线程数，不改变节点对应关系或单元内运算顺序 |
 | ASTR_AIR5_CHEMISTRY_DISPATCH | general / specialized | 默认 general，GPU 在通用入口内判断是否收集诊断；specialized 由主机按同一标志选择报告或非报告入口，共享同一数值计算体，保留失败检查，不改变诊断频率或检查点格式；本地未测得稳定完整步收益 |
 | ASTR_AIR5_FLUX_HALO | separate / packed / packed-overlap | 默认 separate，分别交换扩散通量字段；packed 合并为每方向一组 27/33 分量；packed-overlap 还在当前 MPI 请求期间预打包下一 MPI 方向。复用原传输后端，不改变物理节点、hm 层数或数值格式；增加按面面积增长的私有缓冲。已有本地短窗正确性及五轮完整步成本记录，不代表生产规模或 A800 性能验收 |
-| ASTR_AIR5_LOW_ACTIVITY | off / 非负数值阈值 | 默认 off，0 同样关闭。正阈值按每化学半步的组分生成/消耗、化学和振动松弛能量、温度影响联合指标，决定是否保持该单元整个热化学半步不变。本地研究阈值 1e-4 已通过 G1/G2 留出、CPU/GPU 及同策略精确续算；强活性短窗未触发跳过且没有整步收益，不推荐直接用于生产。恢复要求同阈值和算法版本，当前 AIR5 不支持 exact_restart=f；不支持恢复时切换筛选策略 |
+| chemistry.low_activity_threshold | 非负实数，0关闭 | 默认0。正阈值按每化学半步的组分生成/消耗、化学和振动松弛能量、温度影响联合指标，决定是否保持该单元整个热化学半步不变。本地研究阈值1e-4已通过G1/G2留出、CPU/GPU及同策略精确续算；强活性短窗未触发跳过且没有整步收益，不推荐直接用于生产。精确和非精确恢复均要求同阈值、算法版本及化学策略；不支持恢复时切换筛选策略 |
 | ASTR_AIR5_LAUNCH_TUNING | fixed / auto | 默认 fixed，沿用原线程块；auto 在每次启动前期按 rank、化学半步及体内/顶面分别学习，扩散通量核单独学习，收齐样本后固定，不改变数值公式；已通过本地 NP1/NP2 功能及数值检查，平台和总体性能待测 |
 | ASTR_AIR5_CHEMISTRY_DIAGNOSTICS | every-step / report-steps | 默认 every-step；report-steps 只在报告步计算工作计数和极值，化学失败检查仍在每个半步执行 |
-| ASTR_AIR5_CHEMISTRY_TOLERANCE | baseline / loose / tight | 默认 baseline；三档 ROS-2 局部误差参数，具体数值见下文，不是完整 CFD 误差保证 |
-| ASTR_AIR5_STEP_HISTORY | off / previous | 默认 off；previous 用上一化学调用的建议子步作为下一次试探初值，仍执行接受、拒绝和物理检查 |
-| ASTR_AIR5_FILTER_MODE | legacy / conservative-flux | 默认 legacy；conservative-flux 是显式选择的新保守通量式滤波，只有 lfilter=t 才施加滤波 |
+| chemistry.chemistry_tolerance | baseline / loose / tight | 默认 baseline；三档 ROS-2 局部误差参数，具体数值见下文，不是完整 CFD 误差保证 |
+| chemistry.step_history | off / previous | 默认 off；previous 用上一化学调用的建议子步作为下一次试探初值，仍执行接受、拒绝和物理检查 |
+| chemistry.filter_mode | legacy / conservative-flux | 默认 legacy；conservative-flux 是显式选择的新保守通量式滤波，只有 lfilter=t 才施加滤波 |
 
 **化学求值与积分控制**
 
@@ -1804,33 +1774,43 @@ packed单项无可辨别的整步收益，仍可显式选择以减少报告归�
 硬件上的收益。完整范围和样本见
 [阶段实施记录第61节](documents/ASTR_AIR5_STAGE_COORDINATION_LOCAL_RESULTS_20261013.md#61-2026-10-18-le1-le3本地交付与五轮成本)。
 
-本地工程对照的推荐候选为：
+本地工程对照的推荐候选如下。在input.case的对应组内设置字段，不重复创建已有组：
+
+```fortran
+&precision_options
+ gpu_precision_mode='fp64'
+/
+&chemistry
+ source_evaluation='source-only',chemistry_tolerance='baseline',
+ step_history='off',filter_mode='conservative-flux'
+/
+```
+
+执行配置仍可在环境中设置：
 
 ```bash
-export ASTR_GPU_PRECISION_MODE=fp64 ASTR_GPU_SYNC_MODE=explicit
+export ASTR_GPU_SYNC_MODE=explicit
 export ASTR_GPU_HALO_TRANSPORT=pinned ASTR_GPU_FILTER_WORKSPACE=scalar
-export ASTR_AIR5_SOURCE_EVALUATION=source-only
 export ASTR_AIR5_CHEMISTRY_BLOCK_SIZE=32
 export ASTR_AIR5_CHEMISTRY_DIAGNOSTICS=report-steps
-export ASTR_AIR5_CHEMISTRY_TOLERANCE=baseline ASTR_AIR5_STEP_HISTORY=off
-export ASTR_AIR5_FILTER_MODE=conservative-flux
 ```
 
 这不是独立的算例启动脚本。输入仍需显式启用 AIR5、滤波及其已登记
 边界组合，并匹配下文的组分限制器、补偿和特征顶面配置。
-AIR5 检查点必须设置 `exact_restart=t`。上述候选仅推荐用于复现本地
+复现相同AIR5轨迹时设置exact_restart=t；非精确模式的完整状态与新统计窗口规则见10.6节。
+上述候选仅推荐用于复现本地
 已验证的误差/成本对照，不改变程序默认值，也不代表 A800 性能推荐。
 完整基线/候选参数、五轮命令和本地交付清单见
 [阶段协同实施记录](documents/ASTR_AIR5_STAGE_COORDINATION_LOCAL_RESULTS_20261013.md#53-2026-10-17-本地交付收口结论)。
 
-**反应与能量交换：ASTR_AIR5_SOURCE_MODE**
+**反应与能量交换：chemistry.source_mode**
 
 - `coupled`：启用化学反应和振动-平动能量交换。
 - `chemical`：仅保留化学反应源项，不保留独立的振动-平动松弛源项；不意味着反应与能量无关。
 - `vt`：仅保留振动-平动能量交换，关闭改变组分的化学反应源项。
 - `frozen`：关闭上述两类局部源项。空间输运是否启用仍由算例和 diffterm 等设置决定，不是冻结整个流场。
 
-**对流通量限制：ASTR_AIR5_CONVECTION_LIMITER**
+**对流通量限制：chemistry.convection_limiter**
 
 限制器在高阶更新可能产生负组分或不可接受的双温状态时，减少高阶通量修正。
 它改变离散结果，不是可以任意互换的性能选项。
@@ -1842,7 +1822,7 @@ AIR5 检查点必须设置 `exact_restart=t`。上述候选仅推荐用于复现
 | `consistent_species` | 先限制流体通量，再在固定流体通量下限制总和为零的组分修正；N2 通量仍由总质量通量减去其他组分通量得到。保留用于对照，不因已实现就认为压力平衡和长时物理误差已达标。 |
 | `symmetric_species` | 对五个组分对称构造候选通量，联合约束组分非负、总质量通量一致性及气体常数加权通量，并同步修正组分携带的能量；不再让一个痕量组分直接决定全部流体分量的共用系数。 |
 
-**扩散通量限制：ASTR_AIR5_DIFFUSION_LIMITER**
+**扩散通量限制：chemistry.diffusion_limiter**
 
 - `full_state`：组分、动量和能量扩散采用共同的界面限制系数。
 - `layered`：先限制组分扩散并一致修正其携带的能量，再根据热力学可接受性检查能量相关修正。不是取消能量约束，也不是让各分量完全独立更新。
@@ -1859,7 +1839,7 @@ COMPENSATION=on 要求 AIR5、11 分量、三维 air5hbl/air5sbli、RK3，
 不使用浸入边界或海绵层。它额外保存低位余量并参与重启，不能理解为放宽保正容差。
 TOP_MODE=characteristic 使用局部法向传播速度区分传入和传出波，并对需要指定的
 传入状态采用松弛；TOP_TAU 只是基础时间尺度，实际强度还由边界处理决定。
-这些 AIR5 顶面设置与第 6 节的单组分 ASTR_NSCBC_FARFIELD_MODE 不是同一接口。
+这些 AIR5 顶面设置与第 6 节的单组分 boundary_options.nscbc_farfield_mode 不是同一接口。
 
 ASTR_AIR5_FILTER_VALIDATION=on、ASTR_AIR5_TOP_GPU_VALIDATION=on、
 ASTR_AIR5_TOP_RESTART_VALIDATION=on 分别允许程序进入 AIR5 滤波组合、

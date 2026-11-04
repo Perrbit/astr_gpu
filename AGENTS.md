@@ -13,6 +13,10 @@ under `/home/dell/workspace/astr_gpu`.
 - For reversible local implementation work already authorized by the user,
   diagnose defects, make the smallest scoped fix, and run affected checks
   without requesting confirmation at every step.
+- Do not add fallbacks, retries, compatibility layers, allowlists, or rollback
+  logic unless the user explicitly requests them.
+- Do not refactor code unrelated to the current task. If an unrelated problem
+  is discovered, stop and report it; do not fix it without user instruction.
 - Ask one concise question only when a decision changes the physical model,
   numerical method, validation meaning, destructive Git state, or an external
   production job.
@@ -43,6 +47,9 @@ under `/home/dell/workspace/astr_gpu`.
 - Match verification effort to the changed surface. Build, numerical
   equivalence, physical validation, memory safety, and performance are separate
   gates and must not be presented as interchangeable evidence.
+- Do not create vague acceptance items such as "verify the system opens" or
+  "regression tests pass". Each item must identify the specific behavior or
+  quantity, its expected result, and the comparison or measurement used.
 - Run the smallest sufficient affected test set first. Reuse immutable expensive
   benchmark artifacts when executable code, inputs, and environment are
   unchanged; do not rerun long GPU or remote production cases for documentation
