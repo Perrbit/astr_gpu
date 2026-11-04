@@ -2,7 +2,7 @@ module cfl_gpu
   use astr_precision, only: real_kind
   use cudafor
   use iso_fortran_env, only: int64
-  use cfl_spectrum, only: spectral_rates
+  use cfl_spectrum, only: spectral_rates,spectral_failure_kind,spectral_failure_message,cfl_bad_thermodynamics
   implicit none
   private :: real_kind
   private
@@ -10,7 +10,7 @@ module cfl_gpu
   public :: collect_timestep_rates_gpu,release_timestep_rates_gpu
   real(real_kind),allocatable,device,save :: timestep_partial_d(:,:),timestep_values_d(:,:)
 contains
-  attributes(device) subroutine node_cfl_rates_gpu(i,j,k,reacting,nondimensional,mach,gamma,rgas,rates,valid)
+  attributes(device) subroutine node_cfl_rates_gpu(i,j,k,reacting,nondimensional,mach,gamma,rgas,rates,valid,failure)
     use commarray_gpu, only: q_d,vel_d,tmp_d,dxi_d
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_thermo_gpu, only: air5_temperature_from_q5_gpu, &
@@ -21,6 +21,7 @@ contains
     real(real_kind),value :: mach,gamma,rgas
     real(real_kind),intent(out) :: rates(4)
     logical,intent(out) :: valid
+    integer,optional,intent(out) :: failure
     real(real_kind) :: velocity(3),metric(3,3),sound,temp,rden,cvden,momentum(3),partial_density(5)
     integer :: status,s
 
@@ -57,7 +58,27 @@ contains
     metric=dxi_d(i,j,k,:,:)
     call spectral_rates(velocity,sound,metric,rates,valid)
     valid=valid.and.status==0
+    if(present(failure)) then
+      failure=0
+      if(status/=0) then
+        failure=cfl_bad_thermodynamics
+      elseif(.not.valid) then
+        failure=spectral_failure_kind(velocity,sound,metric)
+      endif
+    endif
   end subroutine node_cfl_rates_gpu
+
+  attributes(global) subroutine timestep_failure_kernel(failure,i,j,k,reacting,nondimensional,mach,gamma,rgas)
+    integer,device :: failure(1)
+    integer,value :: i,j,k
+    logical,value :: reacting,nondimensional
+    real(real_kind),value :: mach,gamma,rgas
+    real(real_kind) :: rates(4)
+    logical :: valid
+    integer :: reason
+    call node_cfl_rates_gpu(i,j,k,reacting,nondimensional,mach,gamma,rgas,rates,valid,reason)
+    failure(1)=reason
+  end subroutine
 
   attributes(global) subroutine timestep_partial_kernel(partial,im,jm,km,reacting, &
       nondimensional,mach,gamma,rgas)
@@ -113,12 +134,14 @@ contains
 
   subroutine collect_timestep_rates_gpu(rates,valid)
     use commvar, only: im,jm,km,lcomb,nondimen,mach,gamma,rgas,ia,ja
-    use parallel, only: mpirank
+    use parallel, only: mpirank,ig0,jg0,kg0
     use gpu_check, only: sync_after_kernel
     real(real_kind),intent(out) :: rates(3)
     logical,intent(out) :: valid
     real(real_kind) :: values(4,1),diagnostic(4),planes(4,0:0)
     integer(int64) :: keys(4),key,gi,gj,gk
+    integer,allocatable,device :: failure_d(:)
+    integer :: failure(1)
     integer,parameter :: nb=128
 
     if(.not.allocated(timestep_partial_d)) allocate(timestep_partial_d(4,nb),timestep_values_d(4,1))
@@ -136,8 +159,15 @@ contains
       gi=mod(key,int(ia+1,int64))
       gj=mod(key/(ia+1),int(ja+1,int64))
       gk=key/(int(ia+1,int64)*(ja+1))
-      write(*,'(A,I0,A,3(1X,I0))') &
-        'ASTR_TIMESTEP invalid state/metric rank=',mpirank,' global_ijk=',gi,gj,gk
+      allocate(failure_d(1))
+      call timestep_failure_kernel<<<1,1>>>(failure_d,int(gi)-ig0,int(gj)-jg0,int(gk)-kg0, &
+        lcomb,nondimen,mach,gamma,rgas)
+      call sync_after_kernel('timestep_failure_kernel',.true.)
+      failure=failure_d
+      deallocate(failure_d)
+      write(*,'(A,I0,A,3(1X,I0),2A)') &
+        'ASTR_TIMESTEP invalid state/metric rank=',mpirank,' global_ijk=',gi,gj,gk, &
+        ' reason=',trim(spectral_failure_message(failure(1)))
     endif
   end subroutine collect_timestep_rates_gpu
 

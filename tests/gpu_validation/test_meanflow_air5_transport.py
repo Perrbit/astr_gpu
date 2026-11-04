@@ -76,6 +76,25 @@ def repair_lifecycle_probe(tmp_path_factory):
     return build_probe(tmp_path_factory, "repair_lifecycle_probe.cuf")
 
 
+@pytest.fixture(scope="module")
+def timestep_diagnostics_probe(tmp_path_factory):
+    if os.environ.get("ASTR_MEANFLOW_GPU") != "1":
+        pytest.skip("CPU/GPU timestep diagnostics require the CUDA build")
+    return build_probe(tmp_path_factory,"timestep_diagnostics_probe.cuf")
+
+
+def test_timestep_failure_reports_distinguish_state_and_geometry(timestep_diagnostics_probe):
+    result=subprocess.run([MPIEXEC,'-n','1',str(timestep_diagnostics_probe)],capture_output=True,text=True)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'TIMESTEP_DIAGNOSTICS_PASS' in result.stdout
+    for reason in ('nonfinite velocity','invalid sound speed','nonfinite metric','wave-rate arithmetic'):
+        assert result.stdout.count('reason='+reason)==2,result.stdout
+    thermo='TIMESTEP_DIAGNOSTICS_THERMO' in result.stdout
+    if thermo:
+        assert result.stdout.count('reason=thermodynamic state recovery')==2,result.stdout
+    assert result.stdout.count('global_ijk= 1 1 1')==2*(4+thermo),result.stdout
+
+
 @pytest.mark.parametrize("ranks", [1,2])
 def test_repair_device_history_survives_disable_and_restart(repair_lifecycle_probe,ranks,tmp_path):
     result=subprocess.run([MPIEXEC,'-n',str(ranks),str(repair_lifecycle_probe),str(tmp_path/'mask.h5')],

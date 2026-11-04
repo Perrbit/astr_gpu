@@ -17,12 +17,12 @@ module commcal
   private :: node_cfl_rates
   !
   contains
-  subroutine node_cfl_rates(i,j,k,rates,valid)
+  subroutine node_cfl_rates(i,j,k,rates,valid,failure)
     use commvar, only: lcomb
     use commarray, only: vel,tmp,dxi,spc,q
     use fludyna, only: sos
     use thermchem, only: aceval
-    use cfl_spectrum, only: spectral_rates
+    use cfl_spectrum, only: spectral_rates,spectral_failure_kind,cfl_bad_thermodynamics
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_thermo, only: air5_temperature_from_q5, &
       air5_species_gas_constant,air5_species_cv_tr
@@ -30,6 +30,7 @@ module commcal
     integer,intent(in) :: i,j,k
     real(real_kind),intent(out) :: rates(4)
     logical,intent(out) :: valid
+    integer,optional,intent(out) :: failure
     real(real_kind) :: velocity(3),metric(3,3),sound,temp,rden,cvden
     integer :: status,s
 
@@ -63,15 +64,24 @@ module commcal
     metric=dxi(i,j,k,:,:)
     call spectral_rates(velocity,sound,metric,rates,valid)
     valid=valid.and.status==0
+    if(present(failure)) then
+      failure=0
+      if(status/=0) then
+        failure=cfl_bad_thermodynamics
+      elseif(.not.valid) then
+        failure=spectral_failure_kind(velocity,sound,metric)
+      endif
+    endif
   end subroutine node_cfl_rates
 
   subroutine collect_timestep_rates_cpu(rates,valid)
     use commvar, only: im,jm,km
     use parallel, only: ig0,jg0,kg0
+    use cfl_spectrum, only: spectral_failure_message
     real(real_kind),intent(out) :: rates(3)
     logical,intent(out) :: valid
     real(real_kind) :: node_rates(4)
-    integer :: i,j,k
+    integer :: i,j,k,failure
     logical :: node_valid
 
     rates=0.e0_real_kind
@@ -79,12 +89,13 @@ module commcal
     do k=0,km
     do j=0,jm
     do i=0,im
-      call node_cfl_rates(i,j,k,node_rates,node_valid)
+      call node_cfl_rates(i,j,k,node_rates,node_valid,failure)
       if(node_valid) then
         rates=max(rates,node_rates(1:3))
       else
-        if(valid) write(*,'(A,I0,A,3(1X,I0))') &
-          'ASTR_TIMESTEP invalid state/metric rank=',mpirank,' global_ijk=',i+ig0,j+jg0,k+kg0
+        if(valid) write(*,'(A,I0,A,3(1X,I0),2A)') &
+          'ASTR_TIMESTEP invalid state/metric rank=',mpirank,' global_ijk=',i+ig0,j+jg0,k+kg0, &
+          ' reason=',trim(spectral_failure_message(failure))
         valid=.false.
       endif
     enddo

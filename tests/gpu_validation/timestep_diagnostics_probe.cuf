@@ -1,0 +1,68 @@
+program timestep_diagnostics_probe
+  use astr_precision, only: real_kind
+  use ieee_arithmetic, only: ieee_value,ieee_quiet_nan
+  use cudafor
+  use mpi
+  use commvar, only: im,jm,km,ia,ja,ka,nondimen,lcomb,mach,gamma,rgas
+  use commarray, only: vel,tmp,dxi,q
+  use commarray_gpu, only: vel_d,tmp_d,dxi_d,q_d
+  use parallel, only: mpirank,ig0,jg0,kg0
+  use commcal, only: collect_timestep_rates_cpu
+  use cfl_gpu, only: collect_timestep_rates_gpu,release_timestep_rates_gpu
+  implicit none
+  integer :: status,n,axis
+  real(real_kind) :: rates(3)
+  logical :: valid
+  call MPI_Init(status)
+  call MPI_Comm_rank(MPI_COMM_WORLD,mpirank,status)
+  status=cudaSetDevice(0)
+  if(status/=cudaSuccess) error stop 'diagnostic probe GPU selection failed'
+  im=2;jm=2;km=2;ia=2;ja=2;ka=2;ig0=0;jg0=0;kg0=0
+  nondimen=.true.;lcomb=.false.;mach=2;gamma=1.4_real_kind;rgas=1
+  allocate(vel(0:2,0:2,0:2,3),tmp(0:2,0:2,0:2),dxi(0:2,0:2,0:2,3,3))
+  allocate(vel_d(0:2,0:2,0:2,3),tmp_d(0:2,0:2,0:2),dxi_d(0:2,0:2,0:2,3,3))
+  allocate(q(0:2,0:2,0:2,11),q_d(0:2,0:2,0:2,11))
+#ifdef ASTR_AIR5_CHEMISTRY
+  do n=1,5
+#else
+  do n=1,4
+#endif
+    lcomb=.false.
+    vel=0;tmp=1;dxi=0
+    do axis=1,3
+      dxi(:,:,:,axis,axis)=1
+    enddo
+    select case(n)
+    case(1)
+      vel(1,1,1,1)=ieee_value(0.0_real_kind,ieee_quiet_nan)
+    case(2)
+      tmp(1,1,1)=-1
+    case(3)
+      dxi(1,1,1,1,1)=ieee_value(0.0_real_kind,ieee_quiet_nan)
+    case(4)
+      vel(1,1,1,1)=huge(1.0_real_kind)/2
+      dxi(1,1,1,1,1)=4
+#ifdef ASTR_AIR5_CHEMISTRY
+    case(5)
+      lcomb=.true.
+      ! Only the selected point is invalid; all other AIR5 nodes remain legal.
+      q=0;q(:,:,:,1)=0.05_real_kind;q(:,:,:,6)=0.05_real_kind
+      q(:,:,:,5)=1.e5_real_kind;q(:,:,:,11)=1.e3_real_kind
+      q(1,1,1,5)=-1.e20_real_kind
+#endif
+    end select
+    call collect_timestep_rates_cpu(rates,valid)
+    if(valid) error stop 'CPU accepted invalid spectrum input'
+    vel_d=vel;tmp_d=tmp;dxi_d=dxi
+    if(lcomb) q_d=q
+    call collect_timestep_rates_gpu(rates,valid)
+    if(valid) error stop 'GPU accepted invalid spectrum input'
+  enddo
+#ifdef ASTR_AIR5_CHEMISTRY
+  print *, 'TIMESTEP_DIAGNOSTICS_THERMO'
+#endif
+  call release_timestep_rates_gpu()
+  deallocate(vel,tmp,dxi,q,vel_d,tmp_d,dxi_d,q_d)
+  print *, 'TIMESTEP_DIAGNOSTICS_PASS'
+  call MPI_Finalize(status)
+end program
