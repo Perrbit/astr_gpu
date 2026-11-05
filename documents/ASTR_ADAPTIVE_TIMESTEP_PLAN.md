@@ -2044,3 +2044,25 @@ tests/gpu_validation/run_adaptive_filter_cadence_gate.py
 化学稳定性。AT4封存，其他物理验证、旧专用诊断格式升级及平台部署
 不是本轮隐含续项。未操作远程任务、未创建分支/worktree、未用子agent，
 未执行Git写入。
+
+### 11.20 2026-11-05 冷启动归档几何的首步时钟修复
+
+H1/HCW网格敏感性窗口暴露了auto冷启动同时启用三维归档的公共时序缺陷：
+read_run_input把deltat设为0，begin_output_runtime立即写归档几何，而真实
+首步选择尚未执行，公共场写入器因dt_next=0拒绝。GPU真实窗口及新增
+CPU短测均复现；不是CFL失稳，关闭initial_frame也不能绕过几何写入。
+
+用户批准后，仅延后冷启动的begin_archives到既有initial_output_runtime，
+该调用点已位于select_next_dt之后。检查点恢复及恢复路径的归档初始化
+仍在原位置，不放宽时钟有效性、不伪造dt、不增加回退/重试机制。
+
+根CMake纯CPU及CUDA主目标构建完成。新增
+test_h1_adaptive_archive_startup.py在CUDA构建的CPU/GPU运行中各检查
+初始归档dt_next等于实际首步dt、4步与2+2精确续算11字段及续算时钟
+逐值一致，2 passed。后续64×48×16和64×48×32、NP2x自动CFL=0.5
+各637步完整窗口也通过场/物性正值检查，各保存11帧归档及最终检查点。
+这不改变AT4封存状态，也不宣称解决原H1/HCW跨后端长轨迹误差。
+
+证据：tests/gpu_validation/out/h1_span_grid_20261105/archive_fix/{before,after}.xml，
+以及window_after_archive_fix/span_grid.json。数值敏感性及范围见
+[H1联合设计第26节](ASTR_H1_JOINT_CLOSURE_DESIGN.md#26-获批归档修复与展向三组敏感性完成2026-11-05)。
