@@ -86,6 +86,7 @@ module output_runtime
   logical,save :: mean_statistics=.false.
   logical,save :: mean_path_ready=.false.,registered_mean_enabled=.false.
   logical,save :: restore_probe_pending=.false.
+  logical,save :: cold_archives_pending=.false.
   integer(int64),save :: restored_mean_path=0
   logical,save :: conservation_statistics=.false.
   logical,save :: repartitioning=.false.
@@ -868,7 +869,10 @@ contains
       call check(ierr==MPI_SUCCESS.and.status_reuse==0,'existing output root requires its own validated restore source')
     endif
     if(archives_enabled()) then
-      if(precision_changed) then
+      if(len_trim(options%restore_directory)==0) then
+        ! Cold automatic runs obtain their first real dt after this preparation.
+        cold_archives_pending=.true.
+      elseif(precision_changed) then
         call begin_archives(identity,reuse==1,source_bytes,state_header(10))
       else
         call begin_archives(identity,reuse==1)
@@ -1015,7 +1019,13 @@ contains
   subroutine initial_output_runtime(counter,pending)
     integer(int64),intent(inout) :: counter
     logical,intent(inout) :: pending
+    type(checkpoint_state_identity) :: identity
     if(.not.enabled) return
+    if(cold_archives_pending) then
+      identity=checkpoint_state_identity(int(nstep,int64),time,initial_dt_used,deltat)
+      call begin_archives(identity,.false.)
+      cold_archives_pending=.false.
+    endif
     call completed_output_runtime(initial_dt_used,counter,pending,initial=.true.)
   end subroutine
 
@@ -1507,7 +1517,8 @@ contains
         use boundary_high_order, only: high_order_boundary_enabled
 #ifdef ASTR_BUILD_TESTING
         use boundary_high_order, only: h1_internal_candidate,h1_near_candidate,h1_blend_candidate,h1_stage_budget_candidate, &
-          h1_outlet_filter_candidate,h1_inlet_limited_candidate
+          h1_outlet_filter_candidate,h1_inlet_limited_candidate,h1_inlet_compatible_candidate,h1_compression_sensor_candidate, &
+          h1_metric_eps_candidate
 #endif
         use bc, only: nscbc_farfield_target_state,nscbc_farfield_shock_x,nscbc_farfield_shock_angle, &
           nscbc_farfield_grcbc_enabled
@@ -1519,7 +1530,25 @@ contains
         if(high_order_boundary_enabled) then
           write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1',real_to_word(target)
 #ifdef ASTR_BUILD_TESTING
-          if(h1_inlet_limited_candidate) then
+          if(h1_metric_eps_candidate) then
+            if(diffterm) then
+              write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1mv',real_to_word(target)
+            else
+              write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1mc',real_to_word(target)
+            endif
+          elseif(h1_compression_sensor_candidate) then
+            if(diffterm) then
+              write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1sv',real_to_word(target)
+            else
+              write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1sc',real_to_word(target)
+            endif
+          elseif(h1_inlet_compatible_candidate) then
+            if(diffterm) then
+              write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1cv',real_to_word(target)
+            else
+              write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1cc',real_to_word(target)
+            endif
+          elseif(h1_inlet_limited_candidate) then
             if(diffterm) then
               write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1iv',real_to_word(target)
             else

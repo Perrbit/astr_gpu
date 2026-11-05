@@ -2,15 +2,31 @@
 module high_order_boundary_probe_launch
   use astr_precision, only: real_kind
   use boundary_high_order_gpu, only: boundary_derivative6,boundary_neumann7, &
-    boundary_mp_flux6,boundary_mp_flux6_limited,boundary_filter6,boundary_incoming_rate7, &
+    boundary_mp_flux6,boundary_mp_flux6_limited,boundary_inlet_flux6,boundary_filter6,boundary_incoming_rate7, &
     boundary_hermite_pressure7,boundary_pressure_gradient7,boundary_temperature5,boundary_temperature_rhs5, &
-    boundary_pressure_neumann6,boundary_sensor_blend_weight
+    boundary_pressure_neumann6,boundary_sensor_blend_weight,boundary_compression_sensor
   use cudafor
 #ifdef ASTR_BUILD_TESTING
   use boundary_high_order_gpu, only: boundary_positive_filter5,boundary_budget_margin5
 #endif
   implicit none
 contains
+  attributes(global) subroutine evaluate_compression_sensor(divergence,vorticity,curvature,result)
+    real(real_kind),device :: divergence(9),vorticity(9),curvature(9),result(9)
+    integer :: p
+    p=threadIdx%x
+    if(p<=9) result(p)=boundary_compression_sensor(divergence(p),vorticity(p),curvature(p))
+  end subroutine evaluate_compression_sensor
+
+  attributes(global) subroutine evaluate_inlet_flux(samples,result)
+    real(real_kind),device :: samples(0:7,10),result(0:3,10)
+    integer :: p,row
+    p=threadIdx%x
+    if(p>10) return
+    do row=0,3
+      result(row,p)=boundary_inlet_flux6(samples(:,p),row)
+    enddo
+  end subroutine evaluate_inlet_flux
 #ifdef ASTR_BUILD_TESTING
   attributes(global) subroutine evaluate_roundoff_filter(base,raw,result,theta,code)
     real(real_kind),device :: base(5,3),raw(5,3),result(5,3),theta(3)
@@ -120,9 +136,10 @@ end module high_order_boundary_probe_launch
 program high_order_boundary_probe
   use astr_precision, only: real_kind
   use boundary_high_order, only: boundary_derivative6,boundary_neumann7, &
-    boundary_derivative6_weights,boundary_neumann7_weights,boundary_mp_flux6,boundary_mp_flux6_limited, &
+    boundary_derivative6_weights,boundary_neumann7_weights,boundary_mp_flux6,boundary_mp_flux6_limited,boundary_inlet_flux6, &
     boundary_filter6,boundary_incoming_rate7,boundary_hermite_pressure7,boundary_pressure_gradient7, &
-    boundary_temperature5,boundary_temperature_rhs5,boundary_pressure_neumann6,boundary_sensor_blend_weight
+    boundary_temperature5,boundary_temperature_rhs5,boundary_pressure_neumann6,boundary_sensor_blend_weight, &
+    boundary_compression_sensor
 #ifdef ASTR_BUILD_TESTING
   use boundary_high_order, only: boundary_positive_filter5,boundary_budget_margin5,boundary_budget_admissible5
 #endif
@@ -130,6 +147,8 @@ program high_order_boundary_probe
   use high_order_boundary_probe_launch, only: differentiate,reconstruct_neumann,evaluate_candidates,evaluate_wall_pressure
   use high_order_boundary_probe_launch, only: evaluate_wall_temperature,evaluate_wall_pressure6
   use high_order_boundary_probe_launch, only: evaluate_blend_weights
+  use high_order_boundary_probe_launch, only: evaluate_inlet_flux
+  use high_order_boundary_probe_launch, only: evaluate_compression_sensor
 #ifdef ASTR_BUILD_TESTING
   use high_order_boundary_probe_launch, only: evaluate_roundoff_filter
 #endif
@@ -151,7 +170,9 @@ program high_order_boundary_probe
     pinv(5,5),linear(5),quadratic(5),gradient(5),dq(5),source(5),un(10),css
   integer :: icase,wind,m
   real(real_kind) :: limited_flux(0:2,0:1,10),limited_errors(3),fl,fr
+  real(real_kind) :: inlet_flux(0:3,10)
   real(real_kind) :: blend_sensors(0:1004),blend_weights(0:1004),blend_actual(0:1004)
+  real(real_kind) :: sensor_div(9),sensor_vort(9),sensor_curvature(9),sensor_reference(9),sensor_actual(9)
   real(real_kind) :: thermal_state(5,8),thermal_rhs(5,8),thermal_result(2,8),thermal_expected(2,8), &
     thermal_rho,thermal_vel(3),thermal_dvel(3),thermal_t,thermal_cv
 #ifdef ASTR_BUILD_TESTING
@@ -172,13 +193,41 @@ program high_order_boundary_probe
   real(real_kind),device :: samples_d(0:7,10),primitive_d(5,0:7,10),lambda_d(5,10),rhs_d(5,10), &
     lodi_d(5,10),candidate_flux_d(0:2,0:1,10),filtered_d(0:2,10),rates_d(5,10),limited_flux_d(0:2,0:1,10)
   real(real_kind) :: flux_actual(0:2,0:1,10),filter_actual(0:2,10),rates_actual(5,10)
+  real(real_kind),device :: inlet_flux_d(0:3,10)
+  real(real_kind) :: inlet_actual(0:3,10)
   real(real_kind),device :: blend_sensors_d(0:1004),blend_weights_d(0:1004)
+  real(real_kind),device :: sensor_div_d(9),sensor_vort_d(9),sensor_curvature_d(9),sensor_result_d(9)
   real(real_kind),device :: pressure_data_d(0:6,0:7),pressure_slope_d(0:7), &
     pressure_ghost_d(3,0:7),pressure_gradient_d(0:2,0:7)
   real(real_kind),device :: thermal_state_d(5,8),thermal_rhs_d(5,8),thermal_result_d(2,8)
 #endif
   if(precision(1.e0_real_kind)<15) error stop 'HB probe requires FP64'
   backend_error=0.e0_real_kind
+  sensor_div=[-2.e0_real_kind,-1.e0_real_kind,-1.e-10_real_kind,0.e0_real_kind, &
+              1.e-10_real_kind,1.e0_real_kind,2.e0_real_kind,-1.e-16_real_kind,1.e-16_real_kind]
+  sensor_vort=[0.e0_real_kind,3.e0_real_kind,1.e0_real_kind,.5e0_real_kind,1.e0_real_kind, &
+               3.e0_real_kind,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind]
+  sensor_curvature=[1.e0_real_kind,.25e0_real_kind,.5e0_real_kind,1.e0_real_kind,.5e0_real_kind, &
+                    .25e0_real_kind,1.e0_real_kind,1.e0_real_kind,1.e0_real_kind]
+  do p=1,9
+    sensor_reference(p)=boundary_compression_sensor(sensor_div(p),sensor_vort(p),sensor_curvature(p))
+    expected=0.e0_real_kind
+    if(sensor_div(p)<0) expected=sensor_div(p)**2/(sensor_div(p)**2+sensor_vort(p)+1.e-30_real_kind)*sensor_curvature(p)
+    if(abs(sensor_reference(p)-expected)>2.e-14_real_kind) error stop 'HB compression sensor formula mismatch'
+    if(sensor_div(p)>=0.and.sensor_reference(p)/=0) error stop 'HB expansion activated compression sensor'
+  enddo
+  sensor_actual=sensor_reference
+#ifdef TEST_CUDA
+  sensor_div_d=sensor_div; sensor_vort_d=sensor_vort; sensor_curvature_d=sensor_curvature
+  call evaluate_compression_sensor<<<1,32>>>(sensor_div_d,sensor_vort_d,sensor_curvature_d,sensor_result_d)
+  status=cudaDeviceSynchronize()
+  if(status/=0) error stop 'HB compression sensor CUDA kernel failed'
+  sensor_actual=sensor_result_d
+  if(maxval(abs(sensor_actual-sensor_reference))>2.e-14_real_kind) error stop 'HB compression sensor backend mismatch'
+#endif
+  do p=1,9
+    write(*,'(a,i0,1x,es26.17)') 'HB_COMPRESSION_SENSOR ',p,sensor_actual(p)
+  enddo
 #ifdef ASTR_BUILD_TESTING
   state_scale=[scale(1.e0_real_kind,-100),1.e0_real_kind,scale(1.e0_real_kind,100)]
   do p=1,3
@@ -371,6 +420,12 @@ program high_order_boundary_probe
   enddo
   samples(:,9)=1.e0_real_kind
   samples(4:7,10)=1.e0_real_kind
+  do icase=1,10
+    do row=0,3
+      inlet_flux(row,icase)=boundary_inlet_flux6(samples(:,icase),row)
+    enddo
+  enddo
+  if(any(inlet_flux(:,9)/=1.e0_real_kind)) error stop 'HB inlet candidate changed a constant'
   pinv=0.e0_real_kind
   do m=1,5
     pinv(m,m)=1.e0_real_kind
@@ -465,6 +520,12 @@ program high_order_boundary_probe
   write(*,'(a,es25.17)') 'HB_INCOMING_RATE_ERROR ',error
 #ifdef TEST_CUDA
   samples_d=samples; primitive_d=primitive; lambda_d=test_lambda; rhs_d=rhs; lodi_d=lodi
+  call evaluate_inlet_flux<<<1,16>>>(samples_d,inlet_flux_d)
+  status=cudaDeviceSynchronize()
+  if(status/=0) error stop 'HB inlet candidate CUDA launch failed'
+  inlet_actual=inlet_flux_d
+  backend_error=max(backend_error,maxval(abs(inlet_actual-inlet_flux)))
+  inlet_flux=inlet_actual
   call evaluate_candidates<<<1,16>>>(samples_d,primitive_d,lambda_d,rhs_d,lodi_d, &
     candidate_flux_d,filtered_d,rates_d,limited_flux_d)
   status=cudaDeviceSynchronize()
@@ -475,6 +536,9 @@ program high_order_boundary_probe
   flux_actual=limited_flux_d
   backend_error=max(backend_error,maxval(abs(flux_actual-limited_flux)))
 #endif
+  do row=0,3
+    write(*,'(a,i0,8(1x,es25.17))') 'HB_INLET_COMPAT ',row,inlet_flux(row,1:8)
+  enddo
   do k=1,size(sizes)
     n=sizes(k); h=1.e0_real_kind/real(n,real_kind)
     allocate(f(0:n),df(0:n),metric(0:n),mu(0:n),flux(0:n),result(0:n),reference(0:n),actual(0:n))

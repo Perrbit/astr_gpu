@@ -3,8 +3,8 @@ module solver_gpu
   use astr_precision_mpi, only: mpi_real_type
   use cudafor
   use boundary_high_order_gpu, only: high_order_boundary_enabled_d,high_order_wall_enabled_d,boundary_derivative6, &
-    boundary_mp_flux6,boundary_mp_flux6_limited,boundary_interface_position,boundary_pressure_gradient7,high_order_wall_axis_d, &
-    h1_internal_candidate_d,h1_near_candidate_d,h1_blend_candidate_d,h1_inlet_limited_candidate_d, &
+    boundary_mp_flux6,boundary_mp_flux6_limited,boundary_inlet_flux6,boundary_interface_position,boundary_pressure_gradient7,high_order_wall_axis_d, &
+    h1_internal_candidate_d,h1_near_candidate_d,h1_blend_candidate_d,h1_inlet_limited_candidate_d,h1_inlet_compatible_candidate_d, &
     boundary_pressure_neumann6,high_order_adiabatic_wall_enabled_d,boundary_wall_filter6
   use constdef, only: num1d60,num193d256,num105d512,num15d128, &
                       num45d1024,num5d512,num1d1024
@@ -1368,7 +1368,7 @@ contains
     real(real_kind) :: fh(5)
     real(real_kind) :: split_plus(5,8),split_minus(5,8),fp(8),fm(8),hc(5),lev(5,5),rev(5,5)
     integer :: n,m,ii,jj,kk,offset,inode,dim,ntype,lower,upper,idx,row,side
-    logical :: shock,hdiss
+    logical :: shock,hdiss,inlet_compatible
 
     select case(idir)
     case(1)
@@ -1389,11 +1389,17 @@ contains
     shock=shock_interface_active(i,j,k,idir,im,jm,km)
     hdiss=critical_interface_active(i,j,k,idir,im,jm,km)
     call boundary_interface_position(inode,dim,ntype,row,side)
+    inlet_compatible=.false.
+#ifdef ASTR_BUILD_TESTING
+    inlet_compatible=h1_inlet_compatible_candidate_d.and.mode==1.and.idir==1.and.physical_dir/=0.and. &
+      (npdc==1.or.npdc==4).and.inode>=0.and.inode<=3
+#endif
     if(h1_internal_candidate_d.and.row<0) shock=.true.
     if(h1_near_candidate_d.and.row>=0) shock=.true.
     if(mode==1) shock=.false.
     if(mode==2) shock=.true.
-    if(high_order_boundary_enabled_d.and.row>=0.and.(h1_near_candidate_d.or..not.shock).and..not.hdiss) then
+    if(high_order_boundary_enabled_d.and.((row>=0.and.(h1_near_candidate_d.or..not.shock)).or.inlet_compatible).and..not.hdiss) then
+      if(inlet_compatible) side=1
       if(h1_near_candidate_d.and.mode==0) call roe_characteristic_matrices(i,j,k,idir,gamma,lev,rev)
       do n=1,8
         idx=n-1
@@ -1408,7 +1414,19 @@ contains
         call steger_warming_split_physical_vector_at(ii,jj,kk,idir,-1,im,jm,km,gamma,split_minus(:,n))
       enddo
       do m=1,5
-        if(h1_near_candidate_d.and.mode==0) then
+        if(inlet_compatible) then
+          fp=split_plus(m,:)
+          if(inode<3) then
+            fm=split_minus(m,:)
+            hc(m)=boundary_inlet_flux6(fp,inode)+boundary_mp_flux6(fm,inode,.false.)
+          else
+            do n=1,8
+              fm(n)=split_minus(m,9-n)
+            enddo
+            hc(m)=boundary_inlet_flux6(fp,inode)+ &
+              reconstruct_mp_ld_stencil(fm,inode,dim,ntype,weight_bw,.false.)
+          endif
+        elseif(h1_near_candidate_d.and.mode==0) then
           do n=1,8
             fp(n)=sum(lev(m,:)*split_plus(:,n))
             fm(n)=sum(lev(m,:)*split_minus(:,n))

@@ -10,8 +10,8 @@ module solver
   !
   use constdef
   use boundary_high_order, only: high_order_boundary_enabled,high_order_wall_enabled,high_order_wall_axis, &
-    boundary_mp_flux6,boundary_mp_flux6_limited,boundary_interface_position,boundary_derivative6,boundary_pressure_gradient7, &
-    h1_internal_candidate,h1_near_candidate,h1_blend_candidate, &
+    boundary_mp_flux6,boundary_mp_flux6_limited,boundary_inlet_flux6,boundary_interface_position,boundary_derivative6,boundary_pressure_gradient7, &
+    h1_internal_candidate,h1_near_candidate,h1_blend_candidate,h1_metric_eps_candidate, &
     boundary_pressure_neumann6,high_order_adiabatic_wall_enabled
   use parallel, only : mpirankname,mpistop,mpirank,lio,dataswap,       &
                        datasync,ptime,irk,jrk,krk,irkm,jrkm,krkm
@@ -728,8 +728,10 @@ module solver
     real(clock_kind) :: time_beg
     real(clock_kind),save :: subtime=0.e0_clock_kind
     !
-    logical :: lsh,lso,sson,hdiss,lvar,ldebug,expanded_mask_halo
+    logical :: lsh,lso,sson,hdiss,lvar,ldebug,expanded_mask_halo,consistent_eps
     !
+    consistent_eps=h1_metric_eps_candidate
+    if(present(metric_consistent_eps)) consistent_eps=consistent_eps.or.metric_consistent_eps
     is=is_base; ie=ie_base; js=js_base; je=je_base; ks=ks_base; ke=ke_base
     npdci=npdci_base; npdcj=npdcj_base; npdck=npdck_base
     if(present(physical_halo_rhs)) then
@@ -791,7 +793,7 @@ module solver
                                   spc=  spc(iss:iee,j,k,:),     &
                                     q=    q(iss:iee,j,k,:),     &
                                   dxi=  dxi(iss:iee,j,k,1,:),   &
-                                jacob=jacob(iss:iee,j,k),metric_consistent_eps=metric_consistent_eps)
+                                jacob=jacob(iss:iee,j,k),metric_consistent_eps=consistent_eps)
       !
       ! End of flux split by using Steger-Warming method
       !
@@ -1037,7 +1039,7 @@ module solver
                                   spc=  spc(i,jss:jee,k,:),     &
                                     q=    q(i,jss:jee,k,:),     &
                                   dxi=  dxi(i,jss:jee,k,2,:),   &
-                                jacob=jacob(i,jss:jee,k),metric_consistent_eps=metric_consistent_eps)
+                                jacob=jacob(i,jss:jee,k),metric_consistent_eps=consistent_eps)
       !
       ! Calculating Matrix of Left and Right eigenvectors using Roe 
       ! Average and flux split as well as i+1/2 construction.
@@ -1259,7 +1261,7 @@ module solver
                                   spc=  spc(i,j,kss:kee,:),     &
                                     q=    q(i,j,kss:kee,:),     &
                                   dxi=  dxi(i,j,kss:kee,3,:),   &
-                                jacob=jacob(i,j,kss:kee),metric_consistent_eps=metric_consistent_eps)
+                                jacob=jacob(i,j,kss:kee),metric_consistent_eps=consistent_eps)
       ! End of flux split by using Steger-Warming method
       !
       !
@@ -1452,28 +1454,32 @@ module solver
     use boundary_high_order, only: h1_strength
     use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot
     real(real_kind),allocatable :: sample(:,:,:,:)
+    real(real_kind) :: smooth_parts(5,3)
     character(16) :: value
     integer :: i,j,k,status
     if(.not.h1_blend_candidate.or..not.rhs_validation_requested()) return
     call get_environment_variable('ASTR_VALIDATION_H1_INLET_FLUX',value,status=status)
     if(status/=0.or.trim(value)/='1') return
     if(npdci/=1.and.npdci/=4) return
-    allocate(sample(0:im,0:jm,0:km,11))
+    allocate(sample(0:im,0:jm,0:km,26))
     sample=0.e0_real_kind
     ! Only interfaces 0..3 feed the first three inlet-adjacent physical nodes.
     do k=0,km
     do j=1,jm-1
     do i=0,3
-      sample(i,j,k,1:5)=high_order_interface_flux_cpu([i,j,k],1,1)
+      sample(i,j,k,1:5)=high_order_interface_flux_cpu([i,j,k],1,1,smooth_parts)
       sample(i,j,k,6:10)=high_order_interface_flux_cpu([i,j,k],1,2)
       sample(i,j,k,11)=max(h1_strength(i,j,k),h1_strength(i+1,j,k))
+      sample(i,j,k,12:16)=smooth_parts(:,1)
+      sample(i,j,k,17:21)=smooth_parts(:,2)
+      sample(i,j,k,22:26)=smooth_parts(:,3)
     enddo
     enddo
     enddo
     call write_rhs_validation_snapshot('h1_inlet_flux_endpoints',values=sample)
   end subroutine write_h1_inlet_flux_endpoints
 
-  recursive function high_order_interface_flux_cpu(point,axis,reconstruction_mode) result(value)
+  recursive function high_order_interface_flux_cpu(point,axis,reconstruction_mode,smooth_parts) result(value)
 #else
   function high_order_interface_flux_cpu(point,axis) result(value)
 #endif
@@ -1483,12 +1489,16 @@ module solver
     use flux, only: recons_exp
     use commcal, only: compact_expanded_mask_enabled
 #ifdef ASTR_BUILD_TESTING
-    use boundary_high_order, only: h1_strength,h1_inlet_limited_candidate
+    use boundary_high_order, only: h1_strength,h1_inlet_limited_candidate,h1_inlet_compatible_candidate
 #endif
     implicit none
     integer,intent(in) :: point(3),axis
 #ifdef ASTR_BUILD_TESTING
     integer,intent(in),optional :: reconstruction_mode
+    real(real_kind),intent(out),optional :: smooth_parts(5,3)
+    real(real_kind) :: polynomial_flux(5)
+    real(real_kind),parameter :: inlet_delta7(8)=[-1.e0_real_kind,7.e0_real_kind,-21.e0_real_kind,35.e0_real_kind, &
+      -35.e0_real_kind,21.e0_real_kind,-7.e0_real_kind,1.e0_real_kind]
 #endif
     real(real_kind) :: value(5),r(16),v(16,3),p(16),t(16),state(16,5),metric(16,3),jac(16), &
       species(16,num_species),plus(16,5),minus(16,5),fp(8),fm(8),char_flux(5),left(5,5),right(5,5)
@@ -1499,7 +1509,7 @@ module solver
     integer,parameter :: mode=0
 #endif
     real(real_kind) :: theta,high_flux(5),low_flux(5)
-    logical :: shock,critical,biased
+    logical :: shock,critical,biased,inlet_compatible
     dims=[im,jm,km]; types=[npdci,npdcj,npdck]
     node=point(axis); dim=dims(axis); ntype=types(axis)
     neighbor=point; neighbor(axis)=neighbor(axis)+1
@@ -1509,6 +1519,9 @@ module solver
     if(h1_blend_candidate.and.mode==0) then
       if(h1_inlet_limited_candidate.and.axis==1.and.(ntype==1.or.ntype==4).and.node>=0.and.node<=3) then
         value=high_order_interface_flux_cpu(point,axis,2)
+        if(present(smooth_parts)) then
+          smooth_parts(:,1)=value;smooth_parts(:,2:3)=0.e0_real_kind
+        endif
         return
       endif
       target=point
@@ -1524,6 +1537,9 @@ module solver
         high_flux=high_order_interface_flux_cpu(point,axis,1)
         low_flux=high_order_interface_flux_cpu(point,axis,2)
         value=high_flux+theta*(low_flux-high_flux)
+      endif
+      if(present(smooth_parts)) then
+        smooth_parts(:,1)=value;smooth_parts(:,2:3)=0.e0_real_kind
       endif
       return
     endif
@@ -1542,6 +1558,11 @@ module solver
     target=neighbor; target(axis)=max(0,min(dim,node+1))
     critical=critical.or.crinod(target(1),target(2),target(3))
     call boundary_interface_position(node,dim,ntype,row,side)
+    inlet_compatible=.false.
+#ifdef ASTR_BUILD_TESTING
+    inlet_compatible=h1_inlet_compatible_candidate.and.mode==1.and.axis==1.and. &
+      (ntype==1.or.ntype==4).and.node>=0.and.node<=3
+#endif
     if(h1_internal_candidate.and.row<0) shock=.true.
     if(h1_near_candidate.and.row>=0) shock=.true.
     if(mode==1) shock=.false.
@@ -1569,7 +1590,8 @@ module solver
         species(m,:)=spc(target(1),target(2),target(3),:)
       enddo
     enddo
-    call flux_steger_warming(plus,minus,r,v,p,t,species,state,metric,jac)
+    call flux_steger_warming(plus,minus,r,v,p,t,species,state,metric,jac, &
+      metric_consistent_eps=h1_metric_eps_candidate)
     if(shock) call chardecomp(tmp(point(1),point(2),point(3)),rho(point(1),point(2),point(3)), &
       prs(point(1),point(2),point(3)),q(point(1),point(2),point(3),5),vel(point(1),point(2),point(3),:), &
       spc(point(1),point(2),point(3),:),dxi(point(1),point(2),point(3),axis,:), &
@@ -1587,6 +1609,13 @@ module solver
       endif
       if(critical) then
         char_flux(m)=fp(4)+fm(4)
+      elseif(inlet_compatible) then
+        char_flux(m)=boundary_inlet_flux6(fp,node)
+        if(node<3) then
+          char_flux(m)=char_flux(m)+boundary_mp_flux6(fm,row,.false.)
+        else
+          char_flux(m)=char_flux(m)+recons_exp(fm,node,dim,ntype,5,.false.,.false.)
+        endif
       elseif(biased) then
         if(h1_near_candidate.and.mode==0) then
           char_flux(m)=boundary_mp_flux6_limited(fp,row,side==1)+boundary_mp_flux6_limited(fm,row,side==-1)
@@ -1597,9 +1626,28 @@ module solver
         char_flux(m)=recons_exp(fp,node,dim,ntype,5,shock,.false.)+ &
                      recons_exp(fm,node,dim,ntype,5,shock,.false.)
       endif
+#ifdef ASTR_BUILD_TESTING
+      if(present(smooth_parts)) then
+        polynomial_flux(m)=char_flux(m)
+        if(biased.and..not.critical) polynomial_flux(m)= &
+          boundary_mp_flux6(fp,row,.false.)+boundary_mp_flux6(fm,row,.false.)
+        smooth_parts(m,3)=0.e0_real_kind
+        if(mode==1.and.axis==1.and.(ntype==1.or.ntype==4).and.node>=0.and.node<=3.and..not.critical) then
+          do s=1,8
+            smooth_parts(m,3)=smooth_parts(m,3)+inlet_delta7(s)*(fp(s)-fp(node+1))
+          enddo
+        endif
+      endif
+#endif
     enddo
     value=char_flux
     if(shock) value=matmul(right,char_flux)
+#ifdef ASTR_BUILD_TESTING
+    if(present(smooth_parts)) then
+      if(shock) polynomial_flux=matmul(right,polynomial_flux)
+      smooth_parts(:,1)=polynomial_flux;smooth_parts(:,2)=value-polynomial_flux
+    endif
+#endif
   end function high_order_interface_flux_cpu
 
 #ifdef ASTR_BUILD_TESTING

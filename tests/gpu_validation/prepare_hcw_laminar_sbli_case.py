@@ -261,19 +261,22 @@ def case_parameters() -> dict:
 
 
 def prepare_case(destination: Path, use_gpu: str = "t", im: int = 1024,
-                 jm: int = 256, km: int = MIN_PERIODIC_INTERVALS) -> dict:
+                 jm: int = 256, km: int = MIN_PERIODIC_INTERVALS,span_m: float = SPAN_M) -> dict:
     if destination.exists():
         raise FileExistsError(f"Refusing to overwrite case: {destination}")
     if min(im, jm) < 16 or km < MIN_PERIODIC_INTERVALS:
         raise ValueError("Need x/y >=16 intervals and periodic z >=5 intervals for the fixed halo")
+    if not math.isfinite(span_m) or span_m<=0:
+        raise ValueError("Periodic span must be finite and positive")
     parameters = case_parameters()
     flow, geometry, shock = (parameters[key] for key in ("flow", "geometry", "shock"))
+    geometry['span_m']=span_m
     datin = destination / "datin"
     datin.mkdir(parents=True)
     (destination / "outdat/new").mkdir(parents=True)
     xline = np.linspace(geometry["inlet_x_m"], OUTLET_X_M, im + 1)
     yline = DOMAIN_HEIGHT_M * np.sinh(Y_STRETCH * np.linspace(0.0, 1.0, jm + 1)) / np.sinh(Y_STRETCH)
-    zline = np.linspace(0.0, SPAN_M, km + 1)
+    zline = np.linspace(0.0, span_m, km + 1)
     z, y, x = np.meshgrid(zline, yline, xline, indexing="ij")
     grid = datin / "grid.flatplate.h5"
     with h5py.File(grid, "w") as handle:
@@ -349,6 +352,7 @@ def main() -> None:
     parser.add_argument("--im", type=int, default=1024)
     parser.add_argument("--jm", type=int, default=256)
     parser.add_argument("--km", type=int, default=MIN_PERIODIC_INTERVALS)
+    parser.add_argument("--span-m",type=float,default=SPAN_M)
     args = parser.parse_args()
     result = case_parameters() if args.destination is None else prepare_case(**vars(args))
     print(json.dumps(result, indent=2))

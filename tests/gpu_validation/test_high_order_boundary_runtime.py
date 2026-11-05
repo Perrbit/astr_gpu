@@ -25,10 +25,10 @@ RHO, MACH, GAMMA, RE = 1024., 2., 1.4, 1.
 NY, NZ = 16, 8
 
 
-def manufactured(nx, ny=NY, axis='x', rho=RHO):
+def manufactured(nx, ny=NY, axis='x', rho=RHO,pressure_compression=False):
     z, y, x = np.meshgrid(np.linspace(0, .125, NZ+1), np.linspace(0, 1, ny+1),
                           np.linspace(0, 1, nx+1), indexing='ij')
-    amplitude = .05*np.exp(4*(x-1))
+    amplitude = (-.05 if pressure_compression else .05)*np.exp(4*(x-1))
     u = y+amplitude*y*(1-y)
     ux = 4*amplitude*y*(1-y)
     uxx = 16*amplitude*y*(1-y)
@@ -42,6 +42,20 @@ def manufactured(nx, ny=NY, axis='x', rho=RHO):
     rhs[..., 1] = -2*rho*u*ux+mu*(4/3*uxx+uyy)
     rhs[..., 2] = mu*uxy/3
     rhs[..., 4] = -(GAMMA*p/(GAMMA-1)+1.5*rho*u*u)*ux+mu*(4/3*(ux*ux+u*uxx)+uy*uy+u*uyy)
+    if pressure_compression:
+        if axis!='x':raise ValueError('The variable-pressure case uses simultaneous x/y refinement with axis=x')
+        distance=1-x;exponential=np.exp(4*(x-1));b=y*y*(1-y)**2
+        density=rho*(1+distance**2*exponential*b)
+        density_x=rho*exponential*(4*distance**2-2*distance)*b
+        density_y=rho*distance**2*exponential*2*y*(1-y)*(1-2*y)
+        pressure=density/(GAMMA*MACH*MACH)
+        pressure_x=density_x/(GAMMA*MACH*MACH)
+        pressure_y=density_y/(GAMMA*MACH*MACH)
+        rhs[...,0]=-density_x*u-density*ux
+        rhs[...,1]=-density_x*u*u-2*density*u*ux-pressure_x+mu*(4/3*uxx+uyy)
+        rhs[...,2]=-pressure_y+mu*uxy/3
+        rhs[...,4]=(-GAMMA/(GAMMA-1)*(pressure_x*u+pressure*ux)-.5*density_x*u**3-
+            1.5*density*u*u*ux+mu*(4/3*(ux*ux+u*uxx)+uy*uy+u*uyy))
     # At x+, p equals the prescribed outlet target. Only the incoming acoustic
     # normal derivative is replaced by zero. R_minus*L_minus is normalization independent.
     sound = 1/MACH
@@ -63,24 +77,25 @@ def manufactured(nx, ny=NY, axis='x', rho=RHO):
     return x, y, z, u, rhs
 
 
-def run_manufactured(case, backend, nx, ny=NY, axis='x', rho=RHO):
+def run_manufactured(case, backend, nx, ny=NY, axis='x', rho=RHO,pressure_compression=False):
     datin = case/'datin'
     datin.mkdir(parents=True)
     (case/'outdat/new').mkdir(parents=True)
     (case/'diagnostics').mkdir()
-    x, y, z, u, reference = manufactured(nx, ny, axis, rho)
+    x, y, z, u, reference = manufactured(nx, ny, axis, rho,pressure_compression)
+    density=rho*(1+(1-x)**2*np.exp(4*(x-1))*y*y*(1-y)**2) if pressure_compression else np.full_like(x,rho)
     with h5py.File(datin/'grid.flatplate.h5', 'w') as file:
         for name, value in [('x', x), ('y', y), ('z', z)]:
             file[name] = value
     with h5py.File(datin/'flowini3d.h5', 'w') as file:
-        for name, value in [('ro', np.full_like(x, rho)), ('u1', u), ('u2', np.zeros_like(x)),
+        for name, value in [('ro', density), ('u1', u), ('u2', np.zeros_like(x)),
                             ('u3', np.zeros_like(x)), ('t', np.ones_like(x))]:
             file[name] = value
     with (datin/'inlet.prof').open('w') as file:
         file.write('Manufactured density=provided pressure=provided\nrho u v temperature pressure\n1 1 1 1\ny rho u v temperature pressure\n')
-        for value in u[0, :, 0]:
-            file.write(f'{rho:.16e} {value:.16e} 0.0000000000000000e+00 1.0000000000000000e+00 '
-                       f'{rho/(GAMMA*MACH*MACH):.16e}\n')
+        for inlet_rho,value in zip(density[0,:,0],u[0,:,0]):
+            file.write(f'{inlet_rho:.16e} {value:.16e} 0.0000000000000000e+00 1.0000000000000000e+00 '
+                       f'{inlet_rho/(GAMMA*MACH*MACH):.16e}\n')
     write_input(datin/'input.flatplate', nx, ny, NZ, 't' if backend == 'gpu' else 'f',
                 't', 'f', '743e', 't', .001, RE, MACH, 288., 1., 52, 11, 3, 0, 'prof', 1,
                 x_max_bctype=22, outlet_pressure=rho)
@@ -113,9 +128,11 @@ def run_manufactured(case, backend, nx, ny=NY, axis='x', rho=RHO):
                ASTR_VALIDATION_RHS_STEP='0')
     if H1_VARIANT is not None:
         env['ASTR_VALIDATION_H1_VARIANT']=H1_VARIANT
+    from named_fixture import prepare_named_run
+    primary=prepare_named_run(case,'datin/input.flatplate',env)
     with (case/'run.log').open('w') as log:
         result = subprocess.run(mpi_command(MPIEXEC, 1, 'pinned')+[str(Path(EXE).resolve()), 'run',
-                                 'datin/input.flatplate'], cwd=case, env=env, stdout=log,
+                                 primary], cwd=case, env=env, stdout=log,
                                 stderr=subprocess.STDOUT, timeout=120)
     text = (case/'run.log').read_text()
     assert result.returncode == 0 and 'The job is done!' in text, text[-8000:]
@@ -205,8 +222,10 @@ def test_actual_full_rhs_y_convergence(tmp_path):
 
 def launch_hcw(case, backend, steps=12, restore=None, memcheck=False, dt_scale=1.,
                checkpoint_interval=None, volume_interval=None, field_source=None, diagnostics=False,
-               inlet_flux=False):
-    manifest = prepare_case(case, use_gpu='t' if backend == 'gpu' else 'f', im=64, jm=48, km=5)
+               inlet_flux=False, automatic_cfl=None,replay_clocks=None,replay_library=None,
+               z_intervals=5,span_m=.002,stop_time=None,volume_time_interval=None,validation_gradients=False):
+    manifest = prepare_case(case, use_gpu='t' if backend == 'gpu' else 'f', im=64, jm=48,
+                            km=z_intervals,span_m=span_m)
     if field_source is not None:
         # A diagnostic initial field, never an exact restart across backends.
         with h5py.File(field_source) as source, h5py.File(case/'datin/flowini3d.h5', 'w') as target:
@@ -230,6 +249,10 @@ def launch_hcw(case, backend, steps=12, restore=None, memcheck=False, dt_scale=1
                       .replace("directory='outdat/new',", "directory='outdat/new',"
                                f"restore_directory='{restore or ''}',"
                                f"restart_output='{'override' if restore else 'saved'}',"))
+    if volume_time_interval is not None:
+        config.write_text(config.read_text().replace(
+            f'&volume\n enabled=f,interval_steps={volume_interval or 0}',
+            f'&volume\n enabled=t,mode="time",interval_time={volume_time_interval},initial_frame=t,final_frame=t'))
     env = runtime('2,1,1')
     env.pop('ASTR_WALL_BLOWING_MODE', None)
     for line in (case/'runtime.env').read_text().splitlines():
@@ -242,6 +265,7 @@ def launch_hcw(case, backend, steps=12, restore=None, memcheck=False, dt_scale=1
         (case/'diagnostics').mkdir()
         env['ASTR_VALIDATION_RHS_PREFIX'] = 'diagnostics/state'
         env['ASTR_VALIDATION_RHS_STEP'] = str(int(restore.name.removeprefix('step'))) if restore else '0'
+    if validation_gradients:env['ASTR_VALIDATION_GRADIENTS']='1'
     if inlet_flux:
         assert diagnostics and backend == 'cpu'
         env['ASTR_VALIDATION_H1_INLET_FLUX'] = '1'
@@ -250,6 +274,30 @@ def launch_hcw(case, backend, steps=12, restore=None, memcheck=False, dt_scale=1
         command += ['compute-sanitizer', '--tool', 'memcheck', '--error-exitcode', '99']
     from named_fixture import prepare_named_run
     primary=prepare_named_run(case,'datin/input.hcw',env)
+    if automatic_cfl is not None or stop_time is not None:
+        from convert_legacy_input import convert_controller,namelist
+        run=convert_controller((case/'datin/controller').read_text())
+        if automatic_cfl is not None:
+            run['timestep']=dict(mode='auto',cfl_target=automatic_cfl,growth_factor=1.1)
+        if stop_time is not None:
+            run['run_control'].update(max_steps=-1,stop_time=stop_time)
+        (case/'datin/input.run').write_text(namelist(run))
+    if replay_clocks is not None:
+        from convert_legacy_input import convert_controller,namelist
+        run=convert_controller((case/'datin/controller').read_text())
+        replay=case/'control_replay'
+        replay.mkdir()
+        for completed in range(steps+1):
+            dt=replay_clocks[completed,3] if completed<steps else replay_clocks[-1,4]
+            run['timestep']=dict(mode='fixed',fixed_dt=float(dt))
+            packet=namelist(run)
+            (replay/f'controller{completed:012d}').write_text(packet)
+            if completed==0:
+                (case/'datin/input.run').write_text(packet)
+        env.update(LD_PRELOAD=str(Path(replay_library).resolve()),
+                   ASTR_CONTROLLER_TEST_FILE=str((case/'datin/input.run').resolve()),
+                   ASTR_CONTROLLER_TEST_REPLAY=str(replay.resolve()),
+                   ASTR_CONTROLLER_TEST_START_STEP='0')
     with (case/'run.log').open('w') as log:
         result = subprocess.run(command+[str(Path(EXE).resolve()), 'run', primary],
                                 cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT,
@@ -260,6 +308,9 @@ def launch_hcw(case, backend, steps=12, restore=None, memcheck=False, dt_scale=1
     if H1_VARIANT is not None:
         assert f'H1_DIAGNOSTIC_VARIANT {H1_VARIANT}' in text
         first = int(restore.name.removeprefix('step')) if restore else 0
+        if stop_time is not None:
+            from run_adaptive_tgv_gate import STEP
+            steps=int(list(STEP.finditer(text))[-1][1])
         assert text.count(f'H1_STAGE_STATE_PASS {backend.upper()}') == 3*(steps-first)
         assert text.count(f'H1_PROPERTY_PASS {backend.upper()}') == 3*(steps-first)
     if memcheck:

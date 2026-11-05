@@ -92,7 +92,8 @@ module bc
     use boundary_high_order, only: high_order_boundary_enabled
 #ifdef ASTR_BUILD_TESTING
     use boundary_high_order, only: h1_internal_candidate,h1_near_candidate,h1_blend_candidate,h1_stage_budget_candidate, &
-      h1_outlet_filter_candidate,h1_inlet_limited_candidate
+      h1_outlet_filter_candidate,h1_inlet_limited_candidate,h1_inlet_compatible_candidate,h1_compression_sensor_candidate, &
+      h1_metric_eps_candidate
 #endif
     use commvar, only: conschm,difschm,recon_schem,bfacmpld,lcomb,nondimen,lfilter,diffterm,ia,ja
     implicit none
@@ -104,6 +105,9 @@ module bc
     h1_stage_budget_candidate=.false.
     h1_outlet_filter_candidate=.false.
     h1_inlet_limited_candidate=.false.
+    h1_inlet_compatible_candidate=.false.
+    h1_compression_sensor_candidate=.false.
+    h1_metric_eps_candidate=.false.
 #endif
     call configure_high_order_wall()
     high_order_boundary_enabled=.false.
@@ -127,7 +131,8 @@ module bc
           h1_near_candidate=.true.
         case('both')
           h1_internal_candidate=.true.;h1_near_candidate=.true.
-        case('continuous','admissible','admissible-filter','inlet-limited')
+        case('continuous','admissible','admissible-filter','inlet-limited','inlet-compatible', &
+             'inlet-compression','inlet-compression-metric')
           block
             use commvar, only: shkcrt,lchardecomp
             if(.not.lchardecomp) error stop 'H1 continuous candidate requires the shock-sensor path'
@@ -137,8 +142,14 @@ module bc
           if(trim(variant)/='continuous') then
             h1_stage_budget_candidate=.true.
           endif
-          h1_outlet_filter_candidate=trim(variant)=='admissible-filter'.or.trim(variant)=='inlet-limited'
+          h1_outlet_filter_candidate=trim(variant)=='admissible-filter'.or.trim(variant)=='inlet-limited'.or. &
+            trim(variant)=='inlet-compatible'.or.trim(variant)=='inlet-compression'.or. &
+            trim(variant)=='inlet-compression-metric'
           h1_inlet_limited_candidate=trim(variant)=='inlet-limited'
+          h1_inlet_compatible_candidate=trim(variant)=='inlet-compatible'.or.trim(variant)=='inlet-compression'.or. &
+            trim(variant)=='inlet-compression-metric'
+          h1_compression_sensor_candidate=trim(variant)=='inlet-compression'.or.trim(variant)=='inlet-compression-metric'
+          h1_metric_eps_candidate=trim(variant)=='inlet-compression-metric'
         case default
           error stop 'Unknown test-only ASTR_VALIDATION_H1_VARIANT'
         end select

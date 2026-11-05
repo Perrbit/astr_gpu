@@ -9,10 +9,14 @@
   logical,device,public :: h1_internal_candidate_d=.false.,h1_near_candidate_d=.false.
   logical,device,public :: h1_blend_candidate_d=.false.
   logical,device,public :: h1_inlet_limited_candidate_d=.false.
+  logical,device,public :: h1_inlet_compatible_candidate_d=.false.
+  logical,device,public :: h1_compression_sensor_candidate_d=.false.
 #else
   logical,parameter,public :: h1_internal_candidate_d=.false.,h1_near_candidate_d=.false.
   logical,parameter,public :: h1_blend_candidate_d=.false.
   logical,parameter,public :: h1_inlet_limited_candidate_d=.false.
+  logical,parameter,public :: h1_inlet_compatible_candidate_d=.false.
+  logical,parameter,public :: h1_compression_sensor_candidate_d=.false.
 #endif
   logical,device,public :: high_order_boundary_enabled_d=.false.
   logical,device,public :: high_order_wall_enabled_d=.false.
@@ -27,12 +31,18 @@
   logical,save,public :: h1_stage_budget_candidate=.false.
   logical,save,public :: h1_outlet_filter_candidate=.false.
   logical,save,public :: h1_inlet_limited_candidate=.false.
+  logical,save,public :: h1_inlet_compatible_candidate=.false.
+  logical,save,public :: h1_compression_sensor_candidate=.false.
+  logical,save,public :: h1_metric_eps_candidate=.false.
 #else
   logical,parameter,public :: h1_internal_candidate=.false.,h1_near_candidate=.false.
   logical,parameter,public :: h1_blend_candidate=.false.
   logical,parameter,public :: h1_stage_budget_candidate=.false.
   logical,parameter,public :: h1_outlet_filter_candidate=.false.
   logical,parameter,public :: h1_inlet_limited_candidate=.false.
+  logical,parameter,public :: h1_inlet_compatible_candidate=.false.
+  logical,parameter,public :: h1_compression_sensor_candidate=.false.
+  logical,parameter,public :: h1_metric_eps_candidate=.false.
 #endif
   logical,save,public :: high_order_boundary_enabled=.false.
   logical,save,public :: high_order_wall_enabled=.false.
@@ -44,6 +54,8 @@
   public :: boundary_derivative6, boundary_neumann7
   public :: boundary_derivative6_weights, boundary_neumann7_weights
   public :: boundary_mp_flux6, boundary_mp_flux6_limited, boundary_filter6, boundary_incoming_rate7
+  public :: boundary_inlet_flux6
+  public :: boundary_compression_sensor
   public :: boundary_interface_position
   public :: boundary_normal_terms6
   public :: boundary_hermite_pressure7,boundary_pressure_gradient7
@@ -71,6 +83,17 @@
     -35.e0_real_kind,21.e0_real_kind,-7.e0_real_kind,1.e0_real_kind]
   real(real_kind),parameter :: incoming_flux_strength(0:2)=[ &
     0.125e0_real_kind,0.25e0_real_kind,0.125e0_real_kind]
+  real(real_kind),parameter :: inlet_flux_strength(0:3)=[ &
+    15.e0_real_kind/128.e0_real_kind,0.25e0_real_kind,0.25e0_real_kind,3.e0_real_kind/32.e0_real_kind]
+  real(real_kind),parameter :: inlet_polynomial3(0:7)=[ &
+    -1.e0_real_kind/140.e0_real_kind,5.e0_real_kind/84.e0_real_kind,-101.e0_real_kind/420.e0_real_kind, &
+    319.e0_real_kind/420.e0_real_kind,107.e0_real_kind/210.e0_real_kind,-19.e0_real_kind/210.e0_real_kind, &
+    1.e0_real_kind/105.e0_real_kind,0.e0_real_kind]
+  real(real_kind),parameter :: inlet_flux6_weights(0:7,0:3)=reshape([ &
+    boundary_flux6_weights(:,0)-inlet_flux_strength(0)*difference7, &
+    boundary_flux6_weights(:,1)-inlet_flux_strength(1)*difference7, &
+    boundary_flux6_weights(:,2)-inlet_flux_strength(2)*difference7, &
+    inlet_polynomial3-inlet_flux_strength(3)*difference7],[8,4])
 
   ! Match the centered D6 seventh moment (36), not only moments zero to six.
   ! The common leading error is needed when the gradient is differentiated again.
@@ -242,6 +265,13 @@ contains
     flux(5)=flux(5)+.5e0_real_kind*(vl*pl+vr*pr)
   end subroutine boundary_audit_llf5
 #endif
+  BOUNDARY_HIGH_ORDER_PROC function boundary_compression_sensor(divergence,vorticity_squared,curvature) result(value)
+    real(real_kind),intent(in) :: divergence,vorticity_squared,curvature
+    real(real_kind) :: value
+    value=min(divergence,0.e0_real_kind)**2/ &
+      (divergence**2+vorticity_squared+1.e-30_real_kind)*curvature
+  end function boundary_compression_sensor
+
   BOUNDARY_HIGH_ORDER_PROC function boundary_sensor_blend_weight(sensor,threshold) result(value)
     real(real_kind),intent(in) :: sensor,threshold
     real(real_kind) :: value,t
@@ -451,6 +481,18 @@ contains
     enddo
     if(incoming) flux=flux-incoming_flux_strength(row)*correction
   end function boundary_mp_flux6
+
+  BOUNDARY_HIGH_ORDER_PROC function boundary_inlet_flux6(f,row) result(flux)
+    real(real_kind),intent(in) :: f(0:7)
+    integer,intent(in) :: row
+    real(real_kind) :: flux
+    integer :: j
+    ! Test-candidate incoming flux on x-minus interfaces 0..3, ordered inward.
+    flux=f(row)
+    do j=0,7
+      flux=flux+inlet_flux6_weights(j,row)*(f(j)-f(row))
+    enddo
+  end function boundary_inlet_flux6
 
   BOUNDARY_HIGH_ORDER_PROC function boundary_mp_flux6_limited(f,row,incoming) result(value)
     real(real_kind),intent(in) :: f(0:7)

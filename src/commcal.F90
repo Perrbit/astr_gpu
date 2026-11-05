@@ -441,7 +441,8 @@ module commcal
 
   subroutine ducrossensor(timerept)
 #ifdef ASTR_BUILD_TESTING
-    use boundary_high_order, only: h1_blend_candidate,h1_strength,boundary_sensor_blend_weight
+    use boundary_high_order, only: h1_blend_candidate,h1_strength,boundary_sensor_blend_weight, &
+      h1_compression_sensor_candidate,boundary_compression_sensor
     use validation_io, only: write_physical_scalar_validation_snapshot
 #endif
     !
@@ -515,6 +516,10 @@ module commcal
                (prs(i,j,kp1)+2.e0_real_kind*prs(i,j,k)+prs(i,j,km1))
       !
       ssf(i,j,k)=div2/(div2+vort+1.e-30_real_kind) * max(dpdi,dpdj,dpdk)
+#ifdef ASTR_BUILD_TESTING
+      if(h1_compression_sensor_candidate) ssf(i,j,k)=boundary_compression_sensor( &
+        dvel(i,j,k,1,1)+dvel(i,j,k,2,2)+dvel(i,j,k,3,3),vort,max(dpdi,dpdj,dpdk))
+#endif
       !
       ssfmin=min(ssfmin,ssf(i,j,k))
       ssfmax=max(ssfmax,ssf(i,j,k))

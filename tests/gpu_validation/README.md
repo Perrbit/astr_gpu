@@ -10523,6 +10523,165 @@ fields remain bitwise unchanged. Evidence is under
 case is not relabeled as passing. A compatible sixth-order inlet closure is
 still required before resuming production promotion; see joint design 17-18.
 
+### Eight-Node Inlet Design And Approved Native Short Tests
+
+The user approved the design family in joint-design section 20, not a new
+production closure. `analyze_h1_inlet_closure_design.py` derives exact FD flux
+moments for interfaces 0..3, checks the actual MP7-LD transition and reports
+scalar/Euler linear diagnostics. It does not integrate a CFD solution or alter
+the solver. The dyadic proposed coefficients and the rejected single-step-only
+trial remain explicitly distinguished. Smaller one-step gain is not sufficient:
+the report also includes multi-step samples, steady local forcing, coefficient
+amplification and the slower-decay tradeoff. No global-optimum claim is made.
+
+```bash
+mkdir -p tests/gpu_validation/out/h1_inlet_design
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python3 \
+  tests/gpu_validation/analyze_h1_inlet_closure_design.py \
+  tests/gpu_validation/out/h1_inlet_design/report.json --euler
+python3 -m pytest -q tests/gpu_validation/test_h1_inlet_closure_design.py
+```
+
+`test_h1_hcw_inlet_compatibility.py` requires the retained 840/1000-step field
+evidence and the existing `admissible-filter` test variant. Native diagnostics
+retain the original first 11 columns, the polynomial/seventh-order correction
+in 12..21 and the incoming seventh-difference direction in 22..26. The last
+packet permits affine coefficient assessment without applying those coefficients
+in RK. The test checks read-only physical fields and two observed state pairs;
+it is not candidate-stage admissibility, backend parity or a new long-window pass.
+The user subsequently approved `(15/128,1/4,1/4,3/32)` for default-off native
+short tests, not for a production closure or a long-window run. The root testing
+build selects `ASTR_VALIDATION_H1_VARIANT=inlet-compatible`; the Python harness
+uses `ASTR_H1_REPAIR_VARIANT=inlet-compatible`. Only the incoming smooth flux
+at physical x-minus interfaces 0..3 changes. The outgoing interface-3 MP7-LD
+stencil and all interfaces 4 onward remain unchanged. Checkpoint identities are
+`sbli-grcbc-h1cv` (viscous) and `sbli-grcbc-h1cc` (inviscid).
+
+`test_h1_hcw_inlet_compatible.py` covers a common supplied primitive field,
+old-algorithm exact-restore rejection, the native 12-step HCW field/statistics
+comparison and the unchanged selector-off algorithm. Cross-build trajectories
+use the approved scaled tolerance; bitwise repeatability is tested within one
+GPU executable, not assumed across a rebuilt kernel. The first stricter
+cross-build assertion failure is retained, not reported as a passed test.
+The existing x/y final-RHS manufactured tests also accept this selector.
+
+```bash
+ASTR_HIGH_ORDER_BOUNDARY_PROBE="$PWD/build_insitu_air5_device_render/bin/high_order_boundary_gpu_probe" \
+  python3 -m pytest -x -q tests/gpu_validation/test_h1_inlet_closure_design.py
+ASTR_SBLI_GRCBC_EXE="$PWD/build_insitu_air5_device_render/bin/astr" \
+ASTR_H1_REPAIR_VARIANT=inlet-compatible OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  python3 -m pytest -x -q tests/gpu_validation/test_h1_hcw_inlet_compatible.py \
+  tests/gpu_validation/test_high_order_boundary_runtime.py::test_actual_full_rhs_x_convergence \
+  tests/gpu_validation/test_high_order_boundary_runtime.py::test_actual_full_rhs_y_convergence
+```
+
+Evidence and residual limitations are in joint-design section 22. New-candidate
+420-step, long-window and exact-continuation acceptance have not been run.
+
+Update (2026-11-05): the independent automatic 420-step run and the subsequent
+common-clock attribution have now been run; neither closes the long-trajectory
+gate. See joint-design sections 23–24. `test_h1_hcw_common_timestep.py` reuses the
+saved automatic CPU clock through the existing root-CMake
+`adaptive_control_replay` test library. Select it with
+`ASTR_H1_CONTROL_REPLAY_LIBRARY`, `ASTR_H1_REPAIR_VARIANT=inlet-compatible` and
+`ASTR_H1_HCW_LONG=1`. The default reference is the retained automatic CPU420
+case; `ASTR_H1_COMMON_CLOCK_REFERENCE` explicitly selects another reference.
+Run the prefix test first. The replay is a changing fixed-dt input sequence for
+attribution, not an independently automatic GPU run or a production option.
+The complete-step clocks must be bitwise equal; differently formatted
+`flowstate.dat` time strings are not an additional bitwise-phase requirement.
+`compare_common_clock_420(case)` can recheck retained outputs without rerunning
+the flow. With the approved reference it currently fails the unchanged field
+tolerance (maximum scaled difference 5.31e-8); do not proceed to longer windows.
+
+The subsequently approved span-grid sensitivity is recorded in joint-design
+sections 25–26. `run_h1_hcw_span_grid.py` runs only the two new GPU grids
+(2 mm/16 and 4 mm/32), with automatic CFL 0.5 and the existing GPU5 baseline's
+physical stop target; it does not enforce cross-grid CPU/GPU tolerances or claim
+physical modal convergence. `plot_h1_hcw_span_grid.py` writes JPEG/EPS histories,
+modal RMS and a summary CSV with source paths in the run JSON.
+
+This experiment exposed an automatic cold-start archive clock defect, repaired
+after explicit approval by delaying only cold `begin_archives` to the existing
+post-selection initial-output phase. `test_h1_adaptive_archive_startup.py`
+covers CPU/GPU initial-frame dt and 4-step versus 2+2 exact state/clock equality.
+The previous failure is retained, both new windows subsequently completed
+637 steps, and the earlier 420-step backend-equivalence failure remains open.
+
+`run_h1_hcw_span_timestep.py` subsequently replays the saved 16-interval automatic
+clock on the 5-interval grid to separate the dt-sequence and grid sensitivities.
+Use `--output` and `--replay-library`; `--analyze-only` reads the retained run.
+Complete clocks match bitwise. The coarse-grid spanwise w deviation falls from
+3.06e-11 to 7.89e-13 without spatial refinement, so the earlier reduction cannot
+be attributed mainly to spatial resolution. This is a roundoff-seeded GPU-only
+diagnostic, not independent GPU auto acceptance or a closed CPU/GPU gate.
+`plot_h1_hcw_span_timestep.py` writes its JPEG/EPS curve and CSV. Definitions,
+actual CFL ranges and limits are in joint-design section 27.
+
+The approved independent automatic CFL=0.3 comparison uses
+`test_h1_hcw_cfl03.py`, the original 64x48x5 grid and the fine-grid physical stop
+target. Its first retained failing primitive sample is step415: time difference
+1.39e-17, density scaled difference 3.53e-9. GPU completed 701 steps; the owner
+stopped CPU after observing the gate violation (552 completed steps). The
+nonzero pytest result records that deliberate stop, not a negative-state crash.
+`out/h1_cfl03_20261105/prefix_failure.json` distinguishes the sampled field failure
+from the later clock violation. A same-input one-step probe still passes; the
+long-trajectory gate remains open. No smaller-CFL scan is implied. See section 28.
+
+## H1 Compression-Only Candidate (Manufactured Gate Failed)
+
+The approved default-off testing selector is
+`ASTR_VALIDATION_H1_VARIANT=inlet-compression` (harness:
+`ASTR_H1_REPAIR_VARIANT=inlet-compression`). It inherits the compatible inlet
+rows and changes only the raw Ducros numerator to `min(div,0)^2`; the original
+denominator, pressure curvature, threshold, halo, dilation and weight mapping
+remain. Raw expansion values are zero, but dilation can still activate weights
+there. Checkpoint identities are `sbli-grcbc-h1sv` / `sbli-grcbc-h1sc`.
+
+`test_h1_compression_sensor.py::test_frozen415_same_state_and_sensor_inputs`
+passes the retained common-input physical-RHS and one-step field gates, raw
+sensor replay and shared-node weight agreement. Both native probes pass.
+Existing constant-pressure x/y final-RHS tests pass, but the new
+`test_variable_pressure_compressive_rhs_convergence` fails the unchanged 5.5
+order gate. Previous-candidate CPU control reproduces identical component
+errors. Do not run the remaining twelve-step/restart/memcheck or long-window
+tests until this scientific failure is resolved; their presence is not evidence
+that they have executed.
+
+The read-only attribution command reuses existing evidence without advancing:
+
+```bash
+python3 tests/gpu_validation/analyze_h1_sonic_split.py \
+  tests/gpu_validation/out/h1_compression_sensor_20261105 \
+  tests/gpu_validation/out/h1_compression_sensor_20261105/sonic_split_attribution.json
+```
+
+It checks one entirely subsonic stencil against the native density RHS and
+compares the original shrinking physical smoothing scale with two offline
+diagnostics. It neither changes production splitting nor proves full-RHS
+convergence. See joint-design sections 30.2–30.3 for the preserved failure,
+separate sonic-branch concern and pending numerical-method decision.
+
+The scale-consistent trial in section 30.3 was subsequently approved. Select
+`ASTR_H1_REPAIR_VARIANT=inlet-compression-metric` (native selector of the same
+name); it inherits the compression-only trial and applies the existing
+`metric_consistent_eps` definition at both ordinary and H1 endpoint fluxes.
+Checkpoint identities are `sbli-grcbc-h1mv` / `sbli-grcbc-h1mc`. The old trial
+and its failure evidence remain unchanged. The all-Mach branch is not changed.
+Builds and renewed manufactured/common-state gates must finish before running
+the remaining tests; the approval itself is not a passed scientific gate.
+The first CPU rerun improved the 128-grid error to 1.21e-8 but still failed
+the coarse-grid order gate. A subsequent 256-grid diagnosis found a sonic-
+crossing stencil with density-RHS error 3873.54. Offline reproduction isolates
+the existing supersonic bypass, not roundoff. See section 30.4; the all-Mach
+continuous split has not been approved or implemented. The additional
+`--crossing-case` argument to `analyze_h1_sonic_split.py` reproduces this
+counterexample without advancing the solver. No short/long-window pass follows.
+Both CPU/CUDA root targets and boundary probes have now built. The metric
+candidate's retained415 common-state diagnostic passes (physical-RHS absolute
+difference 9.46e-11, one-step scaled field difference 2.41e-14). This does not
+override the failed manufactured gate. Evidence: `out/h1_metric_eps_20261105/`.
+
 ## HB6 Local Wall Filter (Validation Builds Only)
 
 The approved local FP64 filter is selected only by the existing `hermite7`

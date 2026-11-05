@@ -191,6 +191,9 @@ contains
                                                         apply_down_y,apply_up_y, &
                                                         apply_back_z,apply_front_z)
     use commarray_gpu, only: dvel_d,prs_d,shock_sensor_d
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order_gpu, only: h1_compression_sensor_candidate_d,boundary_compression_sensor
+#endif
     implicit none
     integer,value :: im,jm,km,apply_left_x,apply_right_x,apply_down_y,apply_up_y, &
                      apply_back_z,apply_front_z
@@ -227,6 +230,10 @@ contains
     dpdk = abs(prs_d(i,j,kp1) - 2.e0_real_kind*prs_d(i,j,k) + prs_d(i,j,km1)) / &
            (prs_d(i,j,kp1) + 2.e0_real_kind*prs_d(i,j,k) + prs_d(i,j,km1))
     shock_sensor_d(i,j,k,1) = div2/(div2 + vort + 1.e-30_real_kind) * max(dpdi,dpdj,dpdk)
+#ifdef ASTR_BUILD_TESTING
+    if(h1_compression_sensor_candidate_d) shock_sensor_d(i,j,k,1)=boundary_compression_sensor( &
+      dvel_d(i,j,k,1,1)+dvel_d(i,j,k,2,2)+dvel_d(i,j,k,3,3),vort,max(dpdi,dpdj,dpdk))
+#endif
   end subroutine raw_shock_sensor_kernel
 
   attributes(global) subroutine shock_sensor_x_periodic_halo_kernel(im,jm,km,hm)

@@ -80,6 +80,17 @@ def test_periodic_extent_smaller_than_fixed_halo_is_rejected(tmp_path):
     assert not (tmp_path / "invalid").exists()
 
 
+def test_explicit_periodic_span_keeps_inlet_and_xy_geometry(tmp_path):
+    small=prepare_case(tmp_path/'small',im=32,jm=48,km=16,span_m=.002)
+    wide=prepare_case(tmp_path/'wide',im=32,jm=48,km=32,span_m=.004)
+    assert small['grid']['dz_m']==wide['grid']['dz_m']
+    assert small['geometry']['span_m']==.002 and wide['geometry']['span_m']==.004
+    assert small['shock']==wide['shock'] and small['boundaries']==wide['boundaries']
+    with h5py.File(tmp_path/'small/datin/grid.flatplate.h5') as a,h5py.File(tmp_path/'wide/datin/grid.flatplate.h5') as b:
+        for name in ('x','y'):np.testing.assert_array_equal(a[name][0],b[name][0])
+    assert (tmp_path/'small/datin/inlet.prof').read_bytes()==(tmp_path/'wide/datin/inlet.prof').read_bytes()
+
+
 @pytest.mark.parametrize("km", [5, 8])
 def test_prepared_case_has_joint_nscbc_and_unshocked_developing_blasius(tmp_path, km):
     destination = tmp_path / "review"
