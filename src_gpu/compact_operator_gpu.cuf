@@ -2,6 +2,7 @@ module compact_operator_gpu
   use astr_precision, only: real_kind,real_bytes
   use astr_precision_mpi, only: mpi_real_type
   use cudafor
+  use constdef, only: num1d3
   use compact_derivative_gpu
   use compact_filter_gpu, only: compact_filter_plan,prepare_compact_filter_gpu, &
     apply_compact_filter_gpu,release_compact_filter_gpu
@@ -453,7 +454,6 @@ contains
 
   attributes(global) subroutine compact_stress_kernel(im,jm,km,reynolds,prandtl,const5,tempconst,tempconst1)
     use commarray_gpu, only: vel_d,tmp_d,dvel_d,dtmp_d,sigma_d,qflux_d
-    use constdef, only: num1d3
     integer,value :: im,jm,km
     real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
