@@ -36,6 +36,7 @@ module output_runtime
   use insitu_temporal_runtime, only: observe_temporal_products
   use insitu_catalog_render, only: observe_catalog_images
   use insitu_catalog_wall, only: observe_catalog_walls
+  use insitu_catalog_m12, only: observe_catalog_m12_diagnostics
   use checkpoint_state_io
   use checkpoint_bundle
   use insitu_checkpoint_batch, only: create_batch,copy_batch_file
@@ -1894,6 +1895,7 @@ contains
     call complete_output_insitu(nstep,time,run_is_finished(int(nstep,int64),time))
     if(archives_enabled()) call observe_archives(identity,run_is_finished(int(nstep,int64),time))
     call observe_index_slices(identity)
+    call observe_catalog_m12_diagnostics(identity)
     call observe_temporal_products(identity)
     call observe_catalog_walls(identity)
     call observe_catalog_images(identity)

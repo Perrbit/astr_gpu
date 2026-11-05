@@ -129,6 +129,7 @@ set(ASTR_SOURCES
   insitu_temporal_runtime.F90
   insitu_catalog_render.F90
   insitu_catalog_wall.F90
+  insitu_catalog_m12.F90
   output_lineage.F90
   output_archive.F90
   output_runtime.F90

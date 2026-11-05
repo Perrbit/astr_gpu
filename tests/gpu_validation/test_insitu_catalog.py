@@ -39,6 +39,23 @@ def test_valid_index_product(tmp_path):
     assert 'field=density_gradient_magnitude' in result.stdout
 
 
+@pytest.mark.parametrize('kind', ['m12_probes', 'm12_wall'])
+def test_original_m12_diagnostic_definition(tmp_path, kind):
+    item = dict(id=kind, kind=kind, enable_request=1, source='instantaneous',
+                sampling=dict(mode='provider'), output=dict(channel='data', format='csv'),
+                schedule=dict(mode='steps', interval=1 if kind == 'm12_probes' else 50))
+    result = run(tmp_path, [HEADER, item])
+    assert result.returncode == 0 and f'PRODUCT 1 valid=T id={kind}' in result.stdout, result.stdout + result.stderr
+
+
+def test_original_m12_diagnostics_do_not_accept_changed_fields(tmp_path):
+    item = dict(id='bad-m12', kind='m12_wall', enable_request=1, source='instantaneous',
+                fields=['wall_shear_x'], sampling=dict(mode='provider'),
+                output=dict(channel='data', format='csv'), schedule=dict(mode='steps', interval=50))
+    result = run(tmp_path, [HEADER, item, product('unchanged')])
+    assert 'PRODUCT 1 valid=F' in result.stdout and 'PRODUCT 2 valid=T id=unchanged' in result.stdout
+
+
 @pytest.mark.parametrize('source,fields', [('reynolds', ['velocity_x', 'pressure', 'temperature']),
                                           ('favre', ['velocity_x', 'velocity_y', 'velocity_z'])])
 def test_fixed_j_fluctuation_definition(tmp_path, source, fields):

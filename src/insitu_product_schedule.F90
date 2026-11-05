@@ -372,10 +372,13 @@ contains
       if(state%definition%axis/=0) return
     case('wall','wall_midspan')
       if(state%definition%axis<1.or.state%definition%axis>3) return
+    case('provider')
+      if(state%definition%view%kind/='m12_probes'.and.state%definition%view%kind/='m12_wall') return
     case default
       return
     end select
-    if(size(state%definition%fields)==0.and.state%definition%view%kind/='wall_curve') return
+    if(size(state%definition%fields)==0.and.state%definition%view%kind/='wall_curve'.and. &
+      state%definition%view%kind/='m12_probes'.and.state%definition%view%kind/='m12_wall') return
     if(any(state%definition%fields<1).or.any(state%definition%fields>size(catalog_field_names))) return
     do i=2,size(state%definition%fields)
       if(state%definition%fields(i)<=state%definition%fields(i-1)) return

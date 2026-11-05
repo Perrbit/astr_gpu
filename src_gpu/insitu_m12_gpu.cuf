@@ -12,7 +12,8 @@ module insitu_m12_gpu
   public :: begin_m12_completed_gpu,sample_m12_completed_gpu,finish_m12_completed_gpu
   public :: capture_m12_temperature_gpu,m12_diagnostic_layout_supported
   public :: capture_m12_plane_inputs_gpu
-  integer,parameter :: probes=72
+  public :: capture_m12_probes_gpu,capture_m12_wall_gpu,m12_probe_count
+  integer,parameter :: m12_probe_count=72,probes=m12_probe_count
   integer,device,allocatable,save :: indices_d(:,:)
   real(real_kind),device,allocatable,save :: probe_d(:,:),blocks_d(:,:),summary_d(:),wall_d(:,:)
   integer,save :: local_indices(3,probes)=0,owners(probes)=0
@@ -158,6 +159,48 @@ contains
     if(mpirank==0) write(*,'(a,i0,a,es24.16,a,3(es24.16,1x),a)') 'ASTR_M12_HD step=',step, &
       ' time=',t,' rho_internal_T_min=',minimum(1:3),' probes=72 volume_download_bytes=0'
     last_step=step
+  end subroutine
+
+  subroutine capture_m12_probes_gpu(values,ok)
+    use commvar, only: im,jm,km,hm,const2,const6,roinf,pinf,tinf
+    use commarray_gpu, only: q_d
+    real(real_kind),intent(out) :: values(6,probes)
+    logical,intent(out) :: ok
+    real(real_kind) :: local(6,probes)
+    integer :: status,ierr,bad,any_bad
+    if(.not.initialized) call initialize_m12()
+    call gather_probes<<<1,128>>>(q_d,indices_d,probe_d,im,jm,km,hm,const2,const6, &
+      velocity_scale,roinf,pinf,tinf)
+    status=cudaDeviceSynchronize()
+    bad=1
+    if(status==cudaSuccess) then
+      local=probe_d
+      bad=merge(0,1,all(ieee_is_finite(local)))
+    endif
+    call MPI_Allreduce(bad,any_bad,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    ok=ierr==MPI_SUCCESS.and.any_bad==0
+    if(.not.ok) return
+    values=0.e0_real_kind
+    call MPI_Reduce(local,values,6*probes,mpi_real_type,MPI_SUM,0,MPI_COMM_WORLD,ierr)
+    ok=ierr==MPI_SUCCESS
+  end subroutine
+
+  subroutine capture_m12_wall_gpu(values,ok)
+    use commvar, only: im,jm,km,hm,ia,const2,const5,const6,tempconst,tempconst1,reynolds,prandtl,roinf
+    use commarray_gpu, only: q_d,x_d,dxi_d
+    use parallel, only: ig0
+    real(real_kind),intent(out) :: values(3,im+1)
+    logical,intent(out) :: ok
+    integer :: status
+    if(.not.initialized) call initialize_m12()
+    call wall_curves<<<(im+256)/256,256>>>(q_d,x_d,dxi_d,wall_d,im,jm,km,hm,ig0,ia, &
+      const2,const5,const6,tempconst,tempconst1,reynolds,prandtl,roinf,velocity_scale)
+    status=cudaDeviceSynchronize()
+    ok=status==cudaSuccess
+    if(ok) then
+      values=wall_d
+      ok=all(ieee_is_finite(values))
+    endif
   end subroutine
 
   subroutine diagnostic_require(condition,label)

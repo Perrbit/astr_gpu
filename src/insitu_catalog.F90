@@ -1004,7 +1004,7 @@ contains
     integer :: id,i
     ok=.false.;output=json_get(root,'output'//c_null_char);sampling=json_get(root,'sampling'//c_null_char)
     if(.not.read_choice(root,'kind',[character(32)::'slice','probe','wall_curve','q_surface','streamlines','station_profile','wall_profile', &
-      'lambda2_surface','lambda_ci_surface','time_space','probe_spectrum'], &
+      'lambda2_surface','lambda_ci_surface','time_space','probe_spectrum','m12_probes','m12_wall'], &
       entry%view%kind,error)) return
     if(.not.read_choice(output,'channel',[character(8)::'data','image','geometry'],entry%view%channel,error)) return
     if((entry%view%kind=='station_profile'.or.entry%view%kind=='wall_profile').and.entry%view%channel/='data') then
@@ -1032,6 +1032,18 @@ contains
         error='probe output requires the data channel';return
       endif
       if(.not.read_catalog_display(root,entry,error)) return
+    endif
+    if(entry%view%kind=='m12_probes'.or.entry%view%kind=='m12_wall') then
+      if(entry%view%channel/='data'.or.entry%view%format/='csv'.or.entry%source/='instantaneous') then
+        error='M12 original diagnostics require instantaneous CSV data';return
+      endif
+      if(c_associated(json_get(root,'field'//c_null_char)).or.c_associated(json_get(root,'fields'//c_null_char)).or. &
+        c_associated(json_get(root,'extraction'//c_null_char))) then
+        error='M12 original diagnostic fields are fixed by the existing provider';return
+      endif
+      if(.not.keys_allowed(sampling,[character(8)::'mode'],error)) return
+      if(.not.read_choice(sampling,'mode',[character(16)::'provider'],entry%view%sampling,error)) return
+      ok=.true.;error='';return
     endif
     if(.not.read_visual_sampling(sampling,entry,error)) return
     if(entry%view%channel=='geometry') then

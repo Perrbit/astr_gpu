@@ -71,6 +71,7 @@ module mainloop
     use benchmark_runtime, only: begin_complete_step_timing,end_complete_step_timing, &
                                 insitu_clock,report_insitu_timing
     use insitu_session, only: sample_insitu_step,finish_insitu,begin_insitu
+    use insitu_catalog_m12, only: finish_catalog_m12_diagnostics
 #ifdef COMB
     use fdnn, only: finalize
     use commvar, only: odetype
@@ -328,6 +329,7 @@ module mainloop
       use insitu_temporal_runtime, only: finish_temporal_products
       call finish_temporal_products()
     end block
+    call finish_catalog_m12_diagnostics()
     call finish_insitu()
     call statout(finishing=.true.)
 #ifdef COMB
