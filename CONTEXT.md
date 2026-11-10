@@ -36,6 +36,22 @@ _Avoid_: Full ASTR GPU port, complete GPU migration
 The finite-difference derivative scheme for the first-stage GPU port is the explicit sixth-order central scheme. It does not solve compact finite-difference linear systems.
 _Avoid_: Compact difference, tridiagonal derivative solve
 
+**KEEP convection discretization**:
+A coupled split-form discretization of mass, momentum and total-energy convection that preserves specified kinetic/internal-energy exchange relations. Its name alone does not imply exact discrete entropy conservation, positivity, or stable physical boundary closures.
+_Avoid_: Calling an ordinary central derivative KEEP, treating every KEEP variant as the same numerical flux
+
+**Original KEEP**:
+The arithmetic-average KEEP formulation using cross-point kinetic-energy and pressure-work terms, distinct from pressure-equilibrium-preserving or revised entropy-preserving variants. Explicit and compact spatial realizations do not change that formula identity by themselves.
+_Avoid_: Calling KEEP-PE original KEEP, claiming exact entropy conservation from the KEEP name
+
+**KEEP-compact**:
+A KEEP split-form spatial discretization using compact derivative operators. Compact spatial coupling is distinct from implicit time integration and from the treatment of physical boundary conditions.
+_Avoid_: Calling an ordinary compact derivative KEEP-compact, assuming a periodic conservation result covers nonperiodic boundaries
+
+**ME6-Opti viscous discretization**:
+An optimized explicit sixth-order midpoint-based discretization of viscous flux derivatives, using dedicated midpoint reconstruction and a mixed-derivative penalty. It is distinct from KEEP convection and from filtering the conservative solution.
+_Avoid_: Calling the mixed-derivative penalty a wall SAT, treating ME6-Opti as a mandatory part of KEEP
+
 **Explicit tenth-order central filter**:
 The filter scheme for the first-stage GPU port is the explicit tenth-order central filter. It does not solve compact filter linear systems.
 _Avoid_: Compact filter, tridiagonal filter solve
