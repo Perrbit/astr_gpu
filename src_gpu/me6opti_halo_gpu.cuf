@@ -1,0 +1,120 @@
+module me6opti_halo_gpu
+  use astr_precision, only: real_kind
+  use me6opti_halo, only: me6_edge_tags
+  use cudafor
+  use gpu_check, only: sync_after_kernel
+  use halo_transport_gpu, only: device_aware_transport_enabled,exchange_host_pair
+  use device_mpi_transport_gpu, only: exchange_device_pair
+  implicit none
+  private
+  public :: extend_me6_edges_gpu,release_me6_edges_gpu
+  type :: edge_buffers
+    real(real_kind),allocatable,device :: sl(:,:,:,:),sh(:,:,:,:),rh(:,:,:,:),rl(:,:,:,:)
+    real(real_kind),allocatable,pinned :: slh(:,:,:,:),shh(:,:,:,:),rhh(:,:,:,:),rlh(:,:,:,:)
+  end type
+  type(edge_buffers),save :: buffers(2)
+contains
+  subroutine extend_me6_edges_gpu(im,jm,km,hm,velocity,temperature,parts,peers)
+    integer,intent(in) :: im,jm,km,hm,parts(3),peers(2,3)
+    real(real_kind),device,intent(inout) :: velocity(-hm:,-hm:,-hm:,:),temperature(-hm:,-hm:,-hm:)
+    integer :: axis,slot,nx,nt,n
+    do axis=2,3
+      slot=axis-1;nx=im+2*hm+1;nt=km+1
+      if(axis==3) nt=jm+2*hm+1
+      n=hm*nx*nt*4
+      if(parts(axis)==1) then
+        call wrap_edges_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,axis,nt,n,velocity,temperature)
+        call sync_after_kernel('ME6 local extended halo',force_sync=.true.)
+        cycle
+      endif
+      if(.not.allocated(buffers(slot)%sl)) then
+        allocate(buffers(slot)%sl(hm,nx,nt,4),buffers(slot)%sh(hm,nx,nt,4), &
+          buffers(slot)%rh(hm,nx,nt,4),buffers(slot)%rl(hm,nx,nt,4))
+        if(.not.device_aware_transport_enabled) allocate(buffers(slot)%slh(hm,nx,nt,4), &
+          buffers(slot)%shh(hm,nx,nt,4),buffers(slot)%rhh(hm,nx,nt,4),buffers(slot)%rlh(hm,nx,nt,4))
+      endif
+      call pack_edges_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,axis,nt,n,velocity,temperature, &
+        buffers(slot)%sl,buffers(slot)%sh)
+      call sync_after_kernel('ME6 extended halo pack',force_sync=.true.)
+      if(device_aware_transport_enabled) then
+        call exchange_device_pair(buffers(slot)%sl,buffers(slot)%sh,buffers(slot)%rh,buffers(slot)%rl, &
+          n,peers(1,axis),peers(2,axis),me6_edge_tags(1,slot),me6_edge_tags(2,slot))
+      else
+        buffers(slot)%slh=buffers(slot)%sl;buffers(slot)%shh=buffers(slot)%sh
+        call exchange_host_pair(buffers(slot)%slh,buffers(slot)%shh,buffers(slot)%rhh,buffers(slot)%rlh, &
+          n,peers(1,axis),peers(2,axis),me6_edge_tags(1,slot),me6_edge_tags(2,slot))
+        buffers(slot)%rh=buffers(slot)%rhh;buffers(slot)%rl=buffers(slot)%rlh
+      endif
+      call unpack_edges_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,axis,nt,n,velocity,temperature, &
+        buffers(slot)%rh,buffers(slot)%rl)
+      call sync_after_kernel('ME6 extended halo unpack',force_sync=.true.)
+    enddo
+  end subroutine
+
+  attributes(device) subroutine edge_indices(index,im,jm,km,hm,axis,nt,h,i,j,c,lo,hi,lg,hg)
+    integer,value :: index,im,jm,km,hm,axis,nt
+    integer,intent(out) :: h,i,j,c,lo(3),hi(3),lg(3),hg(3)
+    integer :: nx,last
+    nx=im+2*hm+1
+    h=mod(index,hm)+1;i=mod(index/hm,nx)+1;j=mod(index/(hm*nx),nt)+1;c=index/(hm*nx*nt)+1
+    lo=[i-hm-1,h,j-1];last=jm
+    if(axis==3) then
+      lo=[i-hm-1,j-hm-1,h];last=km
+    endif
+    hi=lo;hi(axis)=last-hm+h-1
+    lg=lo;lg(axis)=h-hm-1
+    hg=lo;hg(axis)=last+h
+  end subroutine
+
+  attributes(global) subroutine pack_edges_kernel(im,jm,km,hm,axis,nt,n,v,t,sl,sh)
+    integer,value :: im,jm,km,hm,axis,nt,n
+    real(real_kind),device :: v(-hm:,-hm:,-hm:,:),t(-hm:,-hm:,-hm:),sl(:,:,:,:),sh(:,:,:,:)
+    integer :: index,h,i,j,c,lo(3),hi(3),lg(3),hg(3)
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(index>=n) return
+    call edge_indices(index,im,jm,km,hm,axis,nt,h,i,j,c,lo,hi,lg,hg)
+    if(c<=3) then
+      sl(h,i,j,c)=v(lo(1),lo(2),lo(3),c);sh(h,i,j,c)=v(hi(1),hi(2),hi(3),c)
+    else
+      sl(h,i,j,c)=t(lo(1),lo(2),lo(3));sh(h,i,j,c)=t(hi(1),hi(2),hi(3))
+    endif
+  end subroutine
+
+  attributes(global) subroutine unpack_edges_kernel(im,jm,km,hm,axis,nt,n,v,t,rh,rl)
+    integer,value :: im,jm,km,hm,axis,nt,n
+    real(real_kind),device :: v(-hm:,-hm:,-hm:,:),t(-hm:,-hm:,-hm:),rh(:,:,:,:),rl(:,:,:,:)
+    integer :: index,h,i,j,c,lo(3),hi(3),lg(3),hg(3)
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(index>=n) return
+    call edge_indices(index,im,jm,km,hm,axis,nt,h,i,j,c,lo,hi,lg,hg)
+    if(c<=3) then
+      v(lg(1),lg(2),lg(3),c)=rl(h,i,j,c);v(hg(1),hg(2),hg(3),c)=rh(h,i,j,c)
+    else
+      t(lg(1),lg(2),lg(3))=rl(h,i,j,c);t(hg(1),hg(2),hg(3))=rh(h,i,j,c)
+    endif
+  end subroutine
+
+  attributes(global) subroutine wrap_edges_kernel(im,jm,km,hm,axis,nt,n,v,t)
+    integer,value :: im,jm,km,hm,axis,nt,n
+    real(real_kind),device :: v(-hm:,-hm:,-hm:,:),t(-hm:,-hm:,-hm:)
+    integer :: index,h,i,j,c,lo(3),hi(3),lg(3),hg(3)
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(index>=n) return
+    call edge_indices(index,im,jm,km,hm,axis,nt,h,i,j,c,lo,hi,lg,hg)
+    if(c<=3) then
+      v(lg(1),lg(2),lg(3),c)=v(hi(1),hi(2),hi(3),c)
+      v(hg(1),hg(2),hg(3),c)=v(lo(1),lo(2),lo(3),c)
+    else
+      t(lg(1),lg(2),lg(3))=t(hi(1),hi(2),hi(3))
+      t(hg(1),hg(2),hg(3))=t(lo(1),lo(2),lo(3))
+    endif
+  end subroutine
+
+  subroutine release_me6_edges_gpu()
+    integer :: slot
+    do slot=1,2
+      if(allocated(buffers(slot)%sl)) deallocate(buffers(slot)%sl,buffers(slot)%sh,buffers(slot)%rh,buffers(slot)%rl)
+      if(allocated(buffers(slot)%slh)) deallocate(buffers(slot)%slh,buffers(slot)%shh,buffers(slot)%rhh,buffers(slot)%rlh)
+    enddo
+  end subroutine
+end module

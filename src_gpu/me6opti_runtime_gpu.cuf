@@ -1,0 +1,68 @@
+module me6opti_runtime_gpu
+  use astr_precision, only: real_kind
+  use cudafor
+  use gpu_check, only: sync_after_kernel
+  use commvar, only: im,jm,km,hm,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1
+  use commarray_gpu, only: vel_d,tmp_d,jacob_d,qrhs_d
+  use me6opti_runtime, only: prepare_me6_geometry,me6_spacing,me6_parts,me6_peers
+  use me6opti_halo_gpu, only: extend_me6_edges_gpu,release_me6_edges_gpu
+  use me6opti_operator_gpu, only: prepare_me6_gpu,me6_direction_kernel,release_me6_gpu
+  implicit none
+  private
+  public :: me6_diffusion_gpu,release_me6_runtime_gpu
+  real(real_kind),allocatable,device,save :: viscosity(:,:,:),conductivity(:,:,:)
+contains
+  subroutine me6_diffusion_gpu()
+    type(dim3) :: block,grid
+    integer :: n,axis
+    call prepare_me6_geometry()
+    call prepare_me6_gpu()
+    call extend_me6_edges_gpu(im,jm,km,hm,vel_d,tmp_d,me6_parts,me6_peers)
+    if(.not.allocated(viscosity)) allocate(viscosity(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+      conductivity(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    n=(im+2*hm+1)*(jm+2*hm+1)*(km+2*hm+1)
+    call me6_properties_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,n,nondimen,reynolds,prandtl,const5, &
+      cp,tempconst,tempconst1,tmp_d,viscosity,conductivity)
+    call sync_after_kernel('ME6 stage properties',force_sync=.true.)
+    do axis=1,3
+      select case(axis)
+      case(1);block=dim3(512,1,1)
+      case(2);block=dim3(32,16,1)
+      case(3);block=dim3(64,1,8)
+      end select
+      grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
+      call me6_direction_kernel<<<grid,block>>>(im,jm,km,hm,axis,me6_spacing(1),me6_spacing(2),me6_spacing(3), &
+        vel_d,tmp_d,viscosity,conductivity,jacob_d,qrhs_d)
+      call sync_after_kernel('ME6 viscous divergence',force_sync=.true.)
+    enddo
+  end subroutine
+
+  attributes(global) subroutine me6_properties_kernel(im,jm,km,hm,n,dimensionless,re,pr,c5,cpv,s,s1,t,mu,kappa)
+    integer,value :: im,jm,km,hm,n
+    logical,value :: dimensionless
+    real(real_kind),value :: re,pr,c5,cpv,s,s1
+    real(real_kind),device :: t(-hm:,-hm:,-hm:),mu(-hm:,-hm:,-hm:),kappa(-hm:,-hm:,-hm:)
+    integer :: index,i,j,k,nx,ny
+    real(real_kind) :: temperature,tn
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(index>=n) return
+    nx=im+2*hm+1;ny=jm+2*hm+1
+    i=mod(index,nx)-hm;j=mod(index/nx,ny)-hm;k=index/(nx*ny)-hm
+    temperature=t(i,j,k)
+    if(dimensionless) then
+      mu(i,j,k)=temperature*sqrt(temperature)*s1/(temperature+s)
+      mu(i,j,k)=mu(i,j,k)/re
+      kappa(i,j,k)=(mu(i,j,k)/pr)/c5
+    else
+      tn=temperature/273.15e0_real_kind
+      mu(i,j,k)=1.716e-5_real_kind*tn*sqrt(tn)*(273.15e0_real_kind+110.4e0_real_kind)/(temperature+110.4e0_real_kind)
+      kappa(i,j,k)=cpv*mu(i,j,k)/pr
+    endif
+  end subroutine
+
+  subroutine release_me6_runtime_gpu()
+    if(allocated(viscosity)) deallocate(viscosity,conductivity)
+    call release_me6_edges_gpu()
+    call release_me6_gpu()
+  end subroutine
+end module

@@ -184,6 +184,7 @@ contains
   end subroutine validate_gpu_mixed_candidate_eligibility
 
   subroutine alloc_gpu_arrays()
+    use numerical_forms, only: compact_filter_selected
     use commvar, only: im,jm,km,hm,numq,num_species,num_modequ,conschm, &
                        recon_schem,lchardecomp,lfilter,lcomb,diffterm,difschm
     use commcal, only: shock_sensor_validation_enabled
@@ -217,7 +218,7 @@ contains
     active_workspace='none'
     if(lio) write(*,'(A,A)') 'ASTR_GPU_PRECISION_MODE=',trim(gpu_precision_mode_name())
     if(.not.allocated(q_d))      allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
-    if(lfilter.and.(conschm=='643c'.or.conschm=='743e').and.difschm=='643c') then
+    if(lfilter.and.compact_filter_selected(conschm,difschm)) then
       workspace_bytes=0_8
       if(lio) write(*,'(A)') ' ** GPU compact filter uses packed RHS storage; no extra q ping-pong array'
     elseif(lcomb .and. .not.lfilter) then

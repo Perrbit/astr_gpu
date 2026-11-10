@@ -7,10 +7,13 @@ sys.path.insert(0,str(ROOT/'scripts/input'))
 from convert_legacy_input import MODEL_ENVIRONMENT,convert_case,convert_controller,namelist
 
 
-def prepare_named_run(case,primary,environment):
+def prepare_named_run(case,primary,environment,numerics=None):
     """Call after all fixture edits; preserve legacy fixed dt and update count."""
     case=Path(case)
-    main=namelist(convert_case((case/primary).read_text(),model_environment=environment))
+    groups=convert_case((case/primary).read_text(),model_environment=environment)
+    if numerics is not None:
+        groups['numerics'].update(numerics)
+    main=namelist(groups)
     run=namelist(convert_controller((case/'datin/controller').read_text()))
     (case/'datin/input.case').write_text(main)
     (case/'datin/input.run').write_text(run)

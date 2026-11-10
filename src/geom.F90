@@ -139,7 +139,9 @@ module geom
     use parallel,  only : gridsendrecv,jsize,ksize,psum,pmax,pmin,jrkm
     use commfunc,  only : volhex,arquad,dis2point
     use tecio
-    use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
+    use derivative, only : fds_compact_i,fds_compact_j,fds_compact_k
+    use compact_runtime, only: geometry_central
+    use keep_geometry, only: periodic_keep_geometry_active,build_keep_periodic_area
     use bc,       only : geombc,xyzbc
     use ieee_arithmetic, only: ieee_is_nan
     !
@@ -165,7 +167,7 @@ module geom
     do k=0,km
     do j=0,jm
       do m=1,3
-        dx(0:im,j,k,m,1)=fds%central(fds_compact_i,f=x(:,j,k,m),dim=im)
+        dx(0:im,j,k,m,1)=geometry_central(fds_compact_i,f=x(:,j,k,m),dim=im)
       enddo
     enddo
     enddo
@@ -174,7 +176,7 @@ module geom
     do i=0,im
       !
       do m=1,3
-        dx(i,0:jm,k,m,2)=fds%central(fds_compact_j,f=x(i,:,k,m),dim=jm)
+        dx(i,0:jm,k,m,2)=geometry_central(fds_compact_j,f=x(i,:,k,m),dim=jm)
       enddo
       !
     enddo
@@ -186,12 +188,12 @@ module geom
       if(lfftk) then
         !
         do m=1,2
-          dx(i,j,0:km,m,3)=fds%central(fds_compact_k,f=x(i,j,:,m),dim=km)
+          dx(i,j,0:km,m,3)=geometry_central(fds_compact_k,f=x(i,j,:,m),dim=km)
         enddo
         dx(i,j,0:km,3,3)=x(i,j,1,3)-x(i,j,0,3)
       else
         do m=1,3
-          dx(i,j,0:km,m,3)=fds%central(fds_compact_k,f=x(i,j,:,m),dim=km)
+          dx(i,j,0:km,m,3)=geometry_central(fds_compact_k,f=x(i,j,:,m),dim=km)
         enddo
       endif
       !
@@ -431,7 +433,9 @@ module geom
     !
     dxi=0.e0_real_kind
     !
-    if(ndims==3) then
+    if(periodic_keep_geometry_active()) then
+      call build_keep_periodic_area(dx,dxi)
+    elseif(ndims==3) then
       !
       allocate( phi(-hm:im+hm)  )
       do k=0,km
@@ -439,27 +443,27 @@ module geom
         !
         phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,2,3)*x(-hm:im+hm,j,k,3)-           &
                       dx(-hm:im+hm,j,k,3,3)*x(-hm:im+hm,j,k,2))
-        dxi(0:im,j,k,2,1)=dxi(0:im,j,k,2,1)+fds%central(fds_compact_i,f=phi,dim=im)
+        dxi(0:im,j,k,2,1)=dxi(0:im,j,k,2,1)+geometry_central(fds_compact_i,f=phi,dim=im)
         !
         phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,3,3)*x(-hm:im+hm,j,k,1)-           &
                       dx(-hm:im+hm,j,k,1,3)*x(-hm:im+hm,j,k,3))
-        dxi(0:im,j,k,2,2)=dxi(0:im,j,k,2,2)+fds%central(fds_compact_i,f=phi,dim=im)
+        dxi(0:im,j,k,2,2)=dxi(0:im,j,k,2,2)+geometry_central(fds_compact_i,f=phi,dim=im)
         !
         phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,1,3)*x(-hm:im+hm,j,k,2)-           &
                       dx(-hm:im+hm,j,k,2,3)*x(-hm:im+hm,j,k,1))
-        dxi(0:im,j,k,2,3)=dxi(0:im,j,k,2,3)+fds%central(fds_compact_i,f=phi,dim=im)
+        dxi(0:im,j,k,2,3)=dxi(0:im,j,k,2,3)+geometry_central(fds_compact_i,f=phi,dim=im)
         !
         phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,3,2)*x(-hm:im+hm,j,k,2)-           &
                       dx(-hm:im+hm,j,k,2,2)*x(-hm:im+hm,j,k,3))
-        dxi(0:im,j,k,3,1)=dxi(0:im,j,k,3,1)+fds%central(fds_compact_i,f=phi,dim=im)
+        dxi(0:im,j,k,3,1)=dxi(0:im,j,k,3,1)+geometry_central(fds_compact_i,f=phi,dim=im)
         !
         phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,1,2)*x(-hm:im+hm,j,k,3)-           &
                       dx(-hm:im+hm,j,k,3,2)*x(-hm:im+hm,j,k,1))
-        dxi(0:im,j,k,3,2)=dxi(0:im,j,k,3,2)+fds%central(fds_compact_i,f=phi,dim=im)
+        dxi(0:im,j,k,3,2)=dxi(0:im,j,k,3,2)+geometry_central(fds_compact_i,f=phi,dim=im)
         !
         phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,2,2)*x(-hm:im+hm,j,k,1)-           &
                       dx(-hm:im+hm,j,k,1,2)*x(-hm:im+hm,j,k,2))
-        dxi(0:im,j,k,3,3)=dxi(0:im,j,k,3,3)+fds%central(fds_compact_i,f=phi,dim=im)
+        dxi(0:im,j,k,3,3)=dxi(0:im,j,k,3,3)+geometry_central(fds_compact_i,f=phi,dim=im)
         !
       enddo
       enddo
@@ -471,27 +475,27 @@ module geom
         !
         phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,3,3)*x(i,-hm:jm+hm,k,2)-           &
                       dx(i,-hm:jm+hm,k,2,3)*x(i,-hm:jm+hm,k,3))
-        dxi(i,0:jm,k,1,1)=dxi(i,0:jm,k,1,1)+fds%central(fds_compact_j,f=phi,dim=jm)
+        dxi(i,0:jm,k,1,1)=dxi(i,0:jm,k,1,1)+geometry_central(fds_compact_j,f=phi,dim=jm)
         !
         phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,1,3)*x(i,-hm:jm+hm,k,3)-           &
                       dx(i,-hm:jm+hm,k,3,3)*x(i,-hm:jm+hm,k,1))
-        dxi(i,0:jm,k,1,2)=dxi(i,0:jm,k,1,2)+fds%central(fds_compact_j,f=phi,dim=jm)
+        dxi(i,0:jm,k,1,2)=dxi(i,0:jm,k,1,2)+geometry_central(fds_compact_j,f=phi,dim=jm)
         !
         phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,2,3)*x(i,-hm:jm+hm,k,1)-           &
                       dx(i,-hm:jm+hm,k,1,3)*x(i,-hm:jm+hm,k,2))
-        dxi(i,0:jm,k,1,3)=dxi(i,0:jm,k,1,3)+fds%central(fds_compact_j,f=phi,dim=jm)
+        dxi(i,0:jm,k,1,3)=dxi(i,0:jm,k,1,3)+geometry_central(fds_compact_j,f=phi,dim=jm)
         !
         phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,2,1)*x(i,-hm:jm+hm,k,3)-           &
                       dx(i,-hm:jm+hm,k,3,1)*x(i,-hm:jm+hm,k,2))
-        dxi(i,0:jm,k,3,1)=dxi(i,0:jm,k,3,1)+fds%central(fds_compact_j,f=phi,dim=jm)
+        dxi(i,0:jm,k,3,1)=dxi(i,0:jm,k,3,1)+geometry_central(fds_compact_j,f=phi,dim=jm)
         !
         phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,3,1)*x(i,-hm:jm+hm,k,1)-           &
                       dx(i,-hm:jm+hm,k,1,1)*x(i,-hm:jm+hm,k,3))
-        dxi(i,0:jm,k,3,2)=dxi(i,0:jm,k,3,2)+fds%central(fds_compact_j,f=phi,dim=jm)
+        dxi(i,0:jm,k,3,2)=dxi(i,0:jm,k,3,2)+geometry_central(fds_compact_j,f=phi,dim=jm)
         !
         phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,1,1)*x(i,-hm:jm+hm,k,2)-           &
                       dx(i,-hm:jm+hm,k,2,1)*x(i,-hm:jm+hm,k,1))
-        dxi(i,0:jm,k,3,3)=dxi(i,0:jm,k,3,3)+fds%central(fds_compact_j,f=phi,dim=jm)
+        dxi(i,0:jm,k,3,3)=dxi(i,0:jm,k,3,3)+geometry_central(fds_compact_j,f=phi,dim=jm)
       enddo
       enddo
       deallocate( phi )
@@ -505,7 +509,7 @@ module geom
         if(lfftk) then
           dxi(i,j,0:km,1,1)=dxi(i,j,0:km,1,1)+phi(1)-phi(0)
         else
-          dxi(i,j,0:km,1,1)=dxi(i,j,0:km,1,1)+fds%central(fds_compact_k,f=phi,dim=km)
+          dxi(i,j,0:km,1,1)=dxi(i,j,0:km,1,1)+geometry_central(fds_compact_k,f=phi,dim=km)
         endif
         !
         phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,3,2)*x(i,j,-hm:km+hm,1)-           &
@@ -513,7 +517,7 @@ module geom
         if(lfftk) then
           dxi(i,j,0:km,1,2)=dxi(i,j,0:km,1,2)+phi(1)-phi(0)
         else
-          dxi(i,j,0:km,1,2)=dxi(i,j,0:km,1,2)+fds%central(fds_compact_k,f=phi,dim=km)
+          dxi(i,j,0:km,1,2)=dxi(i,j,0:km,1,2)+geometry_central(fds_compact_k,f=phi,dim=km)
         endif
         !
         phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,1,2)*x(i,j,-hm:km+hm,2)-           &
@@ -521,7 +525,7 @@ module geom
         if(lfftk) then
           dxi(i,j,0:km,1,3)=dxi(i,j,0:km,1,3)+phi(1)-phi(0)
         else
-          dxi(i,j,0:km,1,3)=dxi(i,j,0:km,1,3)+fds%central(fds_compact_k,f=phi,dim=km)
+          dxi(i,j,0:km,1,3)=dxi(i,j,0:km,1,3)+geometry_central(fds_compact_k,f=phi,dim=km)
         endif
         !
         phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,3,1)*x(i,j,-hm:km+hm,2)-           &
@@ -529,7 +533,7 @@ module geom
         if(lfftk) then
           dxi(i,j,0:km,2,1)=dxi(i,j,0:km,2,1)+phi(1)-phi(0)
         else
-          dxi(i,j,0:km,2,1)=dxi(i,j,0:km,2,1)+fds%central(fds_compact_k,f=phi,dim=km)
+          dxi(i,j,0:km,2,1)=dxi(i,j,0:km,2,1)+geometry_central(fds_compact_k,f=phi,dim=km)
         endif
         !
         phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,1,1)*x(i,j,-hm:km+hm,3)-           &
@@ -537,7 +541,7 @@ module geom
         if(lfftk) then
           dxi(i,j,0:km,2,2)=dxi(i,j,0:km,2,2)+phi(1)-phi(0)
         else
-          dxi(i,j,0:km,2,2)=dxi(i,j,0:km,2,2)+fds%central(fds_compact_k,f=phi,dim=km)
+          dxi(i,j,0:km,2,2)=dxi(i,j,0:km,2,2)+geometry_central(fds_compact_k,f=phi,dim=km)
         endif
         !
         phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,2,1)*x(i,j,-hm:km+hm,1)-           &
@@ -545,7 +549,7 @@ module geom
         if(lfftk) then
           dxi(i,j,0:km,2,3)=dxi(i,j,0:km,2,3)+phi(1)-phi(0)
         else
-          dxi(i,j,0:km,2,3)=dxi(i,j,0:km,2,3)+fds%central(fds_compact_k,f=phi,dim=km)
+          dxi(i,j,0:km,2,3)=dxi(i,j,0:km,2,3)+geometry_central(fds_compact_k,f=phi,dim=km)
         endif
         !
       enddo
@@ -588,25 +592,25 @@ module geom
     !
     do k=0,km
     do j=0,jm
-      can(:,j,k,1)=can(:,j,k,1)+fds%central(fds_compact_i,f=dxi(:,j,k,1,1),dim=im)
-      can(:,j,k,2)=can(:,j,k,2)+fds%central(fds_compact_i,f=dxi(:,j,k,1,2),dim=im)
-      can(:,j,k,3)=can(:,j,k,3)+fds%central(fds_compact_i,f=dxi(:,j,k,1,3),dim=im)
+      can(:,j,k,1)=can(:,j,k,1)+geometry_central(fds_compact_i,f=dxi(:,j,k,1,1),dim=im)
+      can(:,j,k,2)=can(:,j,k,2)+geometry_central(fds_compact_i,f=dxi(:,j,k,1,2),dim=im)
+      can(:,j,k,3)=can(:,j,k,3)+geometry_central(fds_compact_i,f=dxi(:,j,k,1,3),dim=im)
     enddo
     enddo
     !
     do k=0,km
     do i=0,im
-      can(i,:,k,1)=can(i,:,k,1)+fds%central(fds_compact_j,f=dxi(i,:,k,2,1),dim=jm)
-      can(i,:,k,2)=can(i,:,k,2)+fds%central(fds_compact_j,f=dxi(i,:,k,2,2),dim=jm)
-      can(i,:,k,3)=can(i,:,k,3)+fds%central(fds_compact_j,f=dxi(i,:,k,2,3),dim=jm)
+      can(i,:,k,1)=can(i,:,k,1)+geometry_central(fds_compact_j,f=dxi(i,:,k,2,1),dim=jm)
+      can(i,:,k,2)=can(i,:,k,2)+geometry_central(fds_compact_j,f=dxi(i,:,k,2,2),dim=jm)
+      can(i,:,k,3)=can(i,:,k,3)+geometry_central(fds_compact_j,f=dxi(i,:,k,2,3),dim=jm)
     enddo
     enddo
     !
     do j=0,jm
     do i=0,im
-      can(i,j,:,1)=can(i,j,:,1)+fds%central(fds_compact_k,f=dxi(i,j,:,3,1),dim=km)
-      can(i,j,:,2)=can(i,j,:,2)+fds%central(fds_compact_k,f=dxi(i,j,:,3,2),dim=km)
-      can(i,j,:,3)=can(i,j,:,3)+fds%central(fds_compact_k,f=dxi(i,j,:,3,3),dim=km)
+      can(i,j,:,1)=can(i,j,:,1)+geometry_central(fds_compact_k,f=dxi(i,j,:,3,1),dim=km)
+      can(i,j,:,2)=can(i,j,:,2)+geometry_central(fds_compact_k,f=dxi(i,j,:,3,2),dim=km)
+      can(i,j,:,3)=can(i,j,:,3)+geometry_central(fds_compact_k,f=dxi(i,j,:,3,3),dim=km)
       !
     enddo
     enddo

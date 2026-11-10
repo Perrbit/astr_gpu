@@ -7,25 +7,140 @@ module compact_operator_gpu
   use compact_filter_gpu, only: compact_filter_plan,prepare_compact_filter_gpu, &
     apply_compact_filter_gpu,release_compact_filter_gpu
   use compact_line_solver_gpu, only: compact_after_kernel,compact_batch_rhs
-  use compact_runtime, only: global_compact_enabled,compact_partitions,compact_line_comms
+  use compact_runtime, only: global_compact_enabled,global_compact_filter_enabled,compact_partitions,compact_line_comms
+  use compact_runtime, only: global_compact_gradient_enabled
+  use keep_operator, only: keep_split_plan,build_keep_split_plan
   implicit none
   private
   public :: compact_global_enabled,compact_gradcal_gpu, &
     compact_convection_gpu,compact_diffusion_flux_gpu,compact_diffusion_rhs_gpu, &
-    compact_filter_state_gpu,release_compact_operator_gpu
+    compact_filter_state_gpu,release_compact_operator_gpu,compact_keep_convection_gpu
+  public :: compact_gradient_enabled
   type(compact_derivative_plan),save :: plans(3)
   type(compact_filter_plan),save :: filters(3)
   logical,save :: configured=.false.,enabled=.false.,prepared=.false.
   logical,save :: filter_prepared=.false.,filter_compared(3,5)=.false.
   logical,save :: compared(3,3)=.false.
+  integer,device,allocatable,save :: keep_left_d(:,:),keep_right_d(:,:),keep_component_d(:),keep_basis_d(:)
+  real(real_kind),device,allocatable,save :: keep_weight_d(:)
+  integer,save :: keep_terms=0,keep_bases=0
 contains
+  attributes(device) subroutine keep_point_variables(axis,i,j,k,gamma,variables)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,jacob_d,dxi_d
+    integer,value :: axis,i,j,k
+    real(real_kind),value :: gamma
+    real(real_kind),intent(out) :: variables(9)
+    integer :: c
+    variables(1)=rho_d(i,j,k)
+    do c=1,3
+      variables(1+c)=vel_d(i,j,k,c)
+      variables(6+c)=jacob_d(i,j,k)*dxi_d(i,j,k,axis,c)
+    enddo
+    variables(5)=prs_d(i,j,k)/rho_d(i,j,k)/(gamma-1.e0_real_kind)
+    variables(6)=prs_d(i,j,k)
+  end subroutine
+
+  attributes(global) subroutine keep_pack_split_kernel(axis,im,jm,km,hm,dim,lines,nrhs,start,gamma,f)
+    integer,value :: axis,im,jm,km,hm,dim,lines,nrhs,start
+    real(real_kind),value :: gamma
+    real(real_kind),device,intent(out) :: f(-hm:dim+hm,nrhs)
+    real(real_kind) :: variables(9),value
+    integer :: position,column,index,line,basis,i,j,k,c,power
+    position=(blockIdx%x-1)*blockDim%x+threadIdx%x-1-hm
+    column=blockIdx%y
+    if(position>dim+hm) return
+    index=start+column-1
+    line=mod(index,lines)+1
+    basis=index/lines+1
+    call line_point(axis,position,line,im,jm,i,j,k)
+    call keep_point_variables(axis,i,j,k,gamma,variables)
+    value=1.e0_real_kind
+    do c=1,9
+      do power=1,keep_right_d(c,basis)
+        value=value*variables(c)
+      enddo
+    enddo
+    f(position,column)=value
+  end subroutine
+
+  attributes(global) subroutine keep_commit_split_kernel(axis,im,jm,km,dim,lines,nrhs,start,terms,gamma,df)
+    use commarray_gpu, only: qrhs_d
+    integer,value :: axis,im,jm,km,dim,lines,nrhs,start,terms
+    real(real_kind),value :: gamma
+    real(real_kind),device,intent(in) :: df(dim+1,nrhs)
+    real(real_kind) :: variables(9),result(5),factor
+    integer :: index,i,j,k,line,position,t,column,c,power
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(index>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(index,im+1);j=mod(index/(im+1),jm+1);k=index/((im+1)*(jm+1))
+    select case(axis)
+    case(1);position=i;line=j+(jm+1)*k
+    case(2);position=j;line=i+(im+1)*k
+    case(3);position=k;line=i+(im+1)*j
+    end select
+    call keep_point_variables(axis,i,j,k,gamma,variables)
+    if(axis==1.and.start==0) then
+      result=0.e0_real_kind
+    else
+      result=qrhs_d(i,j,k,1:5)
+    endif
+    do t=1,terms
+      column=(keep_basis_d(t)-1)*lines+line-start+1
+      if(column<1.or.column>nrhs) cycle
+      factor=keep_weight_d(t)
+      do c=1,9
+        do power=1,keep_left_d(c,t)
+          factor=factor*variables(c)
+        enddo
+      enddo
+      c=keep_component_d(t)
+      result(c)=result(c)-factor*df(position+1,column)
+    enddo
+    qrhs_d(i,j,k,1:5)=result
+  end subroutine
+
+  subroutine compact_keep_convection_gpu()
+    use commvar, only: im,jm,km,hm,gamma
+    integer :: axis,dim,lines,start,nrhs,total
+    call prepare_operator()
+    if(keep_terms==0) then
+      block
+      type(keep_split_plan) :: split
+      call build_keep_split_plan(split)
+      keep_terms=split%terms;keep_bases=split%bases
+      allocate(keep_left_d(9,keep_terms),keep_right_d(9,keep_bases), &
+        keep_component_d(keep_terms),keep_basis_d(keep_terms),keep_weight_d(keep_terms))
+      keep_left_d=split%left(:,1:keep_terms)
+      keep_right_d=split%right(:,1:keep_bases)
+      keep_component_d=split%component(1:keep_terms)
+      keep_basis_d=split%derivative(1:keep_terms)
+      keep_weight_d=split%weight(1:keep_terms)
+      end block
+    endif
+    total=(im+1)*(jm+1)*(km+1)
+    do axis=1,3
+      dim=plans(axis)%dim
+      lines=total/(dim+1)
+      do start=0,lines*keep_bases-1,plans(axis)%capacity
+        nrhs=min(plans(axis)%capacity,lines*keep_bases-start)
+        call keep_pack_split_kernel<<<dim3((dim+2*hm+128)/128,nrhs,1),128>>>( &
+          axis,im,jm,km,hm,dim,lines,nrhs,start,gamma,plans(axis)%input)
+        call compact_after_kernel('keep compact pack')
+        call apply_compact_derivative_gpu(plans(axis),nrhs)
+        call keep_commit_split_kernel<<<(total+511)/512,512>>>( &
+          axis,im,jm,km,dim,lines,nrhs,start,keep_terms,gamma,plans(axis)%solution)
+        call compact_after_kernel('keep compact accumulate')
+      enddo
+    enddo
+  end subroutine
+
   logical function compact_global_enabled() result(active)
     use precision_mode_gpu, only: gpu_mixed_workspace_requested
     use gpu_check, only: gpu_selective_sync_enabled,gpu_dependency_sync_enabled
     use parallel, only: lio
     if(.not.configured) then
       enabled=global_compact_enabled()
-      if(enabled) then
+      if(enabled.or.global_compact_filter_enabled()) then
         if(gpu_mixed_workspace_requested().or.gpu_selective_sync_enabled().or.gpu_dependency_sync_enabled()) &
           error stop 'Global compact requires native precision and explicit synchronization'
         if(lio) write(*,'(A)') 'COMPACT GPU: globally coupled two-level PCR'
@@ -33,6 +148,12 @@ contains
       configured=.true.
     endif
     active=enabled
+  end function
+
+  logical function compact_gradient_enabled() result(active)
+    logical :: admitted
+    admitted=compact_global_enabled()
+    active=admitted.and.global_compact_gradient_enabled()
   end function
 
   subroutine prepare_operator()
@@ -498,5 +619,7 @@ contains
     enddo
     prepared=.false.
     filter_prepared=.false.
+    if(allocated(keep_left_d)) deallocate(keep_left_d,keep_right_d,keep_component_d,keep_basis_d,keep_weight_d)
+    keep_terms=0;keep_bases=0
   end subroutine
 end module

@@ -495,6 +495,7 @@ module readwrite
     use bc,      only : bctype,twall,xslip,turbinf,xrhjump,angshk,pout
     use ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
     use case_model_options, only: reset_model_options,read_model_group,publish_model_options,write_model_option_receipt
+    use numerical_forms, only: convection_form,keep_configuration_error,filter_scheme,viscous_form,me6_configuration_error
     use mpi, only: MPI_COMM_WORLD
     !
 #ifdef COMB
@@ -522,7 +523,8 @@ module readwrite
 #else
     namelist /physics/ nondimen,diffterm,lcomb,num_species,turbmode,ref_tem,ref_vel,ref_len,ref_den,reynolds,mach
 #endif
-    namelist /numerics/ conschm,difschm,rkscheme,recon_schem,lchardecomp,bfacmpld,shkcrt,lfilter,alfa_filter,kcutoff
+    namelist /numerics/ conschm,difschm,rkscheme,recon_schem,lchardecomp,bfacmpld,shkcrt,lfilter,alfa_filter,kcutoff, &
+      convection_form,filter_scheme,viscous_form
     namelist /boundary/ bctype,twall,xslip,turbinf,pout,xrhjump,angshk
     namelist /initialization/ lrestart,ninit,limmbou,ibmode,solidfile
     namelist /sponge/ spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km,spg_def
@@ -580,6 +582,9 @@ module readwrite
       ref_tem=missing;reynolds=missing;mach=missing
       ref_vel=0.e0_real_kind;ref_len=0.e0_real_kind;ref_den=0.e0_real_kind
       conschm='';difschm='';rkscheme='';recon_schem=3;lchardecomp=.false.
+      convection_form='standard'
+      viscous_form='standard'
+      filter_scheme=''
       bfacmpld=0.3e0_real_kind;shkcrt=0.05e0_real_kind;lfilter=.false.;alfa_filter=missing;kcutoff=-1
       bctype=-huge(0);twall=0.e0_real_kind;xslip=missing;turbinf='';pout=1.e0_real_kind
       xrhjump=missing;angshk=missing
@@ -656,6 +661,13 @@ module readwrite
         if(.not.lfex) call reject_case_input(inputfile,'chemfile not found: '//trim(chemfile))
       endif
 #endif
+      detail=keep_configuration_error(conschm,num_species,lcomb,bctype,turbmode)
+      if(len_trim(detail)>0) call reject_case_input(inputfile,trim(detail))
+      detail=me6_configuration_error(num_species,lcomb,bctype,turbmode,diffterm)
+      if(len_trim(detail)>0) call reject_case_input(inputfile,trim(detail))
+      if(viscous_form=='me6_opti'.and.real_bytes/=8) call reject_case_input(inputfile,'ME6 is currently FP64 only')
+      if(len_trim(filter_scheme)>0.and.filter_scheme/='explicit10'.and.filter_scheme/='compact10') &
+        call reject_case_input(inputfile,'filter_scheme must be explicit10 or compact10')
       if(.not.ieee_is_finite(alfa_filter)) alfa_filter=0.e0_real_kind
       if(.not.ieee_is_finite(xslip)) xslip=0.e0_real_kind
       if(.not.ieee_is_finite(xrhjump)) xrhjump=0.e0_real_kind
@@ -695,6 +707,13 @@ module readwrite
     call bcast(ibmode)
     !
     call bcast(conschm)
+    call bcast(convection_form)
+    call bcast(viscous_form)
+    if(mpirank==0.and.viscous_form=='me6_opti') write(*,'(A)') &
+      'ASTR_VISCOUS_FORM=me6_opti; private sixth-order half gradients; difschm does not replace this viscous operator'
+    call bcast(filter_scheme)
+    if(mpirank==0.and.convection_form=='keep') write(*,'(A)') &
+      'CONVECTION FORM: original arithmetic-average KEEP'
     call bcast(difschm)
     call bcast(gridfile)
     call bcast(solidfile)

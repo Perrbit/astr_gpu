@@ -4,31 +4,66 @@ module compact_runtime
   use mpi
   use commvar, only: hm
   use compact_operator
-  use derivative, only: finite_difference,fds
+  use derivative, only: finite_difference,fds,diff6ec
+  use numerical_forms, only: compact_filter_selected,filter_scheme,convection_form
+  use keep_operator, only: keep_split_plan,build_keep_split_plan,keep_split_variables, &
+    keep_monomial,keep_split_accumulate
   implicit none
   private
   public :: configure_global_compact,global_compact_enabled,compact_partitions,compact_line_comms
   public :: global_compact_derivative_cpu,global_compact_filter_cpu,release_global_compact
   public :: begin_compact_geometry,end_compact_geometry
+  public :: global_compact_filter_enabled
+  public :: global_compact_gradient_enabled,geometry_central
+  public :: global_compact_periodic_derivative_cpu
+  public :: global_keep_convection_cpu
   type,extends(finite_difference) :: global_compact_central
   contains
     procedure :: central=>global_compact_derivative_cpu
   end type
   logical,save :: enabled=.false.
+  logical,save :: resources_ready=.false.
   logical,save :: geometry_phase=.false.
   type(compact_line_partition),save :: compact_partitions(3)
   integer,save :: compact_line_comms(3)=MPI_COMM_NULL
   type(compact_cpu_plan),save :: derivative_plans(3),filter_plans(3)
+  type(compact_cpu_plan),save :: keep_plans(3)
+  type(keep_split_plan),save :: keep_split
 contains
   subroutine begin_compact_geometry()
     use commvar, only: flowtype,conschm,difschm
     use bc, only: bctype
     use parallel, only: lio
+    if(convection_form=='keep') then
+      call configure_global_compact(bctype)
+      geometry_phase=.true.
+      if(lio) write(*,'(A,A)') 'KEEP GEOMETRY G1: conservative curl; derivative=',conschm
+      return
+    endif
     if(trim(flowtype)/='bl'.or.conschm/='743e'.or.difschm/='643c') return
     call configure_global_compact(bctype)
     geometry_phase=.true.
     if(lio) write(*,'(A)') 'COMPACT GEOMETRY: global coupling with affine-periodic coordinate increments'
   end subroutine
+
+  function geometry_central(asolver,f,dim) result(df)
+    use commtype, only: compact_scheme
+    use commvar, only: conschm
+    type(compact_scheme),intent(in) :: asolver
+    integer,intent(in) :: dim
+    real(real_kind),intent(in) :: f(-hm:dim+hm)
+    real(real_kind) :: df(0:dim)
+    type(global_compact_central) :: geometry_operator
+    if(convection_form/='keep') then
+      df=fds%central(asolver,f,dim)
+    elseif(conschm=='643e') then
+      df=diff6ec(f,dim,3)
+    elseif(conschm=='643c') then
+      df=global_compact_derivative_cpu(geometry_operator,asolver,f,dim)
+    else
+      error stop 'KEEP geometry requires its explicit D6 or global Pade derivative'
+    endif
+  end function
 
   subroutine end_compact_geometry()
     geometry_phase=.false.
@@ -36,6 +71,16 @@ contains
 
   logical function global_compact_enabled() result(active)
     active=enabled
+  end function
+
+  logical function global_compact_gradient_enabled() result(active)
+    use commvar, only: difschm
+    active=enabled.and.difschm=='643c'
+  end function
+
+  logical function global_compact_filter_enabled() result(active)
+    use commvar, only: lfilter,conschm,difschm
+    active=resources_ready.and.lfilter.and.compact_filter_selected(conschm,difschm)
   end function
 
   subroutine configure_global_compact(boundaries)
@@ -48,11 +93,12 @@ contains
     integer,intent(in) :: boundaries(:)
     integer :: axis,ierr,groups(3),coords(3),ranks(3),dims(3),totals(3),first(3),i,j,k
     logical :: periodic(3),tgv,plate
-    if(enabled) return
+    if(resources_ready) return
     enabled=conschm=='643c'.or.difschm=='643c'
-    if(.not.enabled) return
+    if(.not.enabled.and..not.(lfilter.and.filter_scheme=='compact10')) return
     tgv=conschm=='643c'.and.difschm=='643c'.and.trim(flowtype)=='tgv'.and. &
       lihomo.and.ljhomo.and.lkhomo.and.all(boundaries==1)
+    if(convection_form=='keep') tgv=all(boundaries==1)
     plate=conschm=='743e'.and.difschm=='643c'.and.trim(flowtype)=='bl'.and. &
       diffterm.and.recon_schem==5.and.lchardecomp.and.trim(turbinf)=='prof'.and. &
       .not.lihomo.and..not.ljhomo.and.lkhomo
@@ -61,10 +107,15 @@ contains
         (all(boundaries==[11,22,41,52,1,1]).and. &
         nscbc_farfield_incoming_only_enabled().and..not.nscbc_farfield_sbli_shock_enabled())
     endif
-    if((.not.tgv.and..not.plate).or.ndims/=3.or.numq/=5.or. &
-      num_species/=0.or.num_modequ/=0.or.trim(turbmode)/='none'.or.trim(rkscheme)/='rk3'.or. &
-      .not.nondimen.or.lcomb.or.(lcracon.and..not.plate)) &
-      error stop 'Global compact admits periodic 643c/643c TGV or CP6 743e/643c profile plate'
+    if(enabled) then
+      if((.not.tgv.and..not.plate).or.ndims/=3.or.numq/=5.or. &
+        num_species/=0.or.num_modequ/=0.or.trim(turbmode)/='none'.or.trim(rkscheme)/='rk3'.or. &
+        .not.nondimen.or.lcomb.or.(lcracon.and..not.plate)) &
+        error stop 'Global compact admits periodic 643c/643c TGV or CP6 743e/643c profile plate'
+    else
+      if(any(boundaries/=1).or.ndims/=3.or.numq/=5.or.num_species/=0.or.num_modequ/=0.or.lcomb) &
+        error stop 'Independent global compact filter currently implements periodic five-variable fields'
+    endif
     if(lrestart) error stop 'Legacy compact restart is disabled; use output restore_directory'
     if(hm<2.or.(lfilter.and.hm<5)) error stop 'Insufficient halo for global compact RHS'
     if(plate) then
@@ -100,11 +151,15 @@ contains
         if(coords(axis)==ranks(axis)-1) compact_partitions(axis)%owned=dims(axis)+1
       endif
     enddo
-    deallocate(fds)
-    allocate(global_compact_central::fds)
+    if(global_compact_gradient_enabled()) then
+      deallocate(fds)
+      allocate(global_compact_central::fds)
+    endif
+    resources_ready=.true.
     if(lio) then
       if(tgv) write(*,'(A)') 'COMPACT GLOBAL: periodic unique-node derivative/filter; CPU direct / GPU two-level PCR'
       if(plate) write(*,'(A)') 'COMPACT GLOBAL: physical-end plate derivative; CPU direct / GPU two-level PCR'
+      if(.not.enabled) write(*,'(A)') 'COMPACT GLOBAL: independent filter; existing geometry/derivative unchanged'
     endif
   end subroutine
 
@@ -135,6 +190,25 @@ contains
     type(compact_scheme),intent(in) :: asolver
     integer,intent(in) :: dim
     real(real_kind),intent(in) :: f(-hm:dim+hm)
+    real(real_kind) :: df(0:dim)
+    df=compact_derivative_line(asolver,f,dim,geometry_phase)
+  end function
+
+  function global_compact_periodic_derivative_cpu(asolver,f,dim) result(df)
+    use commtype, only: compact_scheme
+    type(compact_scheme),intent(in) :: asolver
+    integer,intent(in) :: dim
+    real(real_kind),intent(in) :: f(-hm:dim+hm)
+    real(real_kind) :: df(0:dim)
+    df=compact_derivative_line(asolver,f,dim,.false.)
+  end function
+
+  function compact_derivative_line(asolver,f,dim,affine) result(df)
+    use commtype, only: compact_scheme
+    type(compact_scheme),intent(in) :: asolver
+    integer,intent(in) :: dim
+    logical,intent(in) :: affine
+    real(real_kind),intent(in) :: f(-hm:dim+hm)
     real(real_kind) :: df(0:dim),values(dim+1,1),input(-hm:dim+hm,1),ends(2),slope
     real(real_kind),allocatable :: rhs(:,:),solution(:,:)
     integer :: axis,i,ierr
@@ -144,7 +218,7 @@ contains
     allocate(rhs(compact_partitions(axis)%owned,1),solution(compact_partitions(axis)%owned,1))
     input(:,1)=f
     slope=0.e0_real_kind
-    if(geometry_phase.and.compact_partitions(axis)%periodic) then
+    if(affine.and.compact_partitions(axis)%periodic) then
       ! Coordinates and metric products can be affine-periodic, not periodic scalars.
       if(compact_partitions(axis)%rank==0) ends(1)=f(0)
       if(compact_partitions(axis)%rank==compact_partitions(axis)%ranks-1) ends(2)=f(dim)
@@ -160,6 +234,63 @@ contains
     call solve_compact_cpu(derivative_plans(axis),rhs,solution,values,1)
     df=values(:,1)+slope
   end function
+
+  subroutine global_keep_convection_cpu()
+    use commvar, only: im,jm,km,gamma
+    use commarray, only: rho,vel,prs,jacob,dxi,qrhs
+    use compact_line_solver, only: compact_matrix
+    real(real_kind),allocatable :: input(:,:),rhs(:,:),owned(:,:),values(:,:)
+    real(real_kind) :: variables(9),metric(3),flux(5)
+    integer :: axis,dims(3),dim,lines,line,pos,point(3),b
+    if(keep_split%terms==0) call build_keep_split_plan(keep_split)
+    dims=[im,jm,km]
+    qrhs=0.e0_real_kind
+    do axis=1,3
+      dim=dims(axis)
+      lines=(im+1)*(jm+1)*(km+1)/(dim+1)
+      if(keep_plans(axis)%n==0) then
+        block
+        type(compact_matrix) :: matrix
+        real(real_kind) :: edge(2)
+        call compact_derivative_core(compact_partitions(axis),matrix,edge)
+        call prepare_compact_cpu(matrix,edge,compact_partitions(axis),compact_line_comms(axis), &
+          keep_split%bases,keep_plans(axis))
+        end block
+      endif
+      allocate(input(-hm:dim+hm,keep_split%bases),rhs(compact_partitions(axis)%owned,keep_split%bases), &
+        owned(compact_partitions(axis)%owned,keep_split%bases),values(0:dim,keep_split%bases))
+      do line=1,lines
+        do pos=-hm,dim+hm
+          select case(axis)
+          case(1);point=[pos,mod(line-1,jm+1),(line-1)/(jm+1)]
+          case(2);point=[mod(line-1,im+1),pos,(line-1)/(im+1)]
+          case(3);point=[mod(line-1,im+1),(line-1)/(im+1),pos]
+          end select
+          metric=jacob(point(1),point(2),point(3))*dxi(point(1),point(2),point(3),axis,:)
+          call keep_split_variables(rho(point(1),point(2),point(3)),vel(point(1),point(2),point(3),:), &
+            prs(point(1),point(2),point(3)),metric,gamma,variables)
+          do b=1,keep_split%bases
+            input(pos,b)=keep_monomial(variables,keep_split%right(:,b))
+          enddo
+        enddo
+        call compact_derivative_rhs(compact_partitions(axis),dim,hm,input,rhs)
+        call solve_compact_cpu(keep_plans(axis),rhs,owned,values,keep_split%bases)
+        do pos=0,dim
+          select case(axis)
+          case(1);point=[pos,mod(line-1,jm+1),(line-1)/(jm+1)]
+          case(2);point=[mod(line-1,im+1),pos,(line-1)/(im+1)]
+          case(3);point=[mod(line-1,im+1),(line-1)/(im+1),pos]
+          end select
+          metric=jacob(point(1),point(2),point(3))*dxi(point(1),point(2),point(3),axis,:)
+          call keep_split_variables(rho(point(1),point(2),point(3)),vel(point(1),point(2),point(3),:), &
+            prs(point(1),point(2),point(3)),metric,gamma,variables)
+          call keep_split_accumulate(keep_split,variables,values(pos,:),flux)
+          qrhs(point(1),point(2),point(3),1:5)=qrhs(point(1),point(2),point(3),1:5)+flux
+        enddo
+      enddo
+      deallocate(input,rhs,owned,values)
+    enddo
+  end subroutine
 
   subroutine global_compact_filter_cpu(q,coefficients)
     use commvar, only: im,jm,km,numq
@@ -212,12 +343,14 @@ contains
 
   subroutine release_global_compact()
     integer :: axis,ierr
-    if(.not.enabled) return
+    if(.not.resources_ready) return
     do axis=1,3
       call release_compact_cpu(derivative_plans(axis))
       call release_compact_cpu(filter_plans(axis))
+      call release_compact_cpu(keep_plans(axis))
       call MPI_Comm_free(compact_line_comms(axis),ierr)
     enddo
     enabled=.false.
+    resources_ready=.false.
   end subroutine
 end module

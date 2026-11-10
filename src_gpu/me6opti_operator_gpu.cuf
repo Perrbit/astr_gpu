@@ -1,0 +1,100 @@
+module me6opti_operator_gpu
+  use astr_precision, only: real_kind
+  use cudafor
+  use me6opti_operator, only: me6_coefficients
+  implicit none
+  private
+  public :: prepare_me6_gpu,release_me6_gpu,me6_direction_kernel
+  real(real_kind),device,allocatable,save :: ci_d(:,:),cd_d(:,:),cp_d(:,:)
+contains
+  subroutine prepare_me6_gpu()
+    real(real_kind) :: ci(9,6),cd(9,6),cp(9,6)
+    integer :: h,side,p,column,half
+    if(allocated(ci_d)) return
+    do h=1,3
+      do side=1,2
+        column=2*(h-1)+side
+        half=(2*side-3)*(2*h-1)
+        do p=-4,4
+          call me6_coefficients(half,p,ci(p+5,column),cd(p+5,column),cp(p+5,column))
+        enddo
+      enddo
+    enddo
+    allocate(ci_d(9,6),cd_d(9,6),cp_d(9,6))
+    ci_d=ci;cd_d=cd;cp_d=cp
+  end subroutine
+
+  attributes(global) subroutine me6_direction_kernel(im,jm,km,hm,axis,hx,hy,hz, &
+      velocity,temperature,viscosity,conductivity,jacobian,rhs)
+    integer,value :: im,jm,km,hm,axis
+    real(real_kind),value :: hx,hy,hz
+    real(real_kind),device,intent(in) :: velocity(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind),device,intent(in) :: temperature(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device,intent(in) :: viscosity(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device,intent(in) :: conductivity(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device,intent(in) :: jacobian(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device,intent(inout) :: rhs(0:im,0:jm,0:km,5)
+    real(real_kind) :: spacing(3),gradient(3,3),mid_velocity(3),mu,kappa,temperature_gradient
+    real(real_kind) :: ci,cd,cp,value,transverse,weight,trace,stress(3),flux(4,2),divergence(4)
+    integer :: i,j,k,h,side,column,p,c,d,l,point(3),plus(3),minus(3)
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im.or.j>jm.or.k>km) return
+    spacing=[hx,hy,hz]
+    divergence=0.e0_real_kind
+    do h=1,3
+      do side=1,2
+        column=2*(h-1)+side
+        gradient=0.e0_real_kind;mid_velocity=0.e0_real_kind
+        mu=0.e0_real_kind;kappa=0.e0_real_kind;temperature_gradient=0.e0_real_kind
+        do p=-4,4
+          point=[i,j,k];point(axis)=point(axis)+p
+          ci=ci_d(p+5,column);cd=cd_d(p+5,column);cp=cp_d(p+5,column)
+          mu=mu+ci*viscosity(point(1),point(2),point(3))
+          kappa=kappa+ci*conductivity(point(1),point(2),point(3))
+          temperature_gradient=temperature_gradient+cd*temperature(point(1),point(2),point(3))/spacing(axis)
+          do c=1,3
+            value=velocity(point(1),point(2),point(3),c)
+            mid_velocity(c)=mid_velocity(c)+ci*value
+            gradient(c,axis)=gradient(c,axis)+cd*value/spacing(axis)
+            do d=1,3
+              if(d==axis) cycle
+              transverse=0.e0_real_kind
+              do l=1,3
+                plus=point;minus=point
+                plus(d)=point(d)+l;minus(d)=point(d)-l
+                select case(l)
+                case(1);weight=0.75e0_real_kind
+                case(2);weight=-0.15e0_real_kind
+                case(3);weight=1.e0_real_kind/60.e0_real_kind
+                end select
+                transverse=transverse+weight*(velocity(plus(1),plus(2),plus(3),c)- &
+                  velocity(minus(1),minus(2),minus(3),c))/spacing(d)
+              enddo
+              gradient(c,d)=gradient(c,d)+ci*transverse+cp*value/spacing(axis)
+            enddo
+          enddo
+        enddo
+        trace=gradient(1,1)+gradient(2,2)+gradient(3,3)
+        do c=1,3
+          stress(c)=mu*(gradient(c,axis)+gradient(axis,c))
+        enddo
+        stress(axis)=stress(axis)-2.e0_real_kind*mu*trace/3.e0_real_kind
+        flux(1:3,side)=stress
+        flux(4,side)=kappa*temperature_gradient+dot_product(stress,mid_velocity)
+      enddo
+      select case(h)
+      case(1);weight=75.e0_real_kind/64.e0_real_kind
+      case(2);weight=-25.e0_real_kind/384.e0_real_kind
+      case(3);weight=3.e0_real_kind/640.e0_real_kind
+      end select
+      divergence=divergence+weight*(flux(:,2)-flux(:,1))/spacing(axis)
+    enddo
+    rhs(i,j,k,2:5)=rhs(i,j,k,2:5)+jacobian(i,j,k)*divergence
+  end subroutine
+
+  subroutine release_me6_gpu()
+    if(allocated(ci_d)) deallocate(ci_d,cd_d,cp_d)
+  end subroutine
+end module

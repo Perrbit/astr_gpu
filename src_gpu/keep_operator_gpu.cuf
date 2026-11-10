@@ -1,0 +1,114 @@
+module keep_operator_gpu
+  use astr_precision, only: real_kind
+  use cudafor
+  implicit none
+  private
+  public :: keep_explicit_line_kernel,keep_explicit_volume_kernel
+contains
+  attributes(global) subroutine keep_explicit_volume_kernel(im,jm,km,hm,axis,gamma, &
+      rho,velocity,pressure,jacobian,dxi,rhs)
+    integer,value :: im,jm,km,hm,axis
+    real(real_kind),value :: gamma
+    real(real_kind),device,intent(in) :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device,intent(in) :: pressure(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device,intent(in) :: velocity(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind),device,intent(in) :: jacobian(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device,intent(in) :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(real_kind),device,intent(inout) :: rhs(0:im,0:jm,0:km,5)
+    real(real_kind) :: vl(3),vr(3),ml(3),mr(3),plus(5),minus(5),flux(5),result(5),a
+    integer :: i,j,k,l,c,s,point(3)
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im.or.j>jm.or.k>km) return
+    do c=1,3
+      vl(c)=velocity(i,j,k,c)
+      ml(c)=jacobian(i,j,k)*dxi(i,j,k,axis,c)
+    enddo
+    result=0.e0_real_kind
+    do l=1,3
+      select case(l)
+      case(1);a=0.75e0_real_kind
+      case(2);a=-0.15e0_real_kind
+      case(3);a=1.e0_real_kind/60.e0_real_kind
+      end select
+      do s=-1,1,2
+        point=[i,j,k]
+        point(axis)=point(axis)+s*l
+        do c=1,3
+          vr(c)=velocity(point(1),point(2),point(3),c)
+          mr(c)=jacobian(point(1),point(2),point(3))*dxi(point(1),point(2),point(3),axis,c)
+        enddo
+        call keep_pair_device(rho(i,j,k),vl,pressure(i,j,k),ml, &
+          rho(point(1),point(2),point(3)),vr,pressure(point(1),point(2),point(3)),mr,gamma,flux)
+        if(s==-1) then
+          minus=flux
+        else
+          plus=flux
+        endif
+      enddo
+      result=result+2.e0_real_kind*a*(plus-minus)
+    enddo
+    ! Existing GPU convection kernels return the negative mapped divergence.
+    if(axis==1) then
+      rhs(i,j,k,:)=-result
+    else
+      rhs(i,j,k,:)=rhs(i,j,k,:)-result
+    endif
+  end subroutine
+
+  attributes(device) subroutine keep_pair_device(rl,vl,pl,ml,rr,vr,pr,mr,gamma,flux)
+    real(real_kind),intent(in) :: rl,rr,pl,pr,gamma,vl(3),vr(3),ml(3),mr(3)
+    real(real_kind),intent(out) :: flux(5)
+    real(real_kind) :: velocity(3),metric(3),pressure_work(3),mass,kinetic,internal
+    velocity=0.5e0_real_kind*(vl+vr)
+    metric=0.5e0_real_kind*(ml+mr)
+    mass=0.5e0_real_kind*(rl+rr)*dot_product(velocity,metric)
+    kinetic=0.5e0_real_kind*dot_product(vl,vr)
+    internal=0.5e0_real_kind*(pl/rl+pr/rr)/(gamma-1.e0_real_kind)
+    pressure_work=0.5e0_real_kind*(vl*pr+vr*pl)
+    flux(1)=mass
+    flux(2:4)=mass*velocity+0.5e0_real_kind*(pl+pr)*metric
+    flux(5)=mass*(kinetic+internal)+dot_product(pressure_work,metric)
+  end subroutine
+
+  attributes(global) subroutine keep_explicit_line_kernel(dim,spacing,rho,velocity,pressure,metric,gamma,divergence)
+    integer,value :: dim
+    real(real_kind),value :: spacing,gamma
+    real(real_kind),device,intent(in) :: rho(-3:dim+3),velocity(-3:dim+3,3)
+    real(real_kind),device,intent(in) :: pressure(-3:dim+3),metric(-3:dim+3,3)
+    real(real_kind),device,intent(out) :: divergence(0:dim,5)
+    real(real_kind) :: plus(5),minus(5),result(5),coefficient
+    real(real_kind) :: vl(3),ml(3),vr(3),mr(3)
+    integer :: i,l,axis
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(i>dim) return
+    do axis=1,3
+      vl(axis)=velocity(i,axis)
+      ml(axis)=metric(i,axis)
+    enddo
+    result=0.e0_real_kind
+    do l=1,3
+      select case(l)
+      case(1)
+        coefficient=0.75e0_real_kind
+      case(2)
+        coefficient=-0.15e0_real_kind
+      case(3)
+        coefficient=1.e0_real_kind/60.e0_real_kind
+      end select
+      do axis=1,3
+        vr(axis)=velocity(i+l,axis)
+        mr(axis)=metric(i+l,axis)
+      enddo
+      call keep_pair_device(rho(i),vl,pressure(i),ml,rho(i+l),vr,pressure(i+l),mr,gamma,plus)
+      do axis=1,3
+        vr(axis)=velocity(i-l,axis)
+        mr(axis)=metric(i-l,axis)
+      enddo
+      call keep_pair_device(rho(i),vl,pressure(i),ml,rho(i-l),vr,pressure(i-l),mr,gamma,minus)
+      result=result+2.e0_real_kind*coefficient*(plus-minus)/spacing
+    enddo
+    divergence(i,:)=result
+  end subroutine
+end module

@@ -9,7 +9,8 @@ from convert_legacy_input import convert_controller,namelist
 ROOT=Path(__file__).resolve().parents[2]
 
 
-def test_launch_conversion_preserves_model_and_execution_controls(tmp_path):
+@pytest.mark.parametrize('numerics',[None,{'convection_form':'keep'}])
+def test_launch_conversion_preserves_model_and_execution_controls(tmp_path,numerics):
     datin=tmp_path/'datin';datin.mkdir()
     text=(ROOT/'examples/GPU_Quickstart/tgv/datin/input.dat').read_text()
     (datin/'legacy').write_text(text)
@@ -17,11 +18,15 @@ def test_launch_conversion_preserves_model_and_execution_controls(tmp_path):
     (datin/'controller').write_text(controller)
     environment=dict(ASTR_GPU_PRECISION_MODE='fp64',ASTR_NSCBC_FARFIELD_MODE='incoming_only',
         ASTR_GPU_HALO_TRANSPORT='pinned',OMPI_MCA_pml='ob1')
-    primary=prepare_named_run(tmp_path,'datin/legacy',environment)
+    primary=prepare_named_run(tmp_path,'datin/legacy',environment,numerics=numerics)
     assert primary=='datin/input.case'
     named=(tmp_path/primary).read_text()
     assert "gpu_precision_mode = 'fp64'" in named
     assert "nscbc_farfield_mode = 'incoming_only'" in named
+    if numerics is not None:
+        assert "convection_form = 'keep'" in named
+    else:
+        assert 'convection_form' not in named
     assert (datin/'input.run').read_text()==namelist(convert_controller(controller))
     assert environment==dict(ASTR_GPU_HALO_TRANSPORT='pinned',OMPI_MCA_pml='ob1')
     assert (datin/'legacy').read_text()==text

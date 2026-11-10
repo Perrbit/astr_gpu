@@ -3,6 +3,7 @@ module mainloop_gpu
   use astr_precision, only: real_kind
   use cudafor
   use boundary_high_order, only: high_order_boundary_enabled
+  use compact_runtime, only: global_compact_filter_enabled
   implicit none
   private :: real_kind,int64
   private :: snapshot_wall_filter_gpu
@@ -56,7 +57,7 @@ contains
       call capture_profile_filter_window_gpu(stage,.false.)
 #endif
       call begin_gpu_phase('filter')
-      if(compact_global_enabled()) then
+      if(global_compact_filter_enabled()) then
         call compact_filter_state_gpu()
       else
         call apply_explicit_filter_gpu(.false.,'')
@@ -132,6 +133,7 @@ contains
 
 
   subroutine prepare_rkfirst_stats_gpu()
+    use numerical_forms, only: convection_form
     use compact_operator_gpu, only: compact_global_enabled,compact_filter_state_gpu
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb,nstep, &
       numq,num_species,conschm,difschm
@@ -173,7 +175,7 @@ contains
     endif
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      ((conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
+      (convection_form=='keep'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
       ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_case = gpu_s1_flatplate_boundary_case_pending()
@@ -195,7 +197,7 @@ contains
       call snapshot_wall_filter_gpu('pre_filter',1)
 #endif
       call begin_gpu_phase('filter')
-      if(compact_global_enabled()) then
+      if(global_compact_filter_enabled()) then
         call compact_filter_state_gpu()
       else
         call apply_explicit_filter_gpu(periodic_filter_case,'prepare_')
@@ -304,8 +306,12 @@ contains
   end subroutine repair_mp_stage_inputs_gpu
 
   subroutine time_integration_rk_gpu(first_stage_prepared,copy_back)
+    use numerical_forms, only: convection_form,viscous_form
+    use me6opti_runtime_gpu, only: me6_diffusion_gpu
+    use keep_operator_gpu, only: keep_explicit_volume_kernel
     use compact_operator_gpu, only: compact_global_enabled,compact_convection_gpu, &
-      compact_diffusion_flux_gpu,compact_diffusion_rhs_gpu,compact_filter_state_gpu
+      compact_diffusion_flux_gpu,compact_diffusion_rhs_gpu,compact_filter_state_gpu,compact_keep_convection_gpu, &
+      compact_gradient_enabled
     use mp_positivity_gpu, only: mp_positivity_enabled,build_mp_convection_gpu,limit_mp_update_gpu
     use iso_fortran_env, only: real64
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,nstep,deltat,const2,const5,const6, &
@@ -594,7 +600,7 @@ contains
     fused_flux_pair=resolve_gpu_fused_flux_pair(gpu_tgv_explicit_upwind_supported())
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      ((conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
+      (convection_form=='keep'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
       ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     rhs_is=is; rhs_ie=ie; rhs_js=js; rhs_je=je; rhs_ks=ks; rhs_ke=ke
     rhs_npdci=npdci; rhs_npdcj=npdcj
@@ -608,7 +614,7 @@ contains
     overlap_diffusion=(halo_overlap_enabled .or. halo_pipeline_enabled) .and. diffterm .and. &
                       gpu_periodic_boundary_case() .and. &
                       isize*jsize*ksize>1 .and. min(im,jm,km)>=6 .and. &
-                      .not.compact_global_enabled()
+                      .not.compact_gradient_enabled().and.viscous_form/='me6_opti'
     if((halo_overlap_enabled .or. halo_pipeline_enabled) .and. .not.overlap_reported) then
       write(*,'(A,L1)') 'ASTR_GPU_HALO_OVERLAP periodic_diffusion_active=',overlap_diffusion
       overlap_reported=.true.
@@ -742,7 +748,7 @@ contains
           call snapshot_wall_filter_gpu('pre_filter',rkstep)
 #endif
           call begin_gpu_phase('filter')
-          if(compact_global_enabled()) then
+          if(global_compact_filter_enabled()) then
             call compact_filter_state_gpu()
           else
             call apply_explicit_filter_gpu(periodic_filter_case,'')
@@ -903,7 +909,21 @@ contains
 #endif
       if(shock_sensor_case) call compute_shock_sensor_gpu(rkstep)
       call begin_gpu_phase('convection')
-      if(compact_global_enabled().and.conschm=='643c') then
+      if(convection_form=='keep') then
+        if(conschm=='643c') then
+          call compact_keep_convection_gpu()
+        else
+        call keep_explicit_volume_kernel<<<grid_x,block_x>>>(im,jm,km,hm,1,gamma, &
+          rho_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d)
+        call sync_after_kernel('keep_explicit_x')
+        call keep_explicit_volume_kernel<<<grid_y,block_y>>>(im,jm,km,hm,2,gamma, &
+          rho_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d)
+        call sync_after_kernel('keep_explicit_y')
+        call keep_explicit_volume_kernel<<<grid_z,block_z>>>(im,jm,km,hm,3,gamma, &
+          rho_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d)
+        call sync_after_kernel('keep_explicit_z')
+        endif
+      elseif(compact_global_enabled().and.conschm=='643c') then
         call compact_convection_gpu()
       elseif(mp_positivity_enabled) then
         call build_mp_convection_gpu()
@@ -1254,8 +1274,13 @@ contains
         call capture_nscbc_farfield_y_upper_prediff_rhs_gpu()
 
       if(diffterm) then
+        if(viscous_form=='me6_opti') then
+          call begin_gpu_phase('diffusion_rhs')
+          call me6_diffusion_gpu()
+          call end_gpu_phase('diffusion_rhs',nstep,rkstep)
+        else
         call begin_gpu_phase('diffusion_flux')
-        if(compact_global_enabled()) then
+        if(compact_gradient_enabled()) then
           call compact_diffusion_flux_gpu()
         elseif(ldc_case .or. flatplate_case) then
           if(mixed_viscous_flux_workspace) then
@@ -1332,7 +1357,7 @@ contains
         endif
         call end_gpu_phase('diffusion_halo',nstep,rkstep)
         call begin_gpu_phase('diffusion_rhs')
-        if(compact_global_enabled()) then
+        if(compact_gradient_enabled()) then
           call compact_diffusion_rhs_gpu()
         elseif(ldc_case .or. flatplate_case) then
           if(mixed_viscous_flux_workspace) then
@@ -1471,6 +1496,7 @@ contains
           end select
         endif
         call end_gpu_phase('diffusion_rhs',nstep,rkstep)
+        endif
       endif
 
       if(curvilinear_nscbc52_viscous_case) &

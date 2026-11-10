@@ -59,6 +59,10 @@ module mainloop
     use run_control_runtime, only: active_run,select_run_timestep,poll_run_control,run_is_finished
     use run_control_runtime, only: report_run_control_timing
     use compact_runtime, only: configure_global_compact,release_global_compact
+    use me6opti_runtime, only: release_me6_runtime
+#ifdef _CUDA
+    use me6opti_runtime_gpu, only: release_me6_runtime_gpu
+#endif
     use bc, only: bctype
 #ifdef _CUDA
     use cfl_gpu, only: collect_cfl_gpu,collect_timestep_rates_gpu
@@ -336,6 +340,10 @@ module mainloop
     if(odetype=='dnn') call finalize()
 #endif
     call release_global_compact()
+    call release_me6_runtime()
+#ifdef _CUDA
+    call release_me6_runtime_gpu()
+#endif
     call report_insitu_timing('insitu_finalize_inclusive',phase_started,nstep)
     !
     ! if(lio .and. lreport .and. ltimrpt) call timereporter(timecost=time_total,mode='final')
@@ -568,6 +576,7 @@ module mainloop
                          ndims,num_species,maxstep,rkscheme,use_gpu,lcomb,iomode,conschm,difschm,diffterm
     use commarray,only : x,q,qrhs,rho,vel,prs,tmp,spc,jacob,dvel,dtmp,bnorm_j0,bnorm_jm
     use fludyna,  only : updatefvar
+    use numerical_forms, only: convection_form
     use comsolver,only : filterq,filter2e,gradcal
     use sponge_layer,only : spongefilter
     use solver,   only : rhscal
@@ -651,7 +660,7 @@ module mainloop
     cpu_statistics_seconds=0.e0_clock_kind
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      ((conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
+      (convection_form=='keep'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
       ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
     air5_reacting_case=.false.

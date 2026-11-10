@@ -1,0 +1,81 @@
+program me6opti_gpu_probe
+  use astr_precision, only: real_kind
+  use me6opti_operator, only: me6_direction
+  use me6opti_operator_gpu
+  use cudafor
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  implicit none
+  integer,parameter :: im=7,jm=5,km=3,hm=5
+  real(real_kind) :: velocity(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+  real(real_kind) :: temperature(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+  real(real_kind) :: viscosity(-hm:im+hm,-hm:jm+hm,-hm:km+hm),conductivity(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+  real(real_kind) :: jacobian(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+  real(real_kind) :: reference(0:im,0:jm,0:km,5),actual(0:im,0:jm,0:km,5)
+  real(real_kind),device,allocatable :: vd(:,:,:,:),td(:,:,:),md(:,:,:),kd(:,:,:),jd(:,:,:),rd(:,:,:,:)
+  real(real_kind) :: spacing(3),wave(3),theta,part(4),difference,absolute
+  integer :: i,j,k,axis,sample,status
+  type(dim3) :: block,grid
+  allocate(vd(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),td(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+    md(-hm:im+hm,-hm:jm+hm,-hm:km+hm),kd(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+    jd(-hm:im+hm,-hm:jm+hm,-hm:km+hm),rd(0:im,0:jm,0:km,5))
+  call prepare_me6_gpu()
+  do sample=1,4
+    spacing=[0.13e0_real_kind,0.17e0_real_kind,0.11e0_real_kind]
+    wave=[1.e0_real_kind,2.e0_real_kind,-1.e0_real_kind]
+    if(sample==3) wave=[-2.e0_real_kind,1.e0_real_kind,3.e0_real_kind]
+    do k=-hm,km+hm
+    do j=-hm,jm+hm
+    do i=-hm,im+hm
+      theta=0.37e0_real_kind+dot_product(wave,real([i,j,k],real_kind)*spacing)
+      velocity(i,j,k,:)=[0.2e0_real_kind*sin(theta),0.13e0_real_kind*cos(theta), &
+        -0.17e0_real_kind*sin(2.e0_real_kind*theta)]
+      temperature(i,j,k)=1.e0_real_kind+0.1e0_real_kind*cos(theta+0.2e0_real_kind)
+      viscosity(i,j,k)=1.e0_real_kind+0.1e0_real_kind*cos(theta+0.3e0_real_kind)
+      conductivity(i,j,k)=0.7e0_real_kind+0.07e0_real_kind*sin(theta+0.4e0_real_kind)
+      if(sample==1) then
+        viscosity(i,j,k)=1.e0_real_kind;conductivity(i,j,k)=0.7e0_real_kind
+      endif
+      if(sample==4) then
+        velocity(i,j,k,:)=[0.2e0_real_kind,0.13e0_real_kind,-0.17e0_real_kind]*real((-1)**(i+j+k),real_kind)
+        temperature(i,j,k)=1.e0_real_kind+0.01e0_real_kind*real((-1)**(i+j+k),real_kind)
+      endif
+      jacobian(i,j,k)=1.e0_real_kind
+    enddo
+    enddo
+    enddo
+    reference=0.e0_real_kind
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      do axis=1,3
+        call me6_direction(axis,[i,j,k],hm,velocity,temperature,viscosity,conductivity,spacing,part)
+        reference(i,j,k,2:5)=reference(i,j,k,2:5)+part
+      enddo
+    enddo
+    enddo
+    enddo
+    vd=velocity;td=temperature;md=viscosity;kd=conductivity;jd=jacobian;rd=0.e0_real_kind
+    do axis=1,3
+      select case(axis)
+      case(1);block=dim3(512,1,1)
+      case(2);block=dim3(32,16,1)
+      case(3);block=dim3(64,1,8)
+      end select
+      grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
+      call me6_direction_kernel<<<grid,block>>>(im,jm,km,hm,axis,spacing(1),spacing(2),spacing(3), &
+        vd,td,md,kd,jd,rd)
+      status=cudaDeviceSynchronize()
+      if(status/=cudaSuccess) error stop 'ME6 kernel execution failed'
+    enddo
+    actual=rd
+    if(.not.all(ieee_is_finite(actual))) error stop 'nonfinite ME6 GPU result'
+    difference=maxval(abs(actual-reference)/max(1.e0_real_kind,abs(actual),abs(reference)))
+    absolute=maxval(abs(actual-reference))
+    write(*,'(A,I0,A,2ES24.16)') 'ME6 GPU sample=',sample,' scaled/absolute=',difference,absolute
+    if(difference>2.e-10_real_kind) error stop 'ME6 CPU/GPU frozen-state comparison failed'
+    if(any(actual(:,:,:,1)/=0.e0_real_kind)) error stop 'ME6 modified total density'
+  enddo
+  call release_me6_gpu()
+  deallocate(vd,td,md,kd,jd,rd)
+  print '(A)', 'ME6_GPU_COMPONENT_PASS constant variable oblique checkerboard'
+end program

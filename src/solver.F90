@@ -289,6 +289,12 @@ module solver
   !+-------------------------------------------------------------------+
   subroutine rhscal(timerept,physical_halo_rhs,metric_consistent_eps,common_source)
     !
+    use numerical_forms, only: convection_form,viscous_form
+    use me6opti_runtime, only: me6_diffusion_cpu
+    use keep_operator, only: keep_explicit_volume
+    use compact_runtime, only: global_keep_convection_cpu
+    use commarray, only: rho,vel,prs,jacob,dxi
+    use commvar, only: hm,gamma
     use commarray, only : qrhs,x,q
     use commvar,   only : flowtype,conschm,diffterm,im,jm,             &
                           recon_schem,limmbou,lchardecomp,lihomo,lcomb,km,npdci,npdcj
@@ -345,6 +351,12 @@ module solver
         call ducrossensor(timerept=ltimrpt)
         call air5_convection_rhs()
 #endif
+      elseif(convection_form=='keep') then
+        if(conschm=='643c') then
+          call global_keep_convection_cpu()
+        else
+          call keep_explicit_volume(im,jm,km,hm,rho,vel,prs,jacob,dxi,gamma,qrhs)
+        endif
       elseif(mod(nconv,2)==0) then
         call convrsdcal6(timerept=ltimrpt)
       else
@@ -396,7 +408,9 @@ module solver
         call air5_diffusion_rhs()
       else
 #endif
-        if(high_order_boundary_enabled) then
+        if(viscous_form=='me6_opti') then
+          call me6_diffusion_cpu()
+        elseif(high_order_boundary_enabled) then
           call diffrsdcal6(timerept=ltimrpt,physical_boundary_rhs=.true.)
         else
           call diffrsdcal6(timerept=ltimrpt,physical_boundary_rhs=physical_halo_rhs)

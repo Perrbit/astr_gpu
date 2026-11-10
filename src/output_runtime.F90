@@ -1751,6 +1751,7 @@ contains
 
   subroutine compact_control_file(unit,writing,status,source_bytes)
     use commvar, only: alfa_filter,bfacmpld,shkcrt
+    use numerical_forms, only: convection_form,viscous_form,filter_scheme,effective_filter_scheme
     integer,intent(in) :: unit
     logical,intent(in) :: writing
     integer,intent(out) :: status
@@ -1761,13 +1762,27 @@ contains
     integer(int64) :: settings(17),saved_settings(17)
     real(real_kind) :: parameters(3),saved_parameters(3)
     logical :: active,present,matched
-    active=global_compact_enabled()
+    active=global_compact_enabled().or.convection_form=='keep'.or.viscous_form=='me6_opti'.or.(lfilter.and.len_trim(filter_scheme)>0)
     operator_id='astr-global-compact-v1'
+    if(.not.global_compact_enabled()) operator_id='astr-standard-v1'
+    if(convection_form=='keep') operator_id='astr-original-keep6-v1'
+    if(convection_form=='keep'.and.conschm=='643c') operator_id='astr-original-keep6c-v1'
+    if(convection_form=='keep') then
+      if(conschm=='643c') then
+        operator_id=trim(operator_id)//'/g1a'
+      else
+        operator_id=trim(operator_id)//'/g1'
+      endif
+    endif
+    if(viscous_form=='me6_opti') operator_id=trim(operator_id)//'/me6opti-podd-v1'
+    if(active) operator_id=trim(operator_id)//'/filter-'//trim(effective_filter_scheme(conschm,difschm,lfilter))
     schemes=[conschm,difschm]
     settings=[1_int64,int(hm,int64),int(ndims,int64),int(numq,int64),int(recon_schem,int64), &
       int(merge(1,0,diffterm),int64),int(merge(1,0,lfilter),int64), &
       int(merge(1,0,lchardecomp),int64),int(merge(1,0,lihomo),int64), &
       int(merge(1,0,ljhomo),int64),int(merge(1,0,lkhomo),int64),int(bctype,int64)]
+    ! Mixed KEEP schemes now refresh all physical primitive caches after filtering.
+    if(convection_form=='keep'.and.lfilter.and.conschm(4:4)/=difschm(4:4)) settings(1)=2_int64
     parameters=0.e0_real_kind
     if(lfilter) parameters(1)=alfa_filter
     if(recon_schem==5) parameters(2)=bfacmpld

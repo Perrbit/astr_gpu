@@ -47,6 +47,7 @@ module comsolver
   !| 03-07-2025  | Remastered by J. Fang @ Imech, CAS, Beijing         |
   !+-------------------------------------------------------------------+
   subroutine solvrinit
+    use numerical_forms, only: compact_filter_selected,convection_form
   
     use commvar,    only : numq, npdci, npdcj, npdck, conschm, difschm,   &
                            lfilter, alfa_filter, hm, turbmode
@@ -92,7 +93,7 @@ module comsolver
   
     if (mod(nscheme / 100, 2) == 0) then
       ! Central convection scheme
-      if (trim(conschm) /= trim(difschm)) then
+      if (trim(conschm) /= trim(difschm).and.convection_form/='keep') then
         print *, ' !! WARNING !! Central schemes for convection and diffusion are inconsistent.'
         print *, ' !! WARNING !! Consider using the same scheme to avoid unexpected behavior.'
         print *, ' ** conschm:', conschm
@@ -119,7 +120,9 @@ module comsolver
     !-------------------------------------------------------------------
     ! Optional: Initialize compact filters
     !-------------------------------------------------------------------
-    if (lfilter .and. (conschm(4:4) == 'c' .or. difschm(4:4) == 'c')) then
+    ! Physical-boundary transverse filters still use their existing compact descriptors.
+    if (lfilter .and. (compact_filter_selected(conschm,difschm).or. &
+        conschm(4:4)=='c'.or.difschm(4:4)=='c')) then
       call filter_coefficient_cal(alfa=alfa_filter, beter_halo=1.11e0_real_kind, beter_bouond=0.98e0_real_kind)
   
       call compact_filter_initiate(filter_i, npdci, im)
@@ -521,12 +524,13 @@ module comsolver
   ! Writen by Fang Jian, 2008-11-03.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   subroutine filterq(timerept)
+    use numerical_forms, only: compact_filter_selected
     !
     use commvar,  only : im,jm,km,numq,npdci,npdcj,npdck,              &
                          alfa_filter,ndims,is,ie,js,je,ks,ke,turbmode, &
                          conschm,difschm
     use commarray,only : q
-    use compact_runtime,only: global_compact_enabled,global_compact_filter_cpu
+    use compact_runtime,only: global_compact_filter_enabled,global_compact_filter_cpu
     use filter,only: coef10i
     use filter,   only : compact_filter,filter_i,filter_j,filter_k,  &
                         filter_ii,filter_jj,filter_kk,spafilter10exp
@@ -547,7 +551,7 @@ module comsolver
 
     endif 
     !
-    if(conschm(4:4)=='e' .and. difschm(4:4)=='e') then
+    if(.not.compact_filter_selected(conschm,difschm)) then
       call filterq_explicit10
       if(present(timerept)) then
         if(timerept) then
@@ -560,7 +564,7 @@ module comsolver
       return
     endif
     !
-    if(global_compact_enabled()) then
+    if(global_compact_filter_enabled()) then
       call global_compact_filter_cpu(q,coef10i)
       if(present(timerept)) then
         if(timerept) then
