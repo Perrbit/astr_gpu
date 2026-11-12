@@ -1,4 +1,7 @@
 install(DIRECTORY DESTINATION examples)
+add_subdirectory(KEEP_Taylor_Green_Vortex)
+add_subdirectory(KEEP_Low_Order_Boundaries)
+add_subdirectory(KEEP_SBP63_Walls)
 add_subdirectory(Taylor_Green_Vortex)
 add_subdirectory(Taylor_Green_Vortex_2D)
 add_subdirectory(Channel)

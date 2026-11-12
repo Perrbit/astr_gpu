@@ -1,0 +1,179 @@
+module keep_corner_probe_gpu
+  use astr_precision, only: real_kind
+  use cudafor
+  implicit none
+contains
+  attributes(global) subroutine project_corner(im,jm,km,gamma,mach)
+    use commarray_gpu, only: rho_d,vel_d,tmp_d,jacob_d,dxi_d,qrhs_d
+    use boundary_gpu, only: nscbc_pmatrix
+    use nscbc_characteristic_policy_gpu, only: nscbc_remove_incoming_source_gpu
+    integer,value :: im,jm,km
+    real(real_kind),value :: gamma,mach
+    integer :: k
+    real(real_kind) :: pnor(5,5),pinv(5,5),raw(5),rhs(5),lambda(5),css,metric(3),velocity(3)
+    logical :: incoming(5)
+    k=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(k>km) return
+    metric=dxi_d(im,jm,k,2,:);velocity=vel_d(im,jm,k,:)
+    call nscbc_pmatrix(rho_d(im,jm,k),vel_d(im,jm,k,1),vel_d(im,jm,k,2), &
+      vel_d(im,jm,k,3),tmp_d(im,jm,k),metric,gamma,mach,.false.,pnor)
+    call nscbc_pmatrix(rho_d(im,jm,k),vel_d(im,jm,k,1),vel_d(im,jm,k,2), &
+      vel_d(im,jm,k,3),tmp_d(im,jm,k),metric,gamma,mach,.true.,pinv)
+    css=sqrt(tmp_d(im,jm,k))/mach
+    raw=qrhs_d(im,jm,k,:);rhs=raw
+    call nscbc_remove_incoming_source_gpu(rhs,raw,pnor,pinv,jacob_d(im,jm,k), &
+      metric,velocity,css,lambda,incoming)
+    qrhs_d(im,jm,k,:)=rhs
+  end subroutine project_corner
+end module keep_corner_probe_gpu
+
+program keep_nonreflecting_corner_probe
+  use astr_precision, only: real_kind
+  use commvar
+  use commarray, only: q,rho,vel,prs,tmp,spc,jacob,dxi,qrhs
+  use bc, only: bctype,pout,outflow_nscbc,farfield_nscbc,pmatrix, &
+    nscbc_remove_incoming_source,nscbc_farfield_policy,nscbc_farfield_configured, &
+    NSCBC_FARFIELD_POLICY_COMPATIBILITY,NSCBC_FARFIELD_POLICY_GRCBC
+  use parallel, only: mpirank,mpisize,lio,irk,irkm,jrk,jrkm,krk,krkm,isize,jsize,ksize
+  use cudafor
+  use mpi
+  use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,jacob_d,dxi_d,qrhs_d
+  use boundary_gpu, only: nscbc_outflow_x_rhs_kernel,nscbc_farfield_y_upper_rhs_kernel
+  use keep_corner_probe_gpu
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  implicit none
+  real(real_kind) :: eps,vbase,phase,css,dp,dm,amplitude,h,velocity(3),kinetic
+  real(real_kind) :: raw(5),rhs(5),expected(5),pinv(5,5),pnor(5,5),lambda(5),before(5),after(5)
+  real(real_kind) :: errors(6),cpu_raw(0:8,5),cpu_closed(0:8,5)
+  real(real_kind),allocatable :: actual(:,:,:,:)
+  logical :: incoming(5)
+  integer :: ierr,i,j,k,c,status,devices
+  character(32) :: mode
+  type(dim3) :: block_size,grid_x,grid_y
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,mpirank,ierr)
+  call MPI_Comm_size(MPI_COMM_WORLD,mpisize,ierr)
+  if(mpisize/=1) error stop 'Corner component probe uses one rank'
+  call get_command_argument(1,mode)
+  eps=1.e-3_real_kind;vbase=0.e0_real_kind
+  select case(trim(mode))
+  case('uniform');eps=0.e0_real_kind
+  case('outflow');vbase=1.e-4_real_kind
+  case('inflow');vbase=-1.e-4_real_kind
+  case('grazing')
+    continue
+  case default
+    error stop 'Unknown corner component state'
+  end select
+  im=8;jm=8;km=8;ia=im;ja=jm;ka=km;ndims=3;numq=5;num_species=0;num_modequ=0
+  irk=0;irkm=0;jrk=0;jrkm=0;krk=0;krkm=0;lio=.true.;isize=1;jsize=1;ksize=1
+  is=1;ie=im-1;js=1;je=jm-1;ks=0;ke=km
+  npdci=4;npdcj=4;npdck=3;lihomo=.false.;ljhomo=.false.;lkhomo=.true.
+  flowtype='tgv';conschm='643e';difschm='643e';turbmode='none'
+  nondimen=.true.;lcomb=.false.;lfilter=.true.
+  bctype=[11,22,41,52,1,1];gamma=1.4e0_real_kind;mach=1.e0_real_kind
+  const2=gamma*mach**2;const6=1.e0_real_kind/(gamma-1.e0_real_kind)
+  xmin=0.e0_real_kind;xmax=8.e0_real_kind;ymin=0.e0_real_kind;ymax=8.e0_real_kind
+  roinf=1.e0_real_kind;uinf=0.2e0_real_kind;vinf=vbase;winf=.03e0_real_kind
+  pinf=1.e0_real_kind/gamma;pout=1.e0_real_kind
+  nscbc_farfield_configured=.true.
+  allocate(q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+    vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+    tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm),spc(-hm:im+hm,-hm:jm+hm,-hm:km+hm,0), &
+    jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm),dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3), &
+    qrhs(0:im,0:jm,0:km,5),actual(0:im,0:jm,0:km,5))
+  jacob=1.e0_real_kind;dxi=0.e0_real_kind;qrhs=0.e0_real_kind
+  do c=1,3
+    dxi(:,:,:,c,c)=1.e0_real_kind
+  enddo
+  do k=-hm,km+hm
+  do j=-hm,jm+hm
+  do i=-hm,im+hm
+    phase=2*acos(-1.e0_real_kind)*real(k,real_kind)/km
+    rho(i,j,k)=1+eps*(cos(phase)+.1e0_real_kind*(i-im))
+    prs(i,j,k)=(1+eps*(sin(phase)+.2e0_real_kind*(j-jm)))/gamma
+    tmp(i,j,k)=const2*prs(i,j,k)/rho(i,j,k)
+    velocity=[uinf+eps*(10*sin(phase)+(i-im)),vbase,winf+10*eps*cos(phase)]
+    vel(i,j,k,:)=velocity
+    q(i,j,k,1)=rho(i,j,k);q(i,j,k,2:4)=rho(i,j,k)*velocity
+    q(i,j,k,5)=prs(i,j,k)*const6+.5e0_real_kind*rho(i,j,k)*sum(velocity**2)
+  enddo
+  enddo
+  enddo
+  ! Actual face kernels, with the top supplying raw Dy at the physical x endpoint.
+  nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_COMPATIBILITY
+  call outflow_nscbc(2,rhs_only=.true.)
+  nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_GRCBC
+  call farfield_nscbc(4)
+  errors=0.e0_real_kind
+  do k=0,km
+    raw=-qrhs(im,jm,k,:);cpu_raw(k,:)=raw;rhs=raw
+    velocity=vel(im,jm,k,:);css=sqrt(tmp(im,jm,k))/mach
+    pinv=pmatrix(rho(im,jm,k),velocity(1),velocity(2),velocity(3),tmp(im,jm,k), &
+      spc(im,jm,k,:),dxi(im,jm,k,2,:),inv=.true.)
+    pnor=pmatrix(rho(im,jm,k),velocity(1),velocity(2),velocity(3),tmp(im,jm,k), &
+      spc(im,jm,k,:),dxi(im,jm,k,2,:),inv=.false.)
+    call nscbc_remove_incoming_source(rhs,raw,pnor,pinv,jacob(im,jm,k), &
+      dxi(im,jm,k,2,:),velocity,css,lambda,incoming)
+    if(count(incoming)/=merge(4,1,vbase<0.e0_real_kind)) &
+      error stop 'Corner component incoming subspace differs'
+    cpu_closed(k,:)=rhs
+    before=matmul(pinv,raw);after=matmul(pinv,rhs)
+    do c=1,5
+      if(incoming(c)) then
+        errors(3)=max(errors(3),abs(after(c)))
+      else
+        errors(4)=max(errors(4),abs(after(c)-before(c)))
+      endif
+    enddo
+    kinetic=.5e0_real_kind*sum(velocity**2)
+    dp=(gamma-1)*(raw(5)-sum(velocity*raw(2:4))+kinetic*raw(1))
+    dm=raw(3)-velocity(2)*raw(1)
+    h=css**2*const6+kinetic
+    if(vbase<0.e0_real_kind) then
+      amplitude=(dp+css*dm)/(2*css**2)
+      expected=amplitude*[1.e0_real_kind,velocity(1),velocity(2)+css,velocity(3),h+css*velocity(2)]
+    else
+      amplitude=(dp-css*dm)/(2*css**2)
+      expected=raw-amplitude*[1.e0_real_kind,velocity(1),velocity(2)-css,velocity(3),h-css*velocity(2)]
+    endif
+    errors(5)=max(errors(5),maxval(abs(rhs-expected)))
+    if(eps==0.e0_real_kind) errors(6)=max(errors(6),maxval(abs(raw)),maxval(abs(rhs)))
+  enddo
+  if(.not.all(ieee_is_finite(cpu_raw)).or..not.all(ieee_is_finite(cpu_closed))) &
+    error stop 'Nonfinite CPU corner component RHS'
+  status=cudaGetDeviceCount(devices)
+  if(status/=cudaSuccess.or.devices<=0) error stop 'Corner component has no GPU'
+  status=cudaSetDevice(0)
+  if(status/=cudaSuccess) error stop 'Corner component cannot select GPU'
+  allocate(q_d,mold=q);allocate(rho_d,mold=rho);allocate(vel_d,mold=vel)
+  allocate(prs_d,mold=prs);allocate(tmp_d,mold=tmp);allocate(jacob_d,mold=jacob)
+  allocate(dxi_d,mold=dxi);allocate(qrhs_d,mold=qrhs)
+  q_d=q;rho_d=rho;vel_d=vel;prs_d=prs;tmp_d=tmp;jacob_d=jacob;dxi_d=dxi;qrhs_d=0.e0_real_kind
+  block_size=dim3(128,1,1);grid_x=dim3(((jm+1)*(km+1)+127)/128,1,1)
+  grid_y=dim3(((im+1)*(km+1)+127)/128,1,1)
+  call nscbc_outflow_x_rhs_kernel<<<grid_x,block_size>>>(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
+    roinf,uinf,vinf,winf,pinf,pout,0.e0_real_kind,1,0)
+  call check_kernel()
+  call nscbc_farfield_y_upper_rhs_kernel<<<grid_y,block_size>>>(im,jm,km,hm,npdci,npdck,gamma,mach, &
+    ymin,ymax,pinf,roinf,uinf,vinf,winf,0.e0_real_kind,roinf,uinf,vinf,winf,0.e0_real_kind, &
+    0.e0_real_kind,0,NSCBC_FARFIELD_POLICY_GRCBC,0.e0_real_kind,1)
+  call check_kernel()
+  actual=qrhs_d
+  errors(1)=maxval(abs(actual(im,jm,:,:)-cpu_raw))
+  call project_corner<<<1,block_size>>>(im,jm,km,gamma,mach)
+  call check_kernel()
+  actual=qrhs_d
+  errors(2)=maxval(abs(actual(im,jm,:,:)-cpu_closed))
+  if(.not.all(ieee_is_finite(actual))) error stop 'Nonfinite corner component RHS'
+  write(*,'(A,A,6ES25.16)') 'KEEP_NR_CORNER ',trim(mode),errors
+  call MPI_Finalize(ierr)
+  if(maxval(errors)>2.e-10_real_kind) error stop 'Corner component violates approved contract'
+contains
+  subroutine check_kernel()
+    status=cudaGetLastError()
+    if(status/=cudaSuccess) error stop 'Corner component kernel launch failed'
+    status=cudaDeviceSynchronize()
+    if(status/=cudaSuccess) error stop 'Corner component kernel failed'
+  end subroutine check_kernel
+end program keep_nonreflecting_corner_probe

@@ -14,7 +14,7 @@ module compact_operator_gpu
   private
   public :: compact_global_enabled,compact_gradcal_gpu, &
     compact_convection_gpu,compact_diffusion_flux_gpu,compact_diffusion_rhs_gpu, &
-    compact_filter_state_gpu,release_compact_operator_gpu,compact_keep_convection_gpu
+    compact_filter_state_gpu,release_compact_operator_gpu,compact_keep_convection_gpu,compact_diffusion_boundary_rhs_gpu
   public :: compact_gradient_enabled
   type(compact_derivative_plan),save :: plans(3)
   type(compact_filter_plan),save :: filters(3)
@@ -40,8 +40,8 @@ contains
     variables(6)=prs_d(i,j,k)
   end subroutine
 
-  attributes(global) subroutine keep_pack_split_kernel(axis,im,jm,km,hm,dim,lines,nrhs,start,gamma,f)
-    integer,value :: axis,im,jm,km,hm,dim,lines,nrhs,start
+  attributes(global) subroutine keep_pack_split_kernel(axis,im,jm,km,hm,dim,lines,nrhs,start,valid_first,valid_last,gamma,f)
+    integer,value :: axis,im,jm,km,hm,dim,lines,nrhs,start,valid_first,valid_last
     real(real_kind),value :: gamma
     real(real_kind),device,intent(out) :: f(-hm:dim+hm,nrhs)
     real(real_kind) :: variables(9),value
@@ -49,6 +49,10 @@ contains
     position=(blockIdx%x-1)*blockDim%x+threadIdx%x-1-hm
     column=blockIdx%y
     if(position>dim+hm) return
+    if(position<valid_first.or.position>valid_last) then
+      f(position,column)=0.e0_real_kind
+      return
+    endif
     index=start+column-1
     line=mod(index,lines)+1
     basis=index/lines+1
@@ -63,9 +67,10 @@ contains
     f(position,column)=value
   end subroutine
 
-  attributes(global) subroutine keep_commit_split_kernel(axis,im,jm,km,dim,lines,nrhs,start,terms,gamma,df)
+  attributes(global) subroutine keep_commit_split_kernel(axis,im,jm,km,dim,lines,nrhs,start,terms, &
+      i0,i1,j0,j1,k0,k1,gamma,df)
     use commarray_gpu, only: qrhs_d
-    integer,value :: axis,im,jm,km,dim,lines,nrhs,start,terms
+    integer,value :: axis,im,jm,km,dim,lines,nrhs,start,terms,i0,i1,j0,j1,k0,k1
     real(real_kind),value :: gamma
     real(real_kind),device,intent(in) :: df(dim+1,nrhs)
     real(real_kind) :: variables(9),result(5),factor
@@ -73,17 +78,14 @@ contains
     index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(index>=(im+1)*(jm+1)*(km+1)) return
     i=mod(index,im+1);j=mod(index/(im+1),jm+1);k=index/((im+1)*(jm+1))
+    if(i<i0.or.i>i1.or.j<j0.or.j>j1.or.k<k0.or.k>k1) return
     select case(axis)
     case(1);position=i;line=j+(jm+1)*k
     case(2);position=j;line=i+(im+1)*k
     case(3);position=k;line=i+(im+1)*j
     end select
     call keep_point_variables(axis,i,j,k,gamma,variables)
-    if(axis==1.and.start==0) then
-      result=0.e0_real_kind
-    else
-      result=qrhs_d(i,j,k,1:5)
-    endif
+    result=qrhs_d(i,j,k,1:5)
     do t=1,terms
       column=(keep_basis_d(t)-1)*lines+line-start+1
       if(column<1.or.column>nrhs) cycle
@@ -100,8 +102,8 @@ contains
   end subroutine
 
   subroutine compact_keep_convection_gpu()
-    use commvar, only: im,jm,km,hm,gamma
-    integer :: axis,dim,lines,start,nrhs,total
+    use commvar, only: im,jm,km,hm,gamma,is,ie,js,je,ks,ke
+    integer :: axis,dim,lines,start,nrhs,total,valid_first,valid_last
     call prepare_operator()
     if(keep_terms==0) then
       block
@@ -121,14 +123,19 @@ contains
     do axis=1,3
       dim=plans(axis)%dim
       lines=total/(dim+1)
+      valid_first=-hm;valid_last=dim+hm
+      if(.not.compact_partitions(axis)%periodic) then
+        valid_first=max(valid_first,-compact_partitions(axis)%first)
+        valid_last=min(valid_last,compact_partitions(axis)%intervals-compact_partitions(axis)%first)
+      endif
       do start=0,lines*keep_bases-1,plans(axis)%capacity
         nrhs=min(plans(axis)%capacity,lines*keep_bases-start)
         call keep_pack_split_kernel<<<dim3((dim+2*hm+128)/128,nrhs,1),128>>>( &
-          axis,im,jm,km,hm,dim,lines,nrhs,start,gamma,plans(axis)%input)
+          axis,im,jm,km,hm,dim,lines,nrhs,start,valid_first,valid_last,gamma,plans(axis)%input)
         call compact_after_kernel('keep compact pack')
         call apply_compact_derivative_gpu(plans(axis),nrhs)
         call keep_commit_split_kernel<<<(total+511)/512,512>>>( &
-          axis,im,jm,km,dim,lines,nrhs,start,keep_terms,gamma,plans(axis)%solution)
+          axis,im,jm,km,dim,lines,nrhs,start,keep_terms,is,ie,js,je,ks,ke,gamma,plans(axis)%solution)
         call compact_after_kernel('keep compact accumulate')
       enddo
     enddo
@@ -255,7 +262,7 @@ contains
       case(5)
         value=jacob_d(i,j,k)*(q_d(i,j,k,5)+p)*uu
       end select
-    case(3)
+    case(3,4)
       metric=dxi_d(i,j,k,axis,:)
       select case(m)
       case(1)
@@ -272,10 +279,12 @@ contains
     f(position,column)=value
   end subroutine
 
-  attributes(global) subroutine unpack_lines_kernel(axis,kind,im,jm,km,first,n,dim,lines,nrhs,start,lo,hi,df)
+  attributes(global) subroutine unpack_lines_kernel(axis,kind,im,jm,km,first,n,dim,lines,nrhs,start,lo,hi, &
+      inner_i0,inner_i1,inner_j0,inner_j1,inner_k0,inner_k1,df)
     use commarray_gpu, only: qrhs_d,dvel_d,dtmp_d,dxi_d
     integer,value :: axis,kind,im,jm,km,first,n,dim,lines,nrhs,start
     integer,value :: lo,hi
+    integer,value :: inner_i0,inner_i1,inner_j0,inner_j1,inner_k0,inner_k1
     real(real_kind),device,intent(in) :: df(n,nrhs)
     integer :: position,column,line,m,i,j,k,b,index
     real(real_kind) :: value,contribution
@@ -300,9 +309,13 @@ contains
         endif
       enddo
     case(2)
+      if(i<inner_i0.or.i>inner_i1.or.j<inner_j0.or.j>inner_j1.or.k<inner_k0.or.k>inner_k1) return
       qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)-value
-    case(3)
+    case(3,4)
       if(position<lo.or.position>hi) return
+      if(kind==4) then
+        if(i>=inner_i0.and.i<=inner_i1.and.j>=inner_j0.and.j<=inner_j1.and.k>=inner_k0.and.k<=inner_k1) return
+      endif
       qrhs_d(i,j,k,m+1)=qrhs_d(i,j,k,m+1)+value
     end select
   end subroutine
@@ -378,14 +391,28 @@ contains
   end subroutine
 
   subroutine apply_directional_operator(kind)
-    use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke
+    use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,ia,ja,ka,lihomo,ljhomo,lkhomo
+    use parallel, only: ig0,jg0,kg0
     integer,intent(in) :: kind
-    integer :: axis,lines,components,dim,lower(3),upper(3),start,nrhs
+    integer :: axis,lines,components,dim,lower(3),upper(3),start,nrhs,inner_first(3),inner_last(3),offset(3),total(3)
+    logical :: periodic(3)
     call prepare_operator()
     components=4
     if(kind==2) components=5
     lower=[is,js,ks]
     upper=[ie,je,ke]
+    inner_first=0;inner_last=[im,jm,km]
+    if(kind==2) then
+      inner_first=lower;inner_last=upper
+    endif
+    if(kind==4) then
+      offset=[ig0,jg0,kg0];total=[ia,ja,ka];periodic=[lihomo,ljhomo,lkhomo]
+      do axis=1,3
+        if(periodic(axis)) cycle
+        inner_first(axis)=max(0,4-offset(axis))
+        inner_last(axis)=min(inner_last(axis),total(axis)-4-offset(axis))
+      enddo
+    endif
     do axis=1,3
       dim=plans(axis)%dim
       lines=(im+1)*(jm+1)*(km+1)/(dim+1)
@@ -397,10 +424,11 @@ contains
       call compact_after_kernel('compact_pack_lines_kernel')
       call apply_compact_derivative_gpu(plans(axis),nrhs)
 #ifdef ASTR_BUILD_TESTING
-      call compare_direction_once(axis,kind,nrhs)
+      call compare_direction_once(axis,min(kind,3),nrhs)
 #endif
       call unpack_lines_kernel<<<dim3((dim+128)/128,nrhs,1),dim3(128,1,1)>>>( &
-        axis,kind,im,jm,km,plans(axis)%first,dim+1,dim,lines,nrhs,start,lower(axis),upper(axis),plans(axis)%solution)
+        axis,kind,im,jm,km,plans(axis)%first,dim+1,dim,lines,nrhs,start,lower(axis),upper(axis), &
+        inner_first(1),inner_last(1),inner_first(2),inner_last(2),inner_first(3),inner_last(3),plans(axis)%solution)
       call compact_after_kernel('compact_unpack_lines_kernel',complete=axis==3.and.start+nrhs==lines*components)
       enddo
     enddo
@@ -571,6 +599,10 @@ contains
 
   subroutine compact_diffusion_rhs_gpu()
     call apply_directional_operator(3)
+  end subroutine
+
+  subroutine compact_diffusion_boundary_rhs_gpu()
+    call apply_directional_operator(4)
   end subroutine
 
   attributes(global) subroutine compact_stress_kernel(im,jm,km,reynolds,prandtl,const5,tempconst,tempconst1)

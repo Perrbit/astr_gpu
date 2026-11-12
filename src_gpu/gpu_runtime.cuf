@@ -237,10 +237,10 @@ contains
     use halo_exchange_gpu, only: init_halo_transport_gpu
     use mainloop_gpu, only: init_gpu
     use sponge_gpu, only: init_sponge_gpu
-    use boundary_gpu, only: init_s1_flatplate_profile_gpu,init_wall_blowing_gpu, &
+    use boundary_gpu, only: init_s1_flatplate_profile_gpu,init_wall_blowing_gpu,init_single_axis_inflow_gpu, &
                             gpu_periodic_boundary_case
     use inflow_timeseries_gpu, only: init_dynamic_inflow_gpu
-    use commvar, only: flowtype,ndims,lihomo,ljhomo,lkhomo,lfilter,diffterm
+    use commvar, only: flowtype,ndims,lihomo,ljhomo,lkhomo,lfilter,diffterm,numq,num_species,lcomb
     use gpu_check, only: configure_gpu_sync_mode,gpu_selective_sync_enabled, &
                          gpu_dependency_sync_enabled
     use gpu_phase_timing, only: configure_gpu_phase_timing
@@ -289,6 +289,7 @@ contains
       call set_metric_consistent_eps_gpu(.true.)
     endif
     call init_wall_blowing_gpu()
+    if(numq==5.and.num_species==0.and..not.lcomb) call init_single_axis_inflow_gpu()
     call init_s1_flatplate_profile_gpu()
     call init_dynamic_inflow_gpu()
     call init_sponge_gpu()

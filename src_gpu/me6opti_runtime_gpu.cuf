@@ -2,11 +2,12 @@ module me6opti_runtime_gpu
   use astr_precision, only: real_kind
   use cudafor
   use gpu_check, only: sync_after_kernel
-  use commvar, only: im,jm,km,hm,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1
-  use commarray_gpu, only: vel_d,tmp_d,jacob_d,qrhs_d
-  use me6opti_runtime, only: prepare_me6_geometry,me6_spacing,me6_parts,me6_peers
+  use commvar, only: im,jm,km,hm,ia,ja,ka,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1,lihomo,ljhomo,lkhomo
+  use parallel, only: ig0,jg0,kg0
+  use commarray_gpu, only: vel_d,tmp_d,jacob_d,dxi_d,qrhs_d
+  use me6opti_runtime, only: prepare_me6_geometry,me6_parts,me6_peers
   use me6opti_halo_gpu, only: extend_me6_edges_gpu,release_me6_edges_gpu
-  use me6opti_operator_gpu, only: prepare_me6_gpu,me6_direction_kernel,release_me6_gpu
+  use me6opti_operator_gpu, only: prepare_me6_gpu,me6_mapped_direction_kernel,release_me6_gpu
   implicit none
   private
   public :: me6_diffusion_gpu,release_me6_runtime_gpu
@@ -14,14 +15,26 @@ module me6opti_runtime_gpu
 contains
   subroutine me6_diffusion_gpu()
     type(dim3) :: block,grid
-    integer :: n,axis
+    integer :: n,axis,first(3),last(3),valid_first(3),valid_last(3),offset(3),total(3),physical_layout
+    logical :: periodic(3)
     call prepare_me6_geometry()
     call prepare_me6_gpu()
-    call extend_me6_edges_gpu(im,jm,km,hm,vel_d,tmp_d,me6_parts,me6_peers)
+    call extend_me6_edges_gpu(im,jm,km,hm,vel_d,tmp_d,me6_parts,me6_peers,[lihomo,ljhomo,lkhomo])
+    first=0;last=[im,jm,km];valid_first=-hm;valid_last=last+hm
+    offset=[ig0,jg0,kg0];total=[ia,ja,ka];periodic=[lihomo,ljhomo,lkhomo]
+    physical_layout=0
+    do axis=1,3
+      if(periodic(axis)) cycle
+      physical_layout=ibset(physical_layout,axis-1)
+      first(axis)=max(0,4-offset(axis));last(axis)=min(last(axis),total(axis)-4-offset(axis))
+      valid_first(axis)=max(-hm,-offset(axis));valid_last(axis)=min(valid_last(axis),total(axis)-offset(axis))
+    enddo
+    if(physical_layout>0) call me6_nodal_boundary_diffusion_gpu(physical_layout,first,last)
     if(.not.allocated(viscosity)) allocate(viscosity(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
       conductivity(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     n=(im+2*hm+1)*(jm+2*hm+1)*(km+2*hm+1)
-    call me6_properties_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,n,nondimen,reynolds,prandtl,const5, &
+    call me6_properties_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,n, &
+      valid_first(1),valid_last(1),valid_first(2),valid_last(2),valid_first(3),valid_last(3),nondimen,reynolds,prandtl,const5, &
       cp,tempconst,tempconst1,tmp_d,viscosity,conductivity)
     call sync_after_kernel('ME6 stage properties',force_sync=.true.)
     do axis=1,3
@@ -31,14 +44,14 @@ contains
       case(3);block=dim3(64,1,8)
       end select
       grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
-      call me6_direction_kernel<<<grid,block>>>(im,jm,km,hm,axis,me6_spacing(1),me6_spacing(2),me6_spacing(3), &
-        vel_d,tmp_d,viscosity,conductivity,jacob_d,qrhs_d)
+      call me6_mapped_direction_kernel<<<grid,block>>>(im,jm,km,hm,axis,first(1),last(1),first(2),last(2),first(3),last(3), &
+        vel_d,tmp_d,viscosity,conductivity,dxi_d,jacob_d,qrhs_d)
       call sync_after_kernel('ME6 viscous divergence',force_sync=.true.)
     enddo
   end subroutine
 
-  attributes(global) subroutine me6_properties_kernel(im,jm,km,hm,n,dimensionless,re,pr,c5,cpv,s,s1,t,mu,kappa)
-    integer,value :: im,jm,km,hm,n
+  attributes(global) subroutine me6_properties_kernel(im,jm,km,hm,n,ifirst,ilast,jfirst,jlast,kfirst,klast,dimensionless,re,pr,c5,cpv,s,s1,t,mu,kappa)
+    integer,value :: im,jm,km,hm,n,ifirst,ilast,jfirst,jlast,kfirst,klast
     logical,value :: dimensionless
     real(real_kind),value :: re,pr,c5,cpv,s,s1
     real(real_kind),device :: t(-hm:,-hm:,-hm:),mu(-hm:,-hm:,-hm:),kappa(-hm:,-hm:,-hm:)
@@ -48,6 +61,7 @@ contains
     if(index>=n) return
     nx=im+2*hm+1;ny=jm+2*hm+1
     i=mod(index,nx)-hm;j=mod(index/nx,ny)-hm;k=index/(nx*ny)-hm
+    if(i<ifirst.or.i>ilast.or.j<jfirst.or.j>jlast.or.k<kfirst.or.k>klast) return
     temperature=t(i,j,k)
     if(dimensionless) then
       mu(i,j,k)=temperature*sqrt(temperature)*s1/(temperature+s)
@@ -58,6 +72,99 @@ contains
       mu(i,j,k)=1.716e-5_real_kind*tn*sqrt(tn)*(273.15e0_real_kind+110.4e0_real_kind)/(temperature+110.4e0_real_kind)
       kappa(i,j,k)=cpv*mu(i,j,k)/pr
     endif
+  end subroutine
+
+  subroutine me6_nodal_boundary_diffusion_gpu(physical_layout,inner_first,inner_last)
+    use commvar, only: is,ie,js,je,ks,ke,difschm
+    use boundary_gpu, only: gpu_physical_boundary_apply_mask
+    use solver_gpu, only: diffusion_flux_xphysical_global_kernel,diffusion_flux_yphysical_global_kernel, &
+      diffusion_flux_zphysical_global_kernel,diffusion_flux_xyphysical_global_kernel
+    use halo_exchange_gpu, only: exchange_diffusion_flux_halo_gpu
+    use compact_operator_gpu, only: compact_diffusion_flux_gpu,compact_diffusion_boundary_rhs_gpu
+    type(dim3) :: block,grid
+    integer,intent(in) :: physical_layout,inner_first(3),inner_last(3)
+    integer :: axis,first(3),last(3),base_first(3),base_last(3),lower(3),upper(3)
+    if(difschm=='643c') then
+      call compact_diffusion_flux_gpu()
+      call exchange_diffusion_flux_halo_gpu()
+      call compact_diffusion_boundary_rhs_gpu()
+      return
+    endif
+    do axis=1,3
+      call gpu_physical_boundary_apply_mask(axis,lower(axis),upper(axis))
+    enddo
+    block=dim3(8,8,8);grid=dim3((im+8)/8,(jm+8)/8,(km+8)/8)
+    select case(physical_layout)
+    case(1)
+      call diffusion_flux_xphysical_global_kernel<<<grid,block>>>(im,jm,km,reynolds,prandtl,const5, &
+        tempconst,tempconst1,lower(1),upper(1))
+    case(2)
+      call diffusion_flux_yphysical_global_kernel<<<grid,block>>>(im,jm,km,reynolds,prandtl,const5, &
+        tempconst,tempconst1,lower(2),upper(2))
+    case(4)
+      call diffusion_flux_zphysical_global_kernel<<<grid,block>>>(im,jm,km,reynolds,prandtl,const5, &
+        tempconst,tempconst1,lower(3),upper(3))
+    case(3)
+      call diffusion_flux_xyphysical_global_kernel<<<grid,block>>>(im,jm,km,reynolds,prandtl,const5, &
+        tempconst,tempconst1,lower(1),upper(1),lower(2),upper(2))
+    end select
+    call sync_after_kernel('ME6 nodal wall flux',force_sync=.true.)
+    call exchange_diffusion_flux_halo_gpu()
+    base_first=[is,js,ks];base_last=[ie,je,ke]
+    do axis=1,3
+      first=0;last=[im,jm,km]
+      first(axis)=base_first(axis);last(axis)=base_last(axis)
+      select case(axis)
+      case(1);block=dim3(512,1,1)
+      case(2);block=dim3(32,16,1)
+      case(3);block=dim3(64,1,8)
+      end select
+      grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
+      call me6_nodal_boundary_kernel<<<grid,block>>>(im,jm,km,axis,physical_layout, &
+        inner_first(1),inner_last(1),inner_first(2),inner_last(2),inner_first(3),inner_last(3), &
+        first(1),last(1),first(2),last(2),first(3),last(3),lower(axis),upper(axis))
+      call sync_after_kernel('ME6 nodal wall divergence',force_sync=.true.)
+    enddo
+  end subroutine
+
+  attributes(global) subroutine me6_nodal_boundary_kernel(im,jm,km,axis,physical_layout, &
+      inner_i0,inner_i1,inner_j0,inner_j1,inner_k0,inner_k1, &
+      ifirst,ilast,jfirst,jlast,kfirst,klast,down,up)
+    use solver_gpu, only: stored_diff_flux_at_xphysical,stored_diff_flux_at_yphysical,stored_diff_flux_at_zphysical, &
+      stored_diff_flux_at_xyphysical, &
+      deriv6_x_physical,deriv6
+    integer,value :: im,jm,km,axis,physical_layout,ifirst,ilast,jfirst,jlast,kfirst,klast,down,up
+    integer,value :: inner_i0,inner_i1,inner_j0,inner_j1,inner_k0,inner_k1
+    real(real_kind) :: flux(5,-3:3),derivative(5)
+    integer :: i,j,k,l,c,point(3),position(3),dims(3)
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im.or.j>jm.or.k>km) return
+    if(i<ifirst.or.i>ilast.or.j<jfirst.or.j>jlast.or.k<kfirst.or.k>klast) return
+    position=[i,j,k];dims=[im,jm,km]
+    if(i>=inner_i0.and.i<=inner_i1.and.j>=inner_j0.and.j<=inner_j1.and.k>=inner_k0.and.k<=inner_k1) return
+    flux=0.e0_real_kind
+    do l=-3,3
+      point=[i,j,k];point(axis)=point(axis)+l
+      if(down/=0.and.point(axis)<0) cycle
+      if(up/=0.and.point(axis)>dims(axis)) cycle
+      select case(physical_layout)
+      case(1);call stored_diff_flux_at_xphysical(point(1),point(2),point(3),axis,im,jm,km,flux(:,l))
+      case(2);call stored_diff_flux_at_yphysical(point(1),point(2),point(3),axis,im,jm,km,flux(:,l))
+      case(4);call stored_diff_flux_at_zphysical(point(1),point(2),point(3),axis,im,jm,km,flux(:,l))
+      case(3);call stored_diff_flux_at_xyphysical(point(1),point(2),point(3),axis,im,jm,km,flux(:,l))
+      end select
+    enddo
+    if(down/=0.or.up/=0) then
+      call deriv6_x_physical(position(axis),dims(axis),down,up,flux(:,0),flux(:,1),flux(:,-1),flux(:,2),flux(:,-2), &
+        flux(:,3),flux(:,-3),derivative)
+    else
+      do c=2,5
+        derivative(c)=deriv6(flux(c,1),flux(c,-1),flux(c,2),flux(c,-2),flux(c,3),flux(c,-3))
+      enddo
+    endif
+    qrhs_d(i,j,k,2:5)=qrhs_d(i,j,k,2:5)+derivative(2:5)
   end subroutine
 
   subroutine release_me6_runtime_gpu()

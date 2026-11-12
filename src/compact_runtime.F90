@@ -5,7 +5,8 @@ module compact_runtime
   use commvar, only: hm
   use compact_operator
   use derivative, only: finite_difference,fds,diff6ec
-  use numerical_forms, only: compact_filter_selected,filter_scheme,convection_form
+  use numerical_forms, only: compact_filter_selected,filter_scheme,convection_form,viscous_form, &
+    simple_physical_boundary_axis,ldc_boundary_layout,x_open_boundary_layout
   use keep_operator, only: keep_split_plan,build_keep_split_plan,keep_split_variables, &
     keep_monomial,keep_split_accumulate
   implicit none
@@ -40,6 +41,12 @@ contains
       if(lio) write(*,'(A,A)') 'KEEP GEOMETRY G1: conservative curl; derivative=',conschm
       return
     endif
+    if(viscous_form=='me6_opti'.and.difschm=='643c') then
+      call configure_global_compact(bctype)
+      geometry_phase=.true.
+      if(lio) write(*,'(A)') 'ME6 COMPACT GEOMETRY: global coupling with affine-periodic coordinate increments'
+      return
+    endif
     if(trim(flowtype)/='bl'.or.conschm/='743e'.or.difschm/='643c') return
     call configure_global_compact(bctype)
     geometry_phase=.true.
@@ -57,7 +64,7 @@ contains
     if(convection_form/='keep') then
       df=fds%central(asolver,f,dim)
     elseif(conschm=='643e') then
-      df=diff6ec(f,dim,3)
+      df=diff6ec(f,dim,asolver%nbctype)
     elseif(conschm=='643c') then
       df=global_compact_derivative_cpu(geometry_operator,asolver,f,dim)
     else
@@ -87,18 +94,23 @@ contains
     use commvar, only: conschm,difschm,flowtype,ndims,numq,num_species,num_modequ,turbmode, &
       rkscheme,nondimen,lihomo,ljhomo,lkhomo,lcomb,lcracon,lfilter,lrestart,im,jm,km,ia,ja,ka, &
       diffterm,recon_schem,lchardecomp
-    use bc, only: turbinf,nscbc_farfield_incoming_only_enabled,nscbc_farfield_sbli_shock_enabled
+    use bc, only: turbinf,nscbc_farfield_incoming_only_enabled,nscbc_farfield_sbli_shock_enabled, &
+      profile_low_order_nscbc_enabled,profile_state_boundary_enabled,low_order_incident_enabled
     use commarray, only: x
     use parallel, only: mpi_igroup,mpi_jgroup,mpi_kgroup,irk,jrk,krk,isize,jsize,ksize,ig0,jg0,kg0,lio
     integer,intent(in) :: boundaries(:)
     integer :: axis,ierr,groups(3),coords(3),ranks(3),dims(3),totals(3),first(3),i,j,k
-    logical :: periodic(3),tgv,plate
+    logical :: periodic(3),tgv,plate,keep_wall,keep_open
     if(resources_ready) return
     enabled=conschm=='643c'.or.difschm=='643c'
     if(.not.enabled.and..not.(lfilter.and.filter_scheme=='compact10')) return
     tgv=conschm=='643c'.and.difschm=='643c'.and.trim(flowtype)=='tgv'.and. &
       lihomo.and.ljhomo.and.lkhomo.and.all(boundaries==1)
-    if(convection_form=='keep') tgv=all(boundaries==1)
+    if(convection_form=='keep'.or.viscous_form=='me6_opti') tgv=all(boundaries==1)
+    keep_wall=(convection_form=='keep'.or.viscous_form=='me6_opti').and. &
+      (simple_physical_boundary_axis(boundaries)>0.or.x_open_boundary_layout(boundaries).or.profile_state_boundary_enabled().or. &
+       (flowtype=='ldcavity'.and.ldc_boundary_layout(boundaries)))
+    keep_open=profile_low_order_nscbc_enabled().or.low_order_incident_enabled()
     plate=conschm=='743e'.and.difschm=='643c'.and.trim(flowtype)=='bl'.and. &
       diffterm.and.recon_schem==5.and.lchardecomp.and.trim(turbinf)=='prof'.and. &
       .not.lihomo.and..not.ljhomo.and.lkhomo
@@ -108,13 +120,13 @@ contains
         nscbc_farfield_incoming_only_enabled().and..not.nscbc_farfield_sbli_shock_enabled())
     endif
     if(enabled) then
-      if((.not.tgv.and..not.plate).or.ndims/=3.or.numq/=5.or. &
+      if((.not.tgv.and..not.plate.and..not.keep_wall.and..not.keep_open).or.ndims/=3.or.numq/=5.or. &
         num_species/=0.or.num_modequ/=0.or.trim(turbmode)/='none'.or.trim(rkscheme)/='rk3'.or. &
-        .not.nondimen.or.lcomb.or.(lcracon.and..not.plate)) &
-        error stop 'Global compact admits periodic 643c/643c TGV or CP6 743e/643c profile plate'
+        .not.nondimen.or.lcomb.or.(lcracon.and..not.plate.and.convection_form/='keep')) &
+        error stop 'Global compact requires a periodic case, KEEP wall/open boundary, or CP6 profile plate'
     else
-      if(any(boundaries/=1).or.ndims/=3.or.numq/=5.or.num_species/=0.or.num_modequ/=0.or.lcomb) &
-        error stop 'Independent global compact filter currently implements periodic five-variable fields'
+      if((any(boundaries/=1).and..not.keep_wall.and..not.keep_open).or.ndims/=3.or.numq/=5.or.num_species/=0.or.num_modequ/=0.or.lcomb) &
+        error stop 'Independent global compact filter requires a periodic field or KEEP wall/open boundary'
     endif
     if(lrestart) error stop 'Legacy compact restart is disabled; use output restore_directory'
     if(hm<2.or.(lfilter.and.hm<5)) error stop 'Insufficient halo for global compact RHS'
@@ -158,6 +170,8 @@ contains
     resources_ready=.true.
     if(lio) then
       if(tgv) write(*,'(A)') 'COMPACT GLOBAL: periodic unique-node derivative/filter; CPU direct / GPU two-level PCR'
+      if(keep_wall) write(*,'(A)') 'COMPACT GLOBAL: low-order physical ends; MPI interfaces remain globally coupled'
+      if(keep_open) write(*,'(A)') 'COMPACT GLOBAL: KEEP physical open ends; MPI interfaces remain globally coupled'
       if(plate) write(*,'(A)') 'COMPACT GLOBAL: physical-end plate derivative; CPU direct / GPU two-level PCR'
       if(.not.enabled) write(*,'(A)') 'COMPACT GLOBAL: independent filter; existing geometry/derivative unchanged'
     endif
@@ -236,7 +250,7 @@ contains
   end function
 
   subroutine global_keep_convection_cpu()
-    use commvar, only: im,jm,km,gamma
+    use commvar, only: im,jm,km,gamma,is,ie,js,je,ks,ke
     use commarray, only: rho,vel,prs,jacob,dxi,qrhs
     use compact_line_solver, only: compact_matrix
     real(real_kind),allocatable :: input(:,:),rhs(:,:),owned(:,:),values(:,:)
@@ -244,7 +258,6 @@ contains
     integer :: axis,dims(3),dim,lines,line,pos,point(3),b
     if(keep_split%terms==0) call build_keep_split_plan(keep_split)
     dims=[im,jm,km]
-    qrhs=0.e0_real_kind
     do axis=1,3
       dim=dims(axis)
       lines=(im+1)*(jm+1)*(km+1)/(dim+1)
@@ -261,6 +274,13 @@ contains
         owned(compact_partitions(axis)%owned,keep_split%bases),values(0:dim,keep_split%bases))
       do line=1,lines
         do pos=-hm,dim+hm
+          if(.not.compact_partitions(axis)%periodic) then
+            if(compact_partitions(axis)%first+pos<0.or. &
+              compact_partitions(axis)%first+pos>compact_partitions(axis)%intervals) then
+              input(pos,:)=0.e0_real_kind
+              cycle
+            endif
+          endif
           select case(axis)
           case(1);point=[pos,mod(line-1,jm+1),(line-1)/(jm+1)]
           case(2);point=[mod(line-1,im+1),pos,(line-1)/(im+1)]
@@ -281,6 +301,7 @@ contains
           case(2);point=[mod(line-1,im+1),pos,(line-1)/(im+1)]
           case(3);point=[mod(line-1,im+1),(line-1)/(im+1),pos]
           end select
+          if(any(point<[is,js,ks]).or.any(point>[ie,je,ke])) cycle
           metric=jacob(point(1),point(2),point(3))*dxi(point(1),point(2),point(3),axis,:)
           call keep_split_variables(rho(point(1),point(2),point(3)),vel(point(1),point(2),point(3),:), &
             prs(point(1),point(2),point(3)),metric,gamma,variables)

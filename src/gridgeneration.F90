@@ -402,6 +402,7 @@ module gridgeneration
     end do
     end do
     !
+    dymax=0.e0_real_kind
     do j=1,jm
       dymax=max(dymax,yy(j)-yy(j-1))
     enddo

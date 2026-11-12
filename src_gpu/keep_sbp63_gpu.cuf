@@ -1,0 +1,97 @@
+#define SBP63_PROC attributes(device)
+#define SBP63_DEVICE
+module keep_sbp63_gpu
+  use cudafor
+  use keep_operator_gpu, only: keep_pair_device
+#include "../src/keep_sbp63_body.inc"
+  attributes(global) subroutine sbp63_convection_line_kernel(dim,total,start,hm,spacing,rho,velocity,pressure,gamma,divergence)
+    integer,value :: dim,total,start,hm
+    real(real_kind),value :: spacing,gamma
+    real(real_kind),device,intent(in) :: rho(-hm:dim+hm),velocity(-hm:dim+hm,3),pressure(-hm:dim+hm)
+    real(real_kind),device,intent(out) :: divergence(0:dim,5)
+    real(real_kind) :: result(5),flux(5),metric(3),weight,vl(3),vr(3),normal(3),wall(5),sign
+    integer :: i,offset,c
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(i>dim) return
+    metric=[0.e0_real_kind,1.e0_real_kind,0.e0_real_kind];result=0.e0_real_kind
+    do c=1,3
+      vl(c)=velocity(i,c)
+    enddo
+    do offset=-5,5
+      weight=sbp63_weight(start+i,offset,total)
+      if(weight==0.e0_real_kind) cycle
+      do c=1,3
+        vr(c)=velocity(i+offset,c)
+      enddo
+      call keep_pair_device(rho(i),vl,pressure(i),metric,rho(i+offset),vr,pressure(i+offset),metric,gamma,flux)
+      result=result-2.e0_real_kind*weight*flux/spacing
+    enddo
+    if(start+i==0.or.start+i==total) then
+      sign=1.e0_real_kind
+      if(start+i==0) sign=-1.e0_real_kind
+      normal=sign*metric
+      call sbp63_inviscid_wall(pressure(i),normal,wall)
+      call keep_pair_device(rho(i),vl,pressure(i),metric,rho(i),vl,pressure(i),metric,gamma,flux)
+      result=result-sign*(sign*wall-flux)/(spacing*sbp63_norm(start+i,total))
+    endif
+    divergence(i,:)=result
+  end subroutine
+
+  attributes(global) subroutine sbp63_flux_line_kernel(dim,hm,spacing,velocity,temperature,mu,kappa, &
+      wall_temperature,flux,face,gradient)
+    integer,value :: dim,hm
+    real(real_kind),value :: spacing,wall_temperature
+    real(real_kind),device,intent(in) :: velocity(-hm:dim+hm,3),temperature(-hm:dim+hm),mu(0:dim),kappa(0:dim)
+    real(real_kind),device,intent(out) :: flux(0:dim,4),face(0:dim,5),gradient(0:dim,12)
+    real(real_kind) :: gu(3,3),gt(3),stress(3,3),energy(3),normal(3),weight,inverse_length,sign,wall_flux(5),vl(3)
+    integer :: i,offset,c
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(i>dim) return
+    gu=0.e0_real_kind;gt=0.e0_real_kind;wall_flux=0.e0_real_kind
+    do c=1,3
+      vl(c)=velocity(i,c)
+    enddo
+    do offset=-5,5
+      weight=sbp63_weight(i,offset,dim)/spacing
+      if(weight==0.e0_real_kind) cycle
+      gu(:,2)=gu(:,2)+weight*velocity(i+offset,:)
+      gt(2)=gt(2)+weight*temperature(i+offset)
+    enddo
+    if(i==0.or.i==dim) then
+      sign=1.e0_real_kind
+      if(i==0) sign=-1.e0_real_kind
+      normal=[0.e0_real_kind,sign,0.e0_real_kind]
+      inverse_length=1.e0_real_kind/(spacing*sbp63_norm(i,dim))
+      call sbp63_lift(normal,inverse_length,[0.e0_real_kind,0.e0_real_kind,0.e0_real_kind], &
+        vl,wall_temperature,temperature(i),gu,gt)
+      call sbp63_viscous_wall(mu(i),kappa(i),inverse_length,normal, &
+        [0.e0_real_kind,0.e0_real_kind,0.e0_real_kind],vl,wall_temperature,temperature(i),gu,gt,wall_flux)
+    endif
+    call sbp63_material_flux(mu(i),kappa(i),vl,gu,gt,stress,energy)
+    flux(i,1:3)=stress(:,2);flux(i,4)=energy(2);face(i,:)=wall_flux
+    gradient(i,1:9)=reshape(gu,[9]);gradient(i,10:12)=gt
+  end subroutine
+
+  attributes(global) subroutine sbp63_divergence_line_kernel(dim,spacing,flux,face,rhs)
+    integer,value :: dim
+    real(real_kind),value :: spacing
+    real(real_kind),device,intent(in) :: flux(0:dim,4),face(0:dim,5)
+    real(real_kind),device,intent(out) :: rhs(0:dim,5)
+    real(real_kind) :: result(5),weight,sign
+    integer :: i,offset
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(i>dim) return
+    result=0.e0_real_kind
+    do offset=-5,5
+      weight=sbp63_weight(i,offset,dim)/spacing
+      if(weight==0.e0_real_kind) cycle
+      result(2:5)=result(2:5)+weight*flux(i+offset,:)
+    enddo
+    if(i==0.or.i==dim) then
+      sign=1.e0_real_kind
+      if(i==0) sign=-1.e0_real_kind
+      result(2:5)=result(2:5)+sign*(sign*face(i,2:5)-flux(i,:))/(spacing*sbp63_norm(i,dim))
+    endif
+    rhs(i,:)=result
+  end subroutine
+end module

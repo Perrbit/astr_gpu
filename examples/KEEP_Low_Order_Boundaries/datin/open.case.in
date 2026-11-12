@@ -1,0 +1,31 @@
+&case_options
+ flowtype='bl',ltimrpt=f,use_gpu=$use_gpu,iomode='h'
+/
+&mesh
+ ia=16,ja=16,ka=16,lihomo=f,ljhomo=f,lkhomo=t,lreadgrid=$read_grid,lfftk=f,
+ gridfile='$grid_name'
+/
+&physics
+ nondimen=t,diffterm=t,lcomb=f,ref_tem=273.15d0,reynolds=1000.d0,mach=.3d0,
+ num_species=0,turbmode='none'
+/
+&numerics
+ convection_form='$convection_form',viscous_form='$viscous_form',conschm='643e',difschm='643e',
+ rkscheme='rk3',lfilter=f,filter_scheme='explicit10',alfa_filter=.49d0,kcutoff=48,
+ recon_schem=3,lchardecomp=f,bfacmpld=.1d0,shkcrt=.001d0
+/
+&boundary
+ bctype=11,22,41,52,1,1,twall=0,0,1,0,0,0,turbinf='$inlet_mode',pout=1.d0
+/
+&initialization
+ limmbou=f,lrestart=f,ninit=$initial_dimension
+/
+&sponge
+ spg_i0=0,spg_im=0,spg_j0=0,spg_jm=0,spg_k0=0,spg_km=0,spg_def='layer'
+/
+&precision_options
+ gpu_precision_mode='fp64'
+/
+&boundary_options
+ nscbc_farfield_mode='nonreflecting',wall_blowing_mode='$wall_mode'
+/

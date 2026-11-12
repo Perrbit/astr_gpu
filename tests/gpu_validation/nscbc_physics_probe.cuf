@@ -8,14 +8,18 @@ contains
   subroutine check_nscbc_physics_gpu()
     use mpi
     use commvar, only: im,jm,km,hm,gamma,mach,lihomo,ljhomo,lkhomo, &
-                      npdci,npdcj,npdck,xmin,xmax,uinf,vinf,winf,roinf,pinf,ymin,ymax,nondimen,const6
+                      npdci,npdcj,npdck,xmin,xmax,uinf,vinf,winf,roinf,pinf,ymin,ymax,nondimen,const6,const2, &
+                      numq,num_species,num_modequ,lcomb
     use parallel, only: mpirank,mpisize,mpileft,mpiright
     use gpu_check, only: sync_after_kernel
     use boundary_gpu, only: nscbc_outflow_x_rhs_kernel,gpu_nscbc_outflow_mach2, &
                            apply_nscbc_inflow_x_rhs_gpu,apply_nscbc_x_rhs_gpu, &
                            nscbc_farfield_y_upper_rhs_kernel
-    use bc, only: pout,pmatrix,nscbc_farfield_y_upper_compat_lodi
-    use commarray, only: host_q=>q,host_vel=>vel,host_prs=>prs,host_metric=>dxi,host_rho=>rho
+    use bc, only: pout,pmatrix,nscbc_farfield_y_upper_compat_lodi,nscbc_farfield_y_upper_incoming_lodi, &
+      nscbc_farfield_configured,nscbc_farfield_sbli_shock,nscbc_farfield_shock_x, &
+      nscbc_farfield_rho_target,nscbc_farfield_u_target,nscbc_farfield_v_target, &
+      nscbc_farfield_w_target,nscbc_farfield_t_target
+    use commarray, only: host_q=>q,host_vel=>vel,host_prs=>prs,host_metric=>dxi,host_rho=>rho,host_x=>x
     use solver_gpu, only: explicit_upwind_rhs_y_physical_global_kernel, &
                           explicit_upwind_rhs_z_xyphysical_global_kernel
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -23,11 +27,11 @@ contains
     real(real_kind),allocatable :: state(:,:,:,:),density(:,:,:),velocity(:,:,:,:), &
                           pressure(:,:,:),temperature(:,:,:),metric(:,:,:,:,:), &
                           jacobian(:,:,:),rhs(:,:,:,:),flux(:,:,:),checked_state(:,:,:,:)
-    real(real_kind) :: error,global_error,expected(5),u,v,w,r,p,reported,target_p,css,rate,enthalpy
+    real(real_kind) :: error,global_error,expected(5),u,v,w,r,p,reported,target_p,css,rate,enthalpy,wave_tolerance
     real(real_kind) :: qtarget(5),delta(5),plus(5),minus(5),normal_derivative(5),back_rate,plus_rate,local_p
-    real(real_kind) :: cpu_lodi(5),cpu_pinv(5,5),cpu_pnor(5,5),empty_species(0)
+    real(real_kind) :: cpu_lodi(5),cpu_pinv(5,5),cpu_pnor(5,5),empty_species(0),dp,dm
     integer :: i,j,k,m,istat,nblocks,ierr,device_count,axis,apply_right
-    logical :: inlet_mode,top_mode,outlet_mode,backflow_mode
+    logical :: inlet_mode,top_mode,outlet_mode,backflow_mode,target_mode,shock_mode
     character(len=32) :: mode
     type(dim3) :: block,grid
 
@@ -39,6 +43,7 @@ contains
     istat=cudaSetDevice(mod(mpirank,device_count))
     if(istat/=cudaSuccess) error stop 'Cannot bind NSCBC probe device'
     im=8; jm=8; km=8; gamma=1.4e0_real_kind; mach=1.e0_real_kind
+    numq=5;num_species=0;num_modequ=0;lcomb=.false.
     lihomo=.false.; ljhomo=.true.; lkhomo=.true.
     mpileft=mpirank-1; mpiright=mpirank+1
     if(mpirank==0) mpileft=MPI_PROC_NULL
@@ -69,6 +74,8 @@ contains
     target_p=p
     inlet_mode=index(trim(mode),'inlet_')==1
     top_mode=index(trim(mode),'top_')==1
+    target_mode=index(trim(mode),'top_target_')==1
+    shock_mode=trim(mode)=='top_target_shock_noise'
     outlet_mode=index(trim(mode),'out_')==1
     backflow_mode=index(trim(mode),'out_backflow')==1
     if(inlet_mode .or. outlet_mode .or. top_mode) target_p=p-.01e0_real_kind
@@ -108,6 +115,30 @@ contains
       u=10.e0_real_kind; v=-.2e0_real_kind
     case('top_grazing')
       u=10.e0_real_kind; v=0.e0_real_kind
+    case('top_grazing_minus')
+      u=10.e0_real_kind; v=-1.e-20_real_kind
+    case('top_grazing_plus')
+      u=10.e0_real_kind; v=1.e-20_real_kind
+    case('top_grazing_inband')
+      u=10.e0_real_kind; v=-32.e0_real_kind*epsilon(1.e0_real_kind)
+    case('top_grazing_outband')
+      u=10.e0_real_kind; v=-128.e0_real_kind*epsilon(1.e0_real_kind)
+    case('top_target_minus','top_target_shock_noise')
+      u=10.e0_real_kind; v=-1.e-20_real_kind
+    case('top_target_plus')
+      u=10.e0_real_kind; v=1.e-20_real_kind
+    case('top_target_inband')
+      u=10.e0_real_kind; v=-32.e0_real_kind*epsilon(1.e0_real_kind)
+    case('top_target_outband')
+      u=10.e0_real_kind; v=-128.e0_real_kind*epsilon(1.e0_real_kind)
+    case('top_target_in')
+      u=10.e0_real_kind; v=-.2e0_real_kind
+    case('top_target_out')
+      u=10.e0_real_kind; v=.2e0_real_kind
+    case('top_target_supin')
+      u=10.e0_real_kind; v=-2.e0_real_kind
+    case('top_target_supout')
+      u=10.e0_real_kind; v=2.e0_real_kind
     case('joint')
       u=2.e0_real_kind; v=2.e0_real_kind; w=.3e0_real_kind
     end select
@@ -223,13 +254,41 @@ contains
         nblocks=((im+1)*(km+1)+255)/256
         r=1.e0_real_kind
         rate=target_p/(gamma-1.e0_real_kind)+.5e0_real_kind*(u*u+v*v+w*w)
+        if(target_mode) then
+          r=1.01e0_real_kind
+          qtarget=[r,r*(u-.03e0_real_kind),0.e0_real_kind,r*.02e0_real_kind, &
+            target_p/(gamma-1.e0_real_kind)+.5e0_real_kind*r*((u-.03e0_real_kind)**2+.02e0_real_kind**2)]
+          call nscbc_farfield_y_upper_rhs_kernel<<<nblocks,256>>>( &
+            im,jm,km,hm,3,3,gamma,mach,0.e0_real_kind,8.e0_real_kind,target_p, &
+            r,u-.03e0_real_kind,0.e0_real_kind,.02e0_real_kind,qtarget(5), &
+            r,u-.03e0_real_kind,0.e0_real_kind,.02e0_real_kind,qtarget(5), &
+            1.e0_real_kind,merge(1,0,shock_mode),1,.25e0_real_kind,1)
+          call sync_after_kernel('NSCBC target grazing policy')
+          delta=state(im/2,jm,km/2,:)-qtarget
+          dp=(gamma-1.e0_real_kind)*(delta(5)-u*delta(2)-v*delta(3)-w*delta(4)+ &
+            .5e0_real_kind*(u*u+v*v+w*w)*delta(1))
+          dm=delta(3)-v*delta(1)
+          plus=(dp+css*dm)/(2.e0_real_kind*css**2)* &
+            [1.e0_real_kind,u,v+css,w,enthalpy+css*v]
+          minus=(dp-css*dm)/(2.e0_real_kind*css**2)* &
+            [1.e0_real_kind,u,v-css,w,enthalpy-css*v]
+          wave_tolerance=0.e0_real_kind
+          if(.not.shock_mode) wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(v))
+          rate=.25e0_real_kind*css/8.e0_real_kind
+          if(v>=-wave_tolerance) rate=.75e0_real_kind*rate
+          expected=0.e0_real_kind
+          if(v<-wave_tolerance) expected=expected-rate*(delta-plus-minus)
+          if(v+css<-wave_tolerance) expected=expected-rate*plus
+          if(v-css<-wave_tolerance) expected=expected-rate*minus
+        else
         call nscbc_farfield_y_upper_rhs_kernel<<<nblocks,256>>>( &
           im,jm,km,hm,3,3,gamma,mach,0.e0_real_kind,8.e0_real_kind,target_p, &
           r,u,v,w,rate,r,u,v,w,rate,0.e0_real_kind,0,0,100.e0_real_kind,1)
         call sync_after_kernel('NSCBC uniform top policy')
+        wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(v))
         if(v<=-css) then
           expected(5)=-.25e0_real_kind*css/8.e0_real_kind*(p-target_p)/(gamma-1.e0_real_kind)
-        elseif(v<0.e0_real_kind) then
+        elseif(v<-wave_tolerance) then
           rate=.25e0_real_kind*css/8.e0_real_kind
           expected=-rate*(p-target_p)/css**2* &
             ([-1.e0_real_kind,-u,-v,-w,-.5e0_real_kind*(u*u+v*v+w*w)] + &
@@ -240,6 +299,7 @@ contains
         endif
         if(trim(mode)=='top_sup_gradient') &
           expected=-.001e0_real_kind*[0.e0_real_kind,0.e0_real_kind,1.e0_real_kind,0.e0_real_kind,gamma*v/(gamma-1.e0_real_kind)]
+        endif
         rhs=qrhs_d
         error=maxval(abs(rhs(im/2,jm,km/2,:)-expected))
         if(trim(mode)/='top_sup_gradient') then
@@ -255,8 +315,21 @@ contains
           cpu_pnor=pmatrix(1.e0_real_kind,u,v,w,temperature(im/2,jm,km/2),empty_species, &
             metric(im/2,jm,km/2,2,:),.false.)
           cpu_lodi=0.e0_real_kind
-          call nscbc_farfield_y_upper_compat_lodi(cpu_lodi,cpu_pinv,im/2,jm,km/2,css)
+          if(target_mode) then
+            allocate(host_x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3));host_x=0.e0_real_kind
+            const2=gamma*mach**2
+            nscbc_farfield_configured=.true.;nscbc_farfield_sbli_shock=shock_mode
+            nscbc_farfield_shock_x=1.e0_real_kind
+            nscbc_farfield_rho_target=r;nscbc_farfield_u_target=u-.03e0_real_kind
+            nscbc_farfield_v_target=0.e0_real_kind;nscbc_farfield_w_target=.02e0_real_kind
+            nscbc_farfield_t_target=const2*target_p/r
+            call nscbc_farfield_y_upper_incoming_lodi(cpu_lodi,cpu_pinv,im/2,jm,km/2,css,.25e0_real_kind)
+            deallocate(host_x)
+          else
+            call nscbc_farfield_y_upper_compat_lodi(cpu_lodi,cpu_pinv,im/2,jm,km/2,css)
+          endif
           error=max(error,maxval(abs(-matmul(cpu_pnor,cpu_lodi)-rhs(im/2,jm,km/2,:))))
+          error=max(error,maxval(abs(-matmul(cpu_pnor,cpu_lodi)-expected)))
           deallocate(host_q,host_vel,host_prs,host_metric,host_rho)
         endif
       endif
@@ -267,7 +340,7 @@ contains
       apply_right=merge(1,0,mpirank==mpisize-1)
       nblocks=((jm+1)*(km+1)+255)/256
       call nscbc_outflow_x_rhs_kernel<<<nblocks,256>>>(im,jm,km,hm,npdcj,3,gamma,mach, &
-        0.e0_real_kind,8.e0_real_kind,roinf,uinf,vinf,winf,p,1.e0_real_kind,0.e0_real_kind,apply_right)
+        0.e0_real_kind,8.e0_real_kind,roinf,uinf,vinf,winf,p,1.e0_real_kind,0.e0_real_kind,apply_right,1)
       call sync_after_kernel('NSCBC joint x face')
       rate=p/(gamma-1.e0_real_kind)+.5e0_real_kind*(u*u+v*v+w*w)
       nblocks=((im+1)*(km+1)+255)/256
@@ -285,7 +358,7 @@ contains
     elseif(trim(mode)=='sign' .or. axis/=0) then
       nblocks=((jm+1)*(km+1)+255)/256
       call nscbc_outflow_x_rhs_kernel<<<nblocks,256>>>(im,jm,km,hm,3,3,gamma,mach, &
-        0.e0_real_kind,8.e0_real_kind,roinf,uinf,vinf,winf,p,1.e0_real_kind,4.e0_real_kind,1)
+        0.e0_real_kind,8.e0_real_kind,roinf,uinf,vinf,winf,p,1.e0_real_kind,4.e0_real_kind,1,1)
       call sync_after_kernel('NSCBC physics outflow')
       rhs=qrhs_d
       if(axis==0) then

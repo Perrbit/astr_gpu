@@ -13,14 +13,26 @@ module me6opti_halo
 contains
   ! Physical nodes and face halos must already hold the current stage primitives.
   ! Y includes X ghosts; Z then includes X/Y ghosts. No shared node is averaged.
-  subroutine extend_me6_edges_cpu(im,jm,km,hm,velocity,temperature,parts,peers)
+  subroutine extend_me6_edges_cpu(im,jm,km,hm,velocity,temperature,parts,peers,periodic)
     integer,intent(in) :: im,jm,km,hm,parts(3),peers(2,3)
+    logical,intent(in) :: periodic(3)
     real(real_kind),intent(inout) :: velocity(-hm:,-hm:,-hm:,:),temperature(-hm:,-hm:,-hm:)
-    integer :: axis,slot,nx,nt,i,j,k,h,c,lo(3),hi(3),lowghost(3),highghost(3),last(3),n,ierr
-    integer :: status(MPI_STATUS_SIZE),ignored
+    integer :: axis,slot,nx,nt,i,j,k,h,c,lo(3),hi(3),lowghost(3),highghost(3),last(3),n,ierr,jlo,jhi
+    integer :: status(MPI_STATUS_SIZE),ignored,ilo,ihi
     real(real_kind) :: lowvalue,highvalue
     last=[im,jm,km];nx=im+2*hm+1
+    ilo=-hm;ihi=im+hm
+    if(.not.periodic(1)) then
+      if(parts(1)==1.or.peers(1,1)==MPI_PROC_NULL) ilo=0
+      if(parts(1)==1.or.peers(2,1)==MPI_PROC_NULL) ihi=im
+    endif
+    jlo=-hm;jhi=jm+hm
+    if(.not.periodic(2)) then
+      if(parts(2)==1.or.peers(1,2)==MPI_PROC_NULL) jlo=0
+      if(parts(2)==1.or.peers(2,2)==MPI_PROC_NULL) jhi=jm
+    endif
     do axis=2,3
+      if(parts(axis)==1.and..not.periodic(axis)) cycle
       slot=axis-1
       nt=km+1
       if(axis==3) nt=jm+2*hm+1
@@ -32,6 +44,13 @@ contains
       do j=1,nt
       do i=1,nx
       do h=1,hm
+        if(i-hm-1<ilo.or.i-hm-1>ihi.or.(axis==3.and.(j-hm-1<jlo.or.j-hm-1>jhi))) then
+          if(parts(axis)>1) then
+            buffers(slot)%sl(h,i,j,c)=0.e0_real_kind
+            buffers(slot)%sh(h,i,j,c)=0.e0_real_kind
+          endif
+          cycle
+        endif
         lo=[i-hm-1,h,j-1]
         if(axis==3) lo=[i-hm-1,j-hm-1,h]
         hi=lo;hi(axis)=last(axis)-hm+h-1
@@ -69,15 +88,16 @@ contains
       do j=1,nt
       do i=1,nx
       do h=1,hm
+        if(i-hm-1<ilo.or.i-hm-1>ihi.or.(axis==3.and.(j-hm-1<jlo.or.j-hm-1>jhi))) cycle
         lowghost=[i-hm-1,h-hm-1,j-1]
         if(axis==3) lowghost=[i-hm-1,j-hm-1,h-hm-1]
         highghost=lowghost;highghost(axis)=last(axis)+h
         if(c<=3) then
-          velocity(lowghost(1),lowghost(2),lowghost(3),c)=buffers(slot)%rl(h,i,j,c)
-          velocity(highghost(1),highghost(2),highghost(3),c)=buffers(slot)%rh(h,i,j,c)
+          if(peers(1,axis)/=MPI_PROC_NULL) velocity(lowghost(1),lowghost(2),lowghost(3),c)=buffers(slot)%rl(h,i,j,c)
+          if(peers(2,axis)/=MPI_PROC_NULL) velocity(highghost(1),highghost(2),highghost(3),c)=buffers(slot)%rh(h,i,j,c)
         else
-          temperature(lowghost(1),lowghost(2),lowghost(3))=buffers(slot)%rl(h,i,j,c)
-          temperature(highghost(1),highghost(2),highghost(3))=buffers(slot)%rh(h,i,j,c)
+          if(peers(1,axis)/=MPI_PROC_NULL) temperature(lowghost(1),lowghost(2),lowghost(3))=buffers(slot)%rl(h,i,j,c)
+          if(peers(2,axis)/=MPI_PROC_NULL) temperature(highghost(1),highghost(2),highghost(3))=buffers(slot)%rh(h,i,j,c)
         endif
       enddo
       enddo

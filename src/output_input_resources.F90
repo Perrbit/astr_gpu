@@ -34,6 +34,8 @@ contains
       resolved=trim(wall_root)//'/grid.2d'
     case('datin/wallbs.dat')
       resolved=trim(wall_root)//'/wallbs.dat'
+    case('datin/wallbs_phase.dat')
+      resolved=trim(wall_root)//'/wallbs_phase.dat'
     end select
   end function
 

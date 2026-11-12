@@ -2,7 +2,8 @@ program keep_split_probe
   use astr_precision, only: real_kind
   use keep_operator
   use compact_operator
-  use compact_line_solver, only: compact_matrix
+  use compact_line_solver, only: compact_matrix,compact_residual,compact_reference_factor, &
+    factor_compact_reference,solve_compact_reference
   use mpi
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
@@ -10,32 +11,42 @@ program keep_split_probe
   real(real_kind),parameter :: pi=acos(-1.e0_real_kind),gamma=1.4e0_real_kind
   real(real_kind) :: error(5,3),order(5)
   integer :: ierr,level,n
+  logical :: periodic
+  character(32) :: mode
   call MPI_Init(ierr)
+  call get_command_argument(1,mode)
+  periodic=trim(mode)/='--wall'
   call build_keep_split_plan(split)
   write(*,'(A,I0,A,I0)') 'KEEP split terms=',split%terms,' derivative_bases=',split%bases
-  call check_pair_equivalence(.false.)
-  call check_pair_equivalence(.true.)
+  if(periodic) call check_pair_equivalence(.false.,.true.)
+  call check_pair_equivalence(.true.,periodic)
   do level=1,3
     n=16*2**level
-    call check_compact_accuracy(n,error(:,level))
+    if(.not.periodic) n=n+1
+    call check_compact_accuracy(n,periodic,error(:,level))
     write(*,'(A,I0,A,5ES16.7)') 'KEEP compact n=',n,' errors=',error(:,level)
   enddo
   do level=1,2
     order=log(error(:,level)/error(:,level+1))/log(2.e0_real_kind)
     write(*,'(A,5F12.6)') 'KEEP compact component_orders=',order
-    if(any(order<5.5e0_real_kind)) error stop 'compact split order below sixth-order asymptote'
+    if(periodic.and.any(order<5.5e0_real_kind)) error stop 'compact split order below sixth-order asymptote'
+    if(.not.periodic.and.any(order<2.5e0_real_kind)) error stop 'compact physical split lacks third-order convergence'
   enddo
   call MPI_Finalize(ierr)
-  print '(A)', 'KEEP_SPLIT_PASS explicit_pair compact_pair sixth_order'
+  if(periodic) then
+    print '(A)', 'KEEP_SPLIT_PASS explicit_pair compact_pair sixth_order'
+  else
+    print '(A)', 'KEEP_SPLIT_WALL_PASS physical_core pair_equivalence reference_LU local_endpoint_closure'
+  endif
 contains
-  subroutine fill_state(n,varying_metric,rho,velocity,p,metric,variables)
+  subroutine fill_state(n,varying_metric,periodic,rho,velocity,p,metric,variables)
     integer,intent(in) :: n
-    logical,intent(in) :: varying_metric
+    logical,intent(in) :: varying_metric,periodic
     real(real_kind),intent(out) :: rho(n),velocity(n,3),p(n),metric(n,3),variables(n,9)
     real(real_kind) :: x
     integer :: i
     do i=1,n
-      x=real(i-1,real_kind)*2.e0_real_kind*pi/real(n,real_kind)
+      x=real(i-1,real_kind)*2.e0_real_kind*pi/real(merge(n,n-1,periodic),real_kind)
       rho(i)=1.e0_real_kind+0.1e0_real_kind*sin(x)
       p(i)=1.e0_real_kind+0.1e0_real_kind*cos(2.e0_real_kind*x)
       velocity(i,:)=[0.2e0_real_kind+0.1e0_real_kind*sin(2.e0_real_kind*x), &
@@ -47,17 +58,18 @@ contains
     enddo
   end subroutine
 
-  subroutine derivative_matrix(n,compact,d)
+  subroutine derivative_matrix(n,compact,periodic,d)
     integer,intent(in) :: n
-    logical,intent(in) :: compact
+    logical,intent(in) :: compact,periodic
     real(real_kind),intent(out) :: d(n,n)
     type(compact_matrix) :: matrix
     type(compact_line_partition) :: partition
     type(compact_cpu_plan) :: plan
+    type(compact_reference_factor) :: reference
     real(real_kind) :: input(-3:n+2,n),rhs(n,n),owned(n,n),edge(2),h
     real(real_kind),parameter :: a(3)=[0.75e0_real_kind,-0.15e0_real_kind,1.e0_real_kind/60.e0_real_kind]
     integer :: i,j,l
-    h=2.e0_real_kind*pi/real(n,real_kind)
+    h=2.e0_real_kind*pi/real(merge(n,n-1,periodic),real_kind)
     d=0.e0_real_kind
     if(.not.compact) then
       do i=1,n
@@ -68,12 +80,16 @@ contains
       enddo
       return
     endif
-    partition=compact_line_partition(intervals=n,global_n=n,first=0,local_intervals=n-1, &
-      owned=n,rank=0,ranks=1,periodic=.true.)
+    partition=compact_line_partition(intervals=merge(n,n-1,periodic),global_n=n,first=0,local_intervals=n-1, &
+      owned=n,rank=0,ranks=1,periodic=periodic)
     input=0.e0_real_kind
     do j=1,n
       do i=-3,n+2
-        if(modulo(i,n)+1==j) input(i,j)=1.e0_real_kind
+        if(periodic) then
+          if(modulo(i,n)+1==j) input(i,j)=1.e0_real_kind
+        else
+          if(i==j-1) input(i,j)=1.e0_real_kind
+        endif
       enddo
     enddo
     call compact_derivative_core(partition,matrix,edge)
@@ -81,6 +97,15 @@ contains
     call compact_derivative_rhs(partition,n-1,3,input,rhs)
     call solve_compact_cpu(plan,rhs,owned,d,n)
     d=d/h
+    if(.not.periodic) then
+      if(compact_residual(matrix,d,rhs/h)>2.e-10_real_kind) error stop 'physical compact matrix residual'
+      call factor_compact_reference(matrix,reference)
+      call solve_compact_reference(reference,rhs/h,owned)
+      if(maxval(abs(d-owned)/max(1.e0_real_kind,abs(d),abs(owned)))>2.e-10_real_kind) &
+        error stop 'physical compact PCR differs from independent pivoted LU'
+      call release_compact_cpu(plan)
+      return
+    endif
     do i=1,n
       if(maxval(abs(d(i,:)+(d(modulo(i-2,n)+1,:)+d(modulo(i,n)+1,:))/3.e0_real_kind-rhs(i,:)/h)) / &
         max(1.e0_real_kind,maxval(abs(rhs(i,:)/h)))>2.e-10_real_kind) error stop 'compact matrix residual'
@@ -108,14 +133,14 @@ contains
     if(.not.all(ieee_is_finite(result))) error stop 'nonfinite compact split result'
   end subroutine
 
-  subroutine check_pair_equivalence(compact)
-    logical,intent(in) :: compact
+  subroutine check_pair_equivalence(compact,periodic)
+    logical,intent(in) :: compact,periodic
     integer,parameter :: n=32
     real(real_kind) :: rho(n),velocity(n,3),p(n),metric(n,3),variables(n,9),d(n,n)
     real(real_kind) :: result(n,5),reference(n,5),flux(5),difference
     integer :: i,j
-    call fill_state(n,.true.,rho,velocity,p,metric,variables)
-    call derivative_matrix(n,compact,d)
+    call fill_state(n,.true.,periodic,rho,velocity,p,metric,variables)
+    call derivative_matrix(n,compact,periodic,d)
     call split_apply(n,d,variables,result)
     reference=0.e0_real_kind
     do i=1,n
@@ -128,24 +153,29 @@ contains
     difference=maxval(abs(reference-result)/max(1.e0_real_kind,abs(reference),abs(result)))
     write(*,'(A,L1,A,ES16.7)') 'KEEP split compact=',compact,' pair_equivalence=',difference
     if(difference>2.e-10_real_kind) error stop 'KEEP polynomial split differs from original pair flux'
-    if(maxval(abs(sum(result,dim=1)))>2.e-10_real_kind) error stop 'KEEP split periodic conservation'
+    if(periodic.and.maxval(abs(sum(result,dim=1)))>2.e-10_real_kind) error stop 'KEEP split periodic conservation'
   end subroutine
 
-  subroutine check_compact_accuracy(n,error)
+  subroutine check_compact_accuracy(n,periodic,error)
     integer,intent(in) :: n
+    logical,intent(in) :: periodic
     real(real_kind),intent(out) :: error(5)
     real(real_kind) :: rho(n),velocity(n,3),p(n),metric(n,3),variables(n,9),d(n,n),result(n,5)
     real(real_kind) :: x,dr,dp,dv(3),exact(5),enthalpy,dh
     real(real_kind) :: kinetic(n),pressure_gradient(n),internal(n),internal_convection(n),expected_internal(n),balance
     integer :: i
-    call fill_state(n,.false.,rho,velocity,p,metric,variables)
-    call derivative_matrix(n,.true.,d)
+    call fill_state(n,.false.,periodic,rho,velocity,p,metric,variables)
+    call derivative_matrix(n,.true.,periodic,d)
     call split_apply(n,d,variables,result)
     kinetic=sum(velocity*result(:,2:4),dim=2)-0.5e0_real_kind*sum(velocity**2,dim=2)*result(:,1)
     pressure_gradient=matmul(d,p)
-    balance=sum(kinetic-velocity(:,1)*pressure_gradient)*2.e0_real_kind*pi/real(n,real_kind)
-    write(*,'(A,ES16.7)') 'KEEP compact kinetic_pressure_balance=',balance
-    if(abs(balance)>2.e-10_real_kind) error stop 'compact KEEP kinetic pressure exchange'
+    balance=sum(kinetic-velocity(:,1)*pressure_gradient)*2.e0_real_kind*pi/real(merge(n,n-1,periodic),real_kind)
+    if(periodic) then
+      write(*,'(A,ES16.7)') 'KEEP compact kinetic_pressure_balance=',balance
+      if(abs(balance)>2.e-10_real_kind) error stop 'compact KEEP kinetic pressure exchange'
+    else
+      write(*,'(A,ES16.7)') 'KEEP physical unweighted kinetic_pressure_sum (diagnostic)=',balance
+    endif
     internal=variables(:,5)
     internal_convection=0.25e0_real_kind*(matmul(d,rho*internal*velocity(:,1))+ &
       velocity(:,1)*matmul(d,rho*internal)+rho*internal*matmul(d,velocity(:,1))+ &
@@ -156,7 +186,7 @@ contains
       >2.e-10_real_kind) error stop 'compact KEEP internal energy product relation'
     error=0.e0_real_kind
     do i=1,n
-      x=real(i-1,real_kind)*2.e0_real_kind*pi/real(n,real_kind)
+      x=real(i-1,real_kind)*2.e0_real_kind*pi/real(merge(n,n-1,periodic),real_kind)
       dr=0.1e0_real_kind*cos(x)
       dp=-0.2e0_real_kind*sin(2.e0_real_kind*x)
       dv=[0.2e0_real_kind*cos(2.e0_real_kind*x),-0.1e0_real_kind*sin(x), &

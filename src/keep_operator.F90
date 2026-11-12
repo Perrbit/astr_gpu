@@ -148,34 +148,55 @@ contains
     flux(5)=mass*(kinetic+internal)+dot_product(pressure_work,metric)
   end subroutine
 
-  pure subroutine keep_explicit_volume(im,jm,km,hm,rho,velocity,pressure,jacobian,dxi,gamma,divergence)
-    integer,intent(in) :: im,jm,km,hm
+  pure subroutine keep_explicit_volume(im,jm,km,hm,types,first,last,q,rho,velocity,pressure,jacobian,dxi,gamma,divergence)
+    integer,intent(in) :: im,jm,km,hm,types(3),first(3),last(3)
     real(real_kind),intent(in) :: gamma
     real(real_kind),intent(in) :: rho(-hm:,-hm:,-hm:),velocity(-hm:,-hm:,-hm:,:)
     real(real_kind),intent(in) :: pressure(-hm:,-hm:,-hm:),jacobian(-hm:,-hm:,-hm:)
     real(real_kind),intent(in) :: dxi(-hm:,-hm:,-hm:,:,:)
-    real(real_kind),intent(out) :: divergence(0:im,0:jm,0:km,5)
+    real(real_kind),intent(in) :: q(-hm:,-hm:,-hm:,:)
+    real(real_kind),intent(inout) :: divergence(0:im,0:jm,0:km,5)
     real(real_kind),parameter :: a(3)=[0.75e0_real_kind,-0.15e0_real_kind,1.e0_real_kind/60.e0_real_kind]
-    real(real_kind) :: plus(5),minus(5),ml(3),mr(3)
-    integer :: i,j,k,axis,l,point(3),s
-    divergence=0.e0_real_kind
-    do k=0,km
-    do j=0,jm
-    do i=0,im
+    real(real_kind) :: plus(5),minus(5),ml(3),mr(3),coefficient,normal
+    integer :: i,j,k,axis,l,point(3),s,node(3),dims(3),radius,distance
+    ! The caller initializes RHS; characteristic boundary contributions are retained.
+    dims=[im,jm,km]
+    do k=first(3),last(3)
+    do j=first(2),last(2)
+    do i=first(1),last(1)
+      node=[i,j,k]
       do axis=1,3
         ml=jacobian(i,j,k)*dxi(i,j,k,axis,:)
-        do l=1,3
+        distance=3
+        if(types(axis)==1.or.types(axis)==4) distance=min(distance,node(axis))
+        if(types(axis)==2.or.types(axis)==4) distance=min(distance,dims(axis)-node(axis))
+        radius=min(distance,3)
+        do l=1,radius
           do s=-1,1,2
             point=[i,j,k]
             point(axis)=point(axis)+s*l
             mr=jacobian(point(1),point(2),point(3))*dxi(point(1),point(2),point(3),axis,:)
-            call keep_two_point_flux5(rho(i,j,k),velocity(i,j,k,:),pressure(i,j,k),ml, &
-              rho(point(1),point(2),point(3)),velocity(point(1),point(2),point(3),:), &
-              pressure(point(1),point(2),point(3)),mr,gamma,plus)
+            if(distance<3) then
+              normal=dot_product(mr,velocity(point(1),point(2),point(3),:))
+              plus(1)=q(point(1),point(2),point(3),1)*normal
+              plus(2:4)=q(point(1),point(2),point(3),2:4)*normal &
+                +pressure(point(1),point(2),point(3))*mr
+              plus(5)=(q(point(1),point(2),point(3),5)+pressure(point(1),point(2),point(3)))*normal
+            else
+              call keep_two_point_flux5(rho(i,j,k),velocity(i,j,k,:),pressure(i,j,k),ml, &
+                rho(point(1),point(2),point(3)),velocity(point(1),point(2),point(3),:), &
+                pressure(point(1),point(2),point(3)),mr,gamma,plus)
+            endif
             if(s==-1) then
               minus=plus
             else
-              divergence(i,j,k,:)=divergence(i,j,k,:)+2.e0_real_kind*a(l)*(plus-minus)
+              coefficient=2.e0_real_kind*a(l)
+              if(distance==1) coefficient=0.5e0_real_kind
+              if(distance==2) then
+                coefficient=2.e0_real_kind/3.e0_real_kind
+                if(l==2) coefficient=-1.e0_real_kind/12.e0_real_kind
+              endif
+              divergence(i,j,k,:)=divergence(i,j,k,:)+coefficient*(plus-minus)
             endif
           enddo
         enddo

@@ -132,23 +132,28 @@ def main():
     parser.add_argument('--memcheck',action='store_true')
     parser.add_argument('--filter',choices=['off','explicit10','compact10'],default='off')
     parser.add_argument('--form',choices=['standard','keep'],default='keep')
-    parser.add_argument('--scheme',choices=['643e','643c'],default='643e')
+    parser.add_argument('--scheme',choices=['543e','643e','643c'],default='643e')
     parser.add_argument('--diffusion-scheme',choices=['643e','643c'])
     parser.add_argument('--grid',help='Global intervals, e.g. 32,32,32')
     parser.add_argument('--mapping',choices=['periodic'])
     parser.add_argument('--cartesian-grid',type=Path,help='Existing separable periodic grid')
     parser.add_argument('--viscous-form',choices=['standard','me6_opti'],default='standard')
     parser.add_argument('--transport',choices=['pinned','device-aware'],default='pinned')
+    parser.add_argument('--old-me6-checkpoint',type=Path,help='Frozen v1 checkpoint for G2 identity migration')
     parser.add_argument('--multi-axis',action='store_true',help='Add NP=4 xy and NP=8 xyz dependencies')
     parser.add_argument('--rhs',action='store_true',help='Compare first-stage frozen q and convection RHS at NP=1')
     opts = parser.parse_args()
+    if opts.form=='keep' and opts.scheme=='543e':
+        parser.error('KEEP requires its sixth-order explicit or compact convection')
     opts.output = opts.output.resolve()
     opts.output.mkdir(parents=True,exist_ok=False)
     os.environ.update(OMPI_MCA_pml='ob1',OMPI_MCA_btl='self,vader,tcp',OMPI_MCA_osc='pt2pt',
                       OMPI_MCA_coll='^cuda,hcoll,ucc',OMPI_MCA_opal_cuda_support='0')
     numerics={'convection_form':opts.form,'viscous_form':opts.viscous_form}
-    if opts.diffusion_scheme:
-        numerics['difschm']=opts.diffusion_scheme
+    nodal_scheme=opts.diffusion_scheme or ('643e' if opts.scheme=='543e' else opts.scheme)
+    numerics['difschm']=nodal_scheme
+    if opts.scheme=='543e':
+        numerics.update(recon_schem=3,lchardecomp=False)
     if opts.filter!='off':
         numerics['filter_scheme']=opts.filter
     filtered=opts.filter!='off'
@@ -156,7 +161,7 @@ def main():
     geometry_options=dict(grid=grid,tgv_mapping=opts.mapping,tgv_cartesian_grid=opts.cartesian_grid)
     geometric=opts.mapping is not None or opts.cartesian_grid is not None
     report = dict(grid_intervals=list(map(int,grid.split(','))),steps=4,convection_form=opts.form,
-                  diffusion_scheme=opts.diffusion_scheme or opts.scheme,
+                  diffusion_scheme=nodal_scheme,
                   scheme=opts.scheme,viscous_form=opts.viscous_form,filter=opts.filter,transport=opts.transport,
                   cases={},geometry={},filtered_primitives={})
     singles = {}
@@ -195,8 +200,14 @@ def main():
             if opts.viscous_form=='me6_opti':
                 if 'ASTR_VISCOUS_FORM=me6_opti' not in (continuous/'run.log').read_text():
                     raise AssertionError('ME6 input selection missing from startup')
-                if b'/me6opti-podd-v1' not in (continuous/FINAL/'control.bin').read_bytes():
+                if b'/me6opti-g2-v2' not in (continuous/FINAL/'control.bin').read_bytes():
                     raise AssertionError('ME6 numerical identity missing')
+                if opts.scheme=='543e':
+                    identity=(continuous/FINAL/'control.bin').read_bytes()
+                    if b'/mp5v1' not in identity:
+                        raise AssertionError('Corrected periodic MP5/ME6 dispatch identity missing')
+                    if filtered and ('/filter-'+opts.filter).encode() not in identity:
+                        raise AssertionError('Periodic MP5/ME6 filter identity was truncated')
             finals[backend] = continuous/FINAL/'state.h5'
             if ranks==1:
                 singles[backend] = finals[backend]
@@ -211,8 +222,21 @@ def main():
                     if (continuous/FINAL/filename).read_bytes()!=(resumed/FINAL/filename).read_bytes():
                         raise AssertionError(f'exact KEEP restart differs: {backend} {filename}')
                 report['cases'][f'{backend}_np2_x_exact_restart'] = 'all state datasets and controls identical'
+                if backend=='cpu' and opts.old_me6_checkpoint:
+                    old=opts.old_me6_checkpoint.resolve()
+                    if opts.viscous_form!='me6_opti' or b'/me6opti-podd-v1' not in (old/'control.bin').read_bytes():
+                        raise AssertionError('G2 migration check requires a frozen ME6 v1 checkpoint')
+                    run_case(args,ROOT,backend,ranks,label+'_old_me6_exact',4,restore=old,
+                        lfilter=filtered,numerics=numerics,scheme=opts.scheme,
+                        reject='compact operator identity mismatch',**geometry_options)
+                    migrated,_=run_case(args,ROOT,backend,ranks,label+'_old_me6_nonexact',4,restore=old,
+                        lfilter=filtered,numerics=numerics,scheme=opts.scheme,exact_restart=False,**geometry_options)
+                    compare_q(migrated/FINAL/'state.h5',migrated/FINAL/'state.h5')
+                    report['cases']['old_me6_identity']='v1 exact rejected; explicit G2 non-exact migration completed'
                 if backend=='cpu' and opts.viscous_form=='me6_opti':
                     changed_viscous=dict(numerics,viscous_form='standard')
+                    if opts.scheme=='543e':
+                        changed_viscous['difschm']='643e'
                     run_case(args,ROOT,backend,ranks,label+'_changed_viscous_exact',4,restore=seed,
                         lfilter=filtered,numerics=changed_viscous,scheme=opts.scheme,reject='compact operator identity mismatch',**geometry_options)
                     migrated,_=run_case(args,ROOT,backend,ranks,label+'_changed_viscous_nonexact',4,restore=seed,
@@ -243,7 +267,7 @@ def main():
             if opts.viscous_form=='me6_opti':
                 report['frozen_viscous_rhs']=compare_frozen_rhs(runs['cpu'],runs['gpu'],stage='diffusion')
         (opts.output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
-        print(f'KEEP np{ranks} {axis}: fields compared',flush=True)
+        print(f'{opts.form} {opts.scheme}/{nodal_scheme} np{ranks} {axis}: fields compared',flush=True)
     report['status']='passed'
     (opts.output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
 

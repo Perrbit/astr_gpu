@@ -12,6 +12,7 @@ contains
   subroutine snapshot_wall_filter_gpu(label,stage)
 #ifdef ASTR_BUILD_TESTING
     use boundary_high_order, only: high_order_wall_enabled
+    use numerical_forms, only: convection_form
     use commvar, only: nstep
     use commarray_gpu, only: copy_flow_from_gpu
     use validation_io, only: rhs_validation_requested,write_q_validation_snapshot
@@ -20,7 +21,7 @@ contains
     character(*),intent(in) :: label
     integer,intent(in) :: stage
 #ifdef ASTR_BUILD_TESTING
-    if(.not.high_order_wall_enabled) return
+    if(.not.high_order_wall_enabled.and.convection_form/='keep') return
     if(.not.rhs_validation_requested()) return
     call copy_flow_from_gpu()
     call write_q_validation_snapshot(label,nstep,stage)
@@ -132,12 +133,27 @@ contains
   end subroutine init_gpu
 
 
+  subroutine prepare_x_nscbc_state_gpu()
+    use commvar, only: im,jm,km,hm,const2,const6
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+    use boundary_gpu, only: apply_nscbc_outflow_physical_filter_gpu
+    use solver_gpu, only: q_to_primitive_kernel
+    use halo_exchange_gpu, only: exchange_solution_halo_gpu
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+    call apply_nscbc_outflow_physical_filter_gpu()
+    block=dim3(32,4,4);grid=dim3((im+32)/32,(jm+4)/4,(km+4)/4)
+    call q_to_primitive_kernel<<<grid,block>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+    call sync_after_kernel('x_nscbc_postfilter_primitives')
+    call exchange_solution_halo_gpu()
+  end subroutine prepare_x_nscbc_state_gpu
+
   subroutine prepare_rkfirst_stats_gpu()
-    use numerical_forms, only: convection_form
+    use numerical_forms, only: convection_form,viscous_form
     use compact_operator_gpu, only: compact_global_enabled,compact_filter_state_gpu
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb,nstep, &
       numq,num_species,conschm,difschm
-    use bc, only: bctype,explicit_profile_nscbc_corrections_enabled
+    use bc, only: bctype,explicit_profile_nscbc_corrections_enabled,low_order_incident_enabled
     use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported,gpu_s2_sbli_nscbc_supported
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_solver_gpu, only: air5_prepare_spatial_state_gpu
@@ -146,7 +162,7 @@ contains
     use gpu_check, only: sync_after_kernel
     use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
-    use boundary_gpu, only: apply_boundary_conditions_gpu,apply_ldc_boundary_conditions_gpu, &
+    use boundary_gpu, only: apply_boundary_conditions_gpu,apply_ldc_boundary_conditions_gpu,gpu_uses_x_nscbc, &
          apply_s1_flatplate_boundary_conditions_gpu,gpu_uses_physical_boundary, &
          gpu_ldc_boundary_case_pending,gpu_s1_flatplate_boundary_case_pending, &
          gpu_s1_flatplate_nscbc_farfield_filter_case, &
@@ -168,14 +184,15 @@ contains
     endif
 #endif
     call validate_first_stage_gpu()
-    if((gpu_profile_mp_ld_flatplate_supported().or.gpu_s2_sbli_nscbc_supported()).and.bctype(2)==22.and. &
+    if((gpu_profile_mp_ld_flatplate_supported().or.gpu_s2_sbli_nscbc_supported().or. &
+       low_order_incident_enabled()).and.bctype(2)==22.and. &
        (compact_global_enabled().or.explicit_profile_nscbc_corrections_enabled())) then
       call prepare_profile_nscbc_gpu(1)
       return
     endif
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      (convection_form=='keep'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
+      (convection_form=='keep'.or.viscous_form=='me6_opti'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
       ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_case = gpu_s1_flatplate_boundary_case_pending()
@@ -257,6 +274,8 @@ contains
       call sync_after_kernel('prepare_nscbc_farfield_q_to_primitive_kernel_postfilter')
       call exchange_solution_halo_gpu()
     endif
+    if((convection_form=='keep'.or.viscous_form=='me6_opti').and.gpu_uses_x_nscbc()) &
+      call prepare_x_nscbc_state_gpu()
   end subroutine prepare_rkfirst_stats_gpu
 
   subroutine repair_filtered_state_gpu(stage)
@@ -309,6 +328,12 @@ contains
     use numerical_forms, only: convection_form,viscous_form
     use me6opti_runtime_gpu, only: me6_diffusion_gpu
     use keep_operator_gpu, only: keep_explicit_volume_kernel
+    use keep_sbp63_runtime, only: keep_sbp63_enabled
+    use keep_sbp63_runtime_gpu, only: keep_sbp63_convection_gpu,keep_sbp63_diffusion_gpu
+#ifdef ASTR_BUILD_TESTING
+    use keep_sbp63_runtime, only: keep_sbp63_mms_enabled
+    use keep_sbp63_runtime_gpu, only: keep_sbp63_source_gpu
+#endif
     use compact_operator_gpu, only: compact_global_enabled,compact_convection_gpu, &
       compact_diffusion_flux_gpu,compact_diffusion_rhs_gpu,compact_filter_state_gpu,compact_keep_convection_gpu, &
       compact_gradient_enabled
@@ -316,7 +341,7 @@ contains
     use iso_fortran_env, only: real64
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,nstep,deltat,const2,const5,const6, &
          diffterm,lfilter,reynolds,prandtl,tempconst,tempconst1,gamma,recon_schem,lcomb,flowtype, &
-         numq,num_species,conschm,difschm,lcracon
+         numq,num_species,conschm,difschm,lcracon,lchardecomp
     use commarray, only: q,rho,vel,prs,tmp
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_runtime, only: air5_reacting_flowtype
@@ -361,7 +386,7 @@ contains
          GPU_BC_NSCBC_FARFIELD,apply_nscbc_farfield_y_upper_filter_x_gpu, &
          apply_nscbc_farfield_y_upper_filter_z_gpu, &
          gpu_nscbc_farfield_y_upper_mach2,apply_nscbc_farfield_y_upper_rhs_gpu, &
-         apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu, &
+         apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu,apply_profile_nonreflecting_corner_rhs_gpu, &
          capture_nscbc_farfield_y_upper_prediff_rhs_gpu, &
          apply_nscbc_farfield_y_upper_viscous_source_gpu,apply_nscbc_incident_complete_rhs_gpu, &
          apply_high_order_wall_rhs_gpu,apply_high_order_wall_state_gpu
@@ -480,7 +505,8 @@ contains
          gpu_s2_sbli_nscbc_supported,gpu_s2_sbli_nscbc_sponge_supported
     use shock_sensor_gpu, only: compute_shock_sensor_gpu
     use bc, only: bctype,twall,nscbc_farfield_nonreflecting_enabled, &
-      explicit_profile_nscbc_corrections_enabled
+      explicit_profile_nscbc_corrections_enabled,profile_low_order_nscbc_enabled,profile_state_boundary_enabled, &
+      profile_state_upwind_enabled,low_order_incident_enabled
     use conservative_boundary_runtime, only: conservative_boundary
     use conservative_boundary_stage_gpu, only: apply_conservative_stage_gpu
     use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot, &
@@ -526,6 +552,7 @@ contains
     logical :: profile_mp_ld_case
     logical :: profile_nscbc_case
     logical :: staged_profile_nscbc_case
+    logical :: keep_open_case,new_x_nscbc_case,incident_keep_case
     logical :: repaired_boundary,repaired_filter,repaired_update
     logical :: s2_hbl_selective_roe_case
     logical :: s2_hbl_selective_roe_sponge_case
@@ -555,7 +582,7 @@ contains
       case(1)
         error stop 'GPU crashfix supports only non-reacting five-variable flow'
       case(2)
-        error stop 'GPU crashfix admits central 643e or MP7-LD 743e convection'
+        error stop 'GPU crashfix admits central 643e, KEEP 643c or MP7-LD 743e convection'
       end select
     endif
     if(lcracon.and..not.allocated(crinod_d)) call sync_crashfix_mask_to_gpu()
@@ -600,7 +627,7 @@ contains
     fused_flux_pair=resolve_gpu_fused_flux_pair(gpu_tgv_explicit_upwind_supported())
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      (convection_form=='keep'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
+      (convection_form=='keep'.or.viscous_form=='me6_opti'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
       ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     rhs_is=is; rhs_ie=ie; rhs_js=js; rhs_je=je; rhs_ks=ks; rhs_ke=ke
     rhs_npdci=npdci; rhs_npdcj=npdcj
@@ -621,7 +648,7 @@ contains
     endif
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_mp7_case = gpu_s1_flatplate_s1a1_supported() .or. &
-         gpu_s1_flatplate_explicit_filter_supported()
+         gpu_s1_flatplate_explicit_filter_supported().or.(profile_state_upwind_enabled().and..not.lchardecomp)
     s2_hbl_selective_roe_case = gpu_s2_hbl_selective_roe_s2c3_supported() .or. &
          gpu_s2_hbl_selective_roe_diffusion_supported()
     s2_hbl_selective_roe_sponge_case = gpu_s2_hbl_selective_roe_s2c3_sponge_supported()
@@ -638,10 +665,13 @@ contains
     curvilinear_nscbc52_case = gpu_curvilinear_nscbc52_nonreflecting_supported() .or. &
          curvilinear_nscbc52_viscous_case
     profile_mp_ld_case = gpu_profile_mp_ld_flatplate_supported()
-    profile_nscbc_case = (profile_mp_ld_case.or.s2_sbli_nscbc_case).and.bctype(2)==22
-    staged_profile_nscbc_case=profile_nscbc_case.and. &
+    keep_open_case=profile_low_order_nscbc_enabled()
+    incident_keep_case=low_order_incident_enabled()
+    new_x_nscbc_case=(convection_form=='keep'.or.viscous_form=='me6_opti').and.gpu_uses_x_nscbc()
+    profile_nscbc_case = (profile_mp_ld_case.or.s2_sbli_nscbc_case.or.keep_open_case.or.incident_keep_case).and.bctype(2)==22
+    staged_profile_nscbc_case=profile_nscbc_case.and..not.keep_open_case.and. &
       (compact_global_enabled().or.explicit_profile_nscbc_corrections_enabled())
-    flatplate_case = profile_mp_ld_case .or. conservative_case .or. &
+    flatplate_case = profile_mp_ld_case .or. conservative_case .or. keep_open_case.or.incident_keep_case.or.profile_state_boundary_enabled().or. &
          gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
          curvilinear_nscbc52_case .or. &
          s2_hbl_selective_roe_case .or. s2_hbl_selective_roe_sponge_case .or. &
@@ -658,7 +688,7 @@ contains
     open_shock_s0b3_sponge_case = gpu_open_shock_s0b3_sponge_supported()
     open_shock_s0b4_sponge_mpi_case = gpu_open_shock_s0b4_sponge_mpi_supported()
     open_shock_nscbc_case = open_shock_s0b2_nscbc_case .or. open_shock_s0b3_sponge_case .or. &
-         open_shock_s0b4_sponge_mpi_case
+         open_shock_s0b4_sponge_mpi_case.or.new_x_nscbc_case
     open_shock_sponge_case = open_shock_s0b3_sponge_case .or. open_shock_s0b4_sponge_mpi_case
     characteristic_case = gpu_shock_characteristic_s0a6_supported() .or. &
          gpu_shock_characteristic_s0a7_supported() .or. &
@@ -668,7 +698,7 @@ contains
     characteristic_xphysical_case = gpu_shock_characteristic_s0b0_xphysical_supported()
     characteristic_xyphysical_case = profile_mp_ld_case .or. conservative_case .or. s2_hbl_selective_roe_case .or. &
          s2_hbl_selective_roe_sponge_case .or. s2_hbl_selective_roe_c4_case .or. &
-         s2_sbli_nscbc_case
+         s2_sbli_nscbc_case.or.(profile_state_upwind_enabled().and.lchardecomp)
     characteristic_case = characteristic_case .or. characteristic_xphysical_case .or. &
          characteristic_xyphysical_case
     shock_sensor_case = gpu_shock_sensor_s0a4_supported() .or. &
@@ -828,7 +858,7 @@ contains
       endif
 
       if(conservative_case) call repair_mp_stage_inputs_gpu(rkstep,'physical boundary')
-      if(rhs_validation_requested()) then
+      if(rhs_validation_requested().and..not.(keep_open_case.or.new_x_nscbc_case)) then
         call copy_flow_from_gpu()
         call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
 #ifdef ASTR_BUILD_TESTING
@@ -837,7 +867,8 @@ contains
           call write_h1_outlet_filter_validation_gpu(rkstep)
         end block
 #endif
-        if(conservative_case.or.compact_global_enabled().or.flowtype=='tgv'.or.flowtype=='bl') then
+        if(conservative_case.or.compact_global_enabled().or.flowtype=='tgv'.or.flowtype=='bl'.or. &
+          convection_form=='keep'.or.viscous_form=='me6_opti') then
           call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
         endif
         if(gradient_validation_requested()) call write_gradient_validation_gpu(nstep,rkstep)
@@ -884,43 +915,65 @@ contains
         ! to the boundary RHS before qswap refreshes its halo values.
         call exchange_solution_halo_gpu()
       endif
-      if(rhs_validation_requested() .and. flatplate_nscbc_farfield_case) then
+      if(rhs_validation_requested().and.flatplate_nscbc_farfield_case.and..not.keep_open_case) then
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('boundary',nstep,rkstep)
       endif
       if(profile_nscbc_case.and..not.staged_profile_nscbc_case) call apply_nscbc_outflow_x_rhs_gpu()
+      if(rhs_validation_requested().and.(profile_state_boundary_enabled().or. &
+        (viscous_form=='me6_opti'.and.flatplate_case.and..not.flatplate_nscbc_farfield_case))) then
+        call copy_rhs_from_gpu()
+        call write_rhs_validation_snapshot('boundary',nstep,rkstep)
+      endif
+      if(keep_open_case.and.flatplate_nscbc_nonreflecting_case) call apply_profile_nonreflecting_corner_rhs_gpu()
       if(open_shock_nscbc_case) then
         call gpu_nscbc_global_mach2(gmachmax2_in)
         call gpu_nscbc_outflow_mach2(gmachmax2_out)
+        repaired_filter=.false.
+        if(new_x_nscbc_case) then
+          if(.not.(prepared.and.rkstep==1)) call prepare_x_nscbc_state_gpu()
+        else
         call apply_nscbc_outflow_filter_gpu()
         call repair_mp_stage_inputs_gpu(rkstep,'NSCBC outflow filter',repaired_filter)
         call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('nscbc_q_to_primitive_kernel_postfilter')
         call exchange_solution_halo_gpu()
+        endif
         if(repaired_filter) then
           call gpu_nscbc_global_mach2(gmachmax2_in)
           call gpu_nscbc_outflow_mach2(gmachmax2_out)
         endif
         call apply_nscbc_x_rhs_gpu(gmachmax2_in,gmachmax2_out)
       endif
+      if(rhs_validation_requested().and.(keep_open_case.or.new_x_nscbc_case)) then
+        call copy_flow_from_gpu()
+        call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
+        call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
+        call copy_rhs_from_gpu()
+        call write_rhs_validation_snapshot('boundary',nstep,rkstep)
+        if(gradient_validation_requested()) call write_gradient_validation_gpu(nstep,rkstep)
+      endif
 #ifdef ASTR_BUILD_TESTING
+      if(convection_form=='keep') call check_profile_validation_state_gpu('KEEP RHS input',rkstep)
       if(high_order_boundary_enabled) call check_h1_validation_properties_gpu(rkstep)
 #endif
       if(shock_sensor_case) call compute_shock_sensor_gpu(rkstep)
       call begin_gpu_phase('convection')
       if(convection_form=='keep') then
-        if(conschm=='643c') then
+        if(keep_sbp63_enabled) then
+          call keep_sbp63_convection_gpu()
+        elseif(conschm=='643c') then
           call compact_keep_convection_gpu()
         else
-        call keep_explicit_volume_kernel<<<grid_x,block_x>>>(im,jm,km,hm,1,gamma, &
-          rho_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d)
+        call keep_explicit_volume_kernel<<<grid_x,block_x>>>(im,jm,km,hm,1,npdci,is,ie,js,je,ks,ke,gamma, &
+          q_d,rho_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d)
         call sync_after_kernel('keep_explicit_x')
-        call keep_explicit_volume_kernel<<<grid_y,block_y>>>(im,jm,km,hm,2,gamma, &
-          rho_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d)
+        call keep_explicit_volume_kernel<<<grid_y,block_y>>>(im,jm,km,hm,2,npdcj,is,ie,js,je,ks,ke,gamma, &
+          q_d,rho_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d)
         call sync_after_kernel('keep_explicit_y')
-        call keep_explicit_volume_kernel<<<grid_z,block_z>>>(im,jm,km,hm,3,gamma, &
-          rho_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d)
+        call keep_explicit_volume_kernel<<<grid_z,block_z>>>(im,jm,km,hm,3,npdck,is,ie,js,je,ks,ke,gamma, &
+          q_d,rho_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d)
         call sync_after_kernel('keep_explicit_z')
         endif
       elseif(compact_global_enabled().and.conschm=='643c') then
@@ -1215,7 +1268,7 @@ contains
             endif
           endif
         enddo
-      elseif(ldc_case .or. flatplate_case) then
+      elseif(conschm=='643e'.and.(ldc_case.or.flatplate_case)) then
         call convective_rhs_x_xyphysical_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke, &
                                                                            apply_left_x,apply_right_x)
         call sync_after_kernel('convective_rhs_x_xyphysical_global_kernel')
@@ -1224,7 +1277,7 @@ contains
         call sync_after_kernel('convective_rhs_y_xyphysical_global_kernel')
         call convective_rhs_z_xyphysical_global_kernel<<<grid_z,block_z>>>(im,jm,km,is,ie,js,je,ks,ke)
         call sync_after_kernel('convective_rhs_z_xyphysical_global_kernel')
-      else
+      elseif(conschm=='643e') then
         select case(physical_axis)
         case(1)
         call convective_rhs_x_xphysical_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke, &
@@ -1258,6 +1311,8 @@ contains
         call convective_rhs_z_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km)
         call sync_after_kernel('convective_rhs_z_global_kernel')
         end select
+      else
+        error stop 'GPU convection selection has no implemented kernel'
       endif
       call apply_high_order_face_convection_gpu()
       call end_gpu_phase('convection',nstep,rkstep)
@@ -1274,7 +1329,11 @@ contains
         call capture_nscbc_farfield_y_upper_prediff_rhs_gpu()
 
       if(diffterm) then
-        if(viscous_form=='me6_opti') then
+        if(keep_sbp63_enabled) then
+          call begin_gpu_phase('diffusion_rhs')
+          call keep_sbp63_diffusion_gpu()
+          call end_gpu_phase('diffusion_rhs',nstep,rkstep)
+        elseif(viscous_form=='me6_opti') then
           call begin_gpu_phase('diffusion_rhs')
           call me6_diffusion_gpu()
           call end_gpu_phase('diffusion_rhs',nstep,rkstep)
@@ -1503,9 +1562,20 @@ contains
         call apply_nscbc_farfield_y_upper_viscous_source_gpu()
 
       call apply_case_sources_gpu()
+#ifdef ASTR_BUILD_TESTING
+      if(keep_sbp63_mms_enabled.and.rhs_validation_requested()) then
+        call copy_rhs_from_gpu()
+        call write_rhs_validation_snapshot('sbp63_pre_source',nstep,rkstep)
+      endif
+      call keep_sbp63_source_gpu()
+#endif
       call apply_high_order_wall_rhs_gpu()
 #ifdef ASTR_BUILD_TESTING
       call capture_h1_common_gpu(.false.)
+      if(low_order_incident_enabled().and.rhs_validation_requested()) then
+        call copy_rhs_from_gpu()
+        call write_rhs_validation_snapshot('incident_pre',nstep,rkstep)
+      endif
 #endif
       call apply_nscbc_incident_complete_rhs_gpu()
       if(mp_positivity_enabled) &
@@ -1629,6 +1699,7 @@ contains
   end subroutine time_integration_rk_gpu
 
   subroutine validate_first_stage_gpu()
+    use keep_geometry, only: validate_keep_wall_geometry
     use compact_operator_gpu, only: compact_global_enabled
     use commvar, only: numq, ndims, num_species, num_modequ, &
          turbmode, rkscheme, flowtype, conschm, difschm, im, jm, km, &
@@ -1658,7 +1729,8 @@ contains
          gpu_s2_hbl_selective_roe_s2c5_diffusion_supported, &
          gpu_s2_sbli_nscbc_supported,gpu_s2_sbli_nscbc_sponge_supported
     use bc, only: bctype,nscbc_farfield_sbli_shock_enabled,             &
-                  nscbc_farfield_nonreflecting_enabled
+                  nscbc_farfield_nonreflecting_enabled,profile_low_order_nscbc_enabled,profile_state_boundary_enabled, &
+                  profile_state_upwind_enabled,low_order_incident_enabled
     use commarray, only: x,jacob,dxi,bnorm_im,bnorm_j0,bnorm_jm,         &
                          bnorm_k0,bnorm_km
     use parallel, only: mpisize,isize,jsize,ksize,pmax,lio
@@ -1671,8 +1743,10 @@ contains
     logical :: ldc_case
     logical :: flatplate_pending
     logical :: controlled_upwind_case
+    logical :: keep_open_case
 
     if(static_configuration_validated) return
+    call validate_keep_wall_geometry()
     if(compact_global_enabled()) then
       static_configuration_validated=.true.
       return
@@ -1683,7 +1757,8 @@ contains
     if(num_modequ /= 0) stop 'GPU first-stage supports num_modequ=0 only'
     if(trim(turbmode) /= 'none') stop 'GPU first-stage supports turbmode=none only'
     if(trim(rkscheme) /= 'rk3') stop 'GPU first-stage supports rkscheme=rk3 only'
-    controlled_upwind_case = gpu_profile_mp_ld_flatplate_supported() .or. conservative_boundary%enabled .or. &
+    keep_open_case=profile_low_order_nscbc_enabled().or.profile_state_boundary_enabled().or.low_order_incident_enabled()
+    controlled_upwind_case = profile_state_upwind_enabled().or.gpu_profile_mp_ld_flatplate_supported() .or. conservative_boundary%enabled .or. &
          gpu_tgv_explicit_upwind_supported() .or. gpu_sod_s0a1_supported() .or. &
          gpu_sod_s0a2_supported() .or. gpu_sod_s0a3_supported() .or. &
          gpu_sod_s0b0_xphysical_supported() .or. &
@@ -1736,6 +1811,7 @@ contains
     if(mpisize /= isize*jsize*ksize) &
       stop 'GPU first-stage MPI topology is inconsistent'
     if(nscbc_farfield_nonreflecting_enabled() .and.                     &
+       .not.keep_open_case.and. &
        (.not.gpu_curvilinear_nscbc52_nonreflecting_supported()) .and.  &
        (.not.gpu_curvilinear_nscbc52_viscous_nonreflecting_supported())) &
       stop 'GPU nonreflecting curved NSCBC requires an approved upper-y 52 capability'
@@ -1749,7 +1825,7 @@ contains
     geometry_error=pmax(geometry_error)
     if(any(bctype==22) .and. geometry_error>1.e-10_real_kind) then
       rectilinear_coordinates=.false.
-      if(gpu_profile_mp_ld_flatplate_supported().or.gpu_s2_sbli_nscbc_supported()) then
+      if(gpu_profile_mp_ld_flatplate_supported().or.gpu_s2_sbli_nscbc_supported().or.keep_open_case) then
         ! A separable stretched grid can acquire off-axis roundoff in geomcal.
         ! Certify its coordinates exactly rather than widening the metric gate.
         local_error=0.e0_real_kind
@@ -1821,7 +1897,7 @@ contains
 
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_pending = gpu_s1_flatplate_boundary_case_pending()
-    if(flatplate_pending .and. (.not.gpu_profile_mp_ld_flatplate_supported()) .and. &
+    if(flatplate_pending .and. .not.keep_open_case.and.(.not.gpu_profile_mp_ld_flatplate_supported()) .and. &
        (.not.conservative_boundary%enabled) .and. &
        (.not.gpu_s1_flatplate_s1a_supported()) .and. &
        (.not.gpu_s1_flatplate_s1a1_supported()) .and. &

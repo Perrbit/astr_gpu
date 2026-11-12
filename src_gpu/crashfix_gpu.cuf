@@ -22,10 +22,12 @@ module crashfix_gpu
 contains
   integer function crashfix_support_status_gpu() result(status)
     use commvar, only: lcomb,numq,num_species,conschm,recon_schem
+    use numerical_forms, only: convection_form
     status=0
     if(lcomb.or.numq/=5.or.num_species/=0) then
       status=1
-    elseif(trim(conschm)/='643e'.and..not.(trim(conschm)=='743e'.and.recon_schem==5)) then
+    elseif(trim(conschm)/='643e'.and..not.(trim(conschm)=='743e'.and.recon_schem==5).and. &
+      .not.(convection_form=='keep'.and.conschm=='643c')) then
       status=2
     endif
   end function

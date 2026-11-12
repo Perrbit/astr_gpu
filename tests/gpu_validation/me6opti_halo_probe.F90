@@ -35,6 +35,8 @@ program me6opti_halo_probe
   enddo
   if(product(parts)/=nranks) error stop 'ME6 halo probe rank count mismatch'
   periodic=.true.
+  call get_command_argument(4,arg)
+  if(trim(arg)=='wall') periodic(2)=.false.
   call mpi_cart_create(MPI_COMM_WORLD,3,parts,periodic,.false.,cart,ierr)
   call mpi_cart_coords(cart,rank,3,coords,ierr)
   do axis=1,3
@@ -60,6 +62,7 @@ program me6opti_halo_probe
     do i=-hm,last(1)+hm
       ghosts=count([i<0.or.i>last(1),j<0.or.j>last(2),k<0.or.k>last(3)])
       if(ghosts>1) cycle
+      if(.not.periodic(2).and.(offset(2)+j<0.or.offset(2)+j>global_last(2))) cycle
       do c=1,3
         v(i,j,k,c)=node_value(i,j,k,c,sample)
       enddo
@@ -68,11 +71,11 @@ program me6opti_halo_probe
     enddo
     enddo
     initial_v=v;initial_t=t
-    call extend_me6_edges_cpu(last(1),last(2),last(3),hm,v,t,parts,peers)
+    call extend_me6_edges_cpu(last(1),last(2),last(3),hm,v,t,parts,peers,periodic)
     call check_values('CPU')
 #ifdef TEST_CUDA
     vd=initial_v;td=initial_t
-    call extend_me6_edges_gpu(last(1),last(2),last(3),hm,vd,td,parts,peers)
+    call extend_me6_edges_gpu(last(1),last(2),last(3),hm,vd,td,parts,peers,periodic)
     v=vd;t=td
     call check_values('GPU')
 #endif
@@ -91,6 +94,7 @@ contains
     real(real_kind) :: value
     integer :: g(3)
     g=modulo(offset+[ii,jj,kk],global_last)
+    if(.not.periodic(2)) g(2)=offset(2)+jj
     value=real(g(1)+100*g(2)+10000*g(3)+1000000*component+10000000*epoch,real_kind)
   end function
   subroutine check_values(label)
@@ -101,6 +105,7 @@ contains
     do i=-hm,last(1)+hm
       do c=1,4
         expected=node_value(i,j,k,c,sample)
+        if(.not.periodic(2).and.(offset(2)+j<0.or.offset(2)+j>global_last(2))) expected=-huge(1.e0_real_kind)
         if(c<=3) then
           if(v(i,j,k,c)/=expected) nfail=nfail+1
         else

@@ -218,7 +218,7 @@ def main() -> int:
     parser.add_argument("--x-min-bctype", choices=(11, 12), type=int, default=11)
     parser.add_argument("--x-max-bctype", choices=(21, 22), type=int, default=21)
     parser.add_argument("--outlet-pressure", type=positive_float, default=1.0)
-    parser.add_argument("--upper-bctype", choices=(51, 52), type=int, default=51)
+    parser.add_argument("--upper-bctype", choices=(50, 51, 52), type=int, default=51)
     parser.add_argument("--ninit", choices=(0, 3), type=int, default=0)
     parser.add_argument("--sponge-im", type=int, default=0)
     parser.add_argument("--turbinf", choices=("prof", "intp"), default="prof")

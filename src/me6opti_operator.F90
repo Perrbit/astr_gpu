@@ -4,6 +4,7 @@ module me6opti_operator
   private
   public :: me6_coefficients,me6_half_gradient,me6_scalar_direction,me6_direction
   public :: me6_scalar_symbol,me6_viscous_symbol,me6_outer
+  public :: me6_mapped_direction
   real(real_kind),parameter :: me6opti_straight_table(9,3)=reshape((/          &
     -3.e0_real_kind/1250.e0_real_kind,89141.e0_real_kind/4480000.e0_real_kind, &
     -49133.e0_real_kind/640000.e0_real_kind,            &
@@ -153,6 +154,68 @@ contains
           +dot_product(stress,mid_velocity)
       enddo
       divergence=divergence+me6_outer(h)*(flux(:,2)-flux(:,1))/spacing(axis)
+    enddo
+  end subroutine
+
+  pure subroutine me6_mapped_direction(axis,node,hm,velocity,temperature,viscosity,conductivity, &
+      inverse,jacobian,divergence)
+    integer,intent(in) :: axis,node(3),hm
+    real(real_kind),intent(in) :: velocity(-hm:,-hm:,-hm:,:),temperature(-hm:,-hm:,-hm:)
+    real(real_kind),intent(in) :: viscosity(-hm:,-hm:,-hm:),conductivity(-hm:,-hm:,-hm:)
+    real(real_kind),intent(in) :: inverse(-hm:,-hm:,-hm:,:,:),jacobian(-hm:,-hm:,-hm:)
+    real(real_kind),intent(out) :: divergence(4)
+    real(real_kind) :: ci,cd,cp,mu,kappa,u(3),metric(3,3),area(3),norms(3)
+    real(real_kind) :: computational(4,3),physical(4,3),penalty(4),value(4),transverse(4)
+    real(real_kind) :: stress(3,3),trace,flux(4,2)
+    integer :: h,side,half,p,l,c,d,point(3),plus(3),minus(3)
+    divergence=0.e0_real_kind
+    do h=1,3
+      do side=1,2
+        half=(2*side-3)*(2*h-1)
+        mu=0;kappa=0;u=0;metric=0;area=0;computational=0;penalty=0
+        do p=-4,4
+          point=node;point(axis)=point(axis)+p
+          call me6_coefficients(half,p,ci,cd,cp)
+          value(1:3)=velocity(point(1),point(2),point(3),:)
+          value(4)=temperature(point(1),point(2),point(3))
+          mu=mu+ci*viscosity(point(1),point(2),point(3))
+          kappa=kappa+ci*conductivity(point(1),point(2),point(3))
+          u=u+ci*value(1:3)
+          metric=metric+ci*inverse(point(1),point(2),point(3),:,:)
+          area=area+ci*jacobian(point(1),point(2),point(3))*inverse(point(1),point(2),point(3),axis,:)
+          computational(:,axis)=computational(:,axis)+cd*value
+          penalty=penalty+cp*value
+          do d=1,3
+            if(d==axis) cycle
+            transverse=0
+            do l=1,3
+              plus=point;minus=point
+              plus(d)=plus(d)+l;minus(d)=minus(d)-l
+              transverse(1:3)=transverse(1:3)+central6(l)*(velocity(plus(1),plus(2),plus(3),:) &
+                -velocity(minus(1),minus(2),minus(3),:))
+              transverse(4)=transverse(4)+central6(l)*(temperature(plus(1),plus(2),plus(3)) &
+                -temperature(minus(1),minus(2),minus(3)))
+            enddo
+            computational(:,d)=computational(:,d)+ci*transverse
+          enddo
+        enddo
+        do d=1,3
+          norms(d)=sqrt(sum(metric(d,:)**2))
+        enddo
+        do d=1,3
+          if(d/=axis) computational(:,d)=computational(:,d)+(norms(axis)/norms(d))*penalty
+        enddo
+        physical=matmul(computational,metric)
+        trace=physical(1,1)+physical(2,2)+physical(3,3)
+        stress=mu*(physical(1:3,:)+transpose(physical(1:3,:)))
+        do c=1,3
+          stress(c,c)=stress(c,c)-2.e0_real_kind*mu*trace/3.e0_real_kind
+        enddo
+        flux(1:3,side)=matmul(stress,area)
+        flux(4,side)=kappa*dot_product(physical(4,:),area)+dot_product(u,flux(1:3,side))
+      enddo
+      ! Interpolated J*G is already in the flux. RK divides by J once.
+      divergence=divergence+me6_outer(h)*(flux(:,2)-flux(:,1))
     enddo
   end subroutine
 

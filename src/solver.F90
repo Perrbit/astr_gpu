@@ -288,16 +288,21 @@ module solver
   !| 09-02-2021  | Created by J. Fang @ Warrington                     |
   !+-------------------------------------------------------------------+
   subroutine rhscal(timerept,physical_halo_rhs,metric_consistent_eps,common_source)
+    use keep_sbp63_runtime, only: keep_sbp63_enabled,keep_sbp63_convection_cpu
+#ifdef ASTR_BUILD_TESTING
+    use keep_sbp63_runtime, only: keep_sbp63_mms_enabled,keep_sbp63_source_cpu
+#endif
     !
     use numerical_forms, only: convection_form,viscous_form
     use me6opti_runtime, only: me6_diffusion_cpu
     use keep_operator, only: keep_explicit_volume
+    use keep_geometry, only: validate_keep_wall_geometry
     use compact_runtime, only: global_keep_convection_cpu
     use commarray, only: rho,vel,prs,jacob,dxi
     use commvar, only: hm,gamma
     use commarray, only : qrhs,x,q
     use commvar,   only : flowtype,conschm,diffterm,im,jm,             &
-                          recon_schem,limmbou,lchardecomp,lihomo,lcomb,km,npdci,npdcj
+                          recon_schem,limmbou,lchardecomp,lihomo,ljhomo,lkhomo,lcomb,km,npdci,npdcj,npdck,is,ie,js,je
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_solver, only: air5_convection_rhs,air5_diffusion_rhs, &
       air5_limit_full_state_convection,air5_characteristic_top_rhs
@@ -311,7 +316,7 @@ module solver
     use bc, only: nscbc_farfield_viscous_source_enabled,              &
                   capture_nscbc_farfield_y_upper_prediff_rhs,         &
                   apply_nscbc_farfield_y_upper_viscous_source,apply_nscbc_incident_complete_rhs, &
-                  apply_high_order_wall_rhs
+                  apply_high_order_wall_rhs,low_order_incident_enabled
     !
     ! arguments
     logical,intent(in),optional :: timerept
@@ -322,7 +327,7 @@ module solver
     ! local data
     integer :: j,common_i0,common_j0
     integer :: nconv
-    logical :: air5_shock_path
+    logical :: air5_shock_path,defer_full_snapshot
     !
     real(clock_kind) :: time_beg
     real(clock_kind),save :: subtime=0.e0_clock_kind
@@ -342,6 +347,7 @@ module solver
       read(conschm(1:1),*) nconv
       !
       if(firstcall) then
+        call validate_keep_wall_geometry()
         if(limmbou) call ShockSolid
         firstcall=.false.
       endif
@@ -352,10 +358,13 @@ module solver
         call air5_convection_rhs()
 #endif
       elseif(convection_form=='keep') then
-        if(conschm=='643c') then
+        if(keep_sbp63_enabled) then
+          call keep_sbp63_convection_cpu()
+        elseif(conschm=='643c') then
           call global_keep_convection_cpu()
         else
-          call keep_explicit_volume(im,jm,km,hm,rho,vel,prs,jacob,dxi,gamma,qrhs)
+          call keep_explicit_volume(im,jm,km,hm,[npdci,npdcj,npdck],[is,js,ks],[ie,je,ke], &
+            q,rho,vel,prs,jacob,dxi,gamma,qrhs)
         endif
       elseif(mod(nconv,2)==0) then
         call convrsdcal6(timerept=ltimrpt)
@@ -409,6 +418,7 @@ module solver
       else
 #endif
         if(viscous_form=='me6_opti') then
+          if(.not.(lihomo.and.ljhomo.and.lkhomo)) call diffrsdcal6(timerept=ltimrpt,wall_band_only=.true.)
           call me6_diffusion_cpu()
         elseif(high_order_boundary_enabled) then
           call diffrsdcal6(timerept=ltimrpt,physical_boundary_rhs=.true.)
@@ -421,7 +431,9 @@ module solver
     endif
     if(nscbc_farfield_viscous_source_enabled())                       &
       call apply_nscbc_farfield_y_upper_viscous_source()
-    if(.not.(high_order_boundary_enabled.or.high_order_wall_enabled)) call write_rhs_validation_snapshot('full')
+    defer_full_snapshot=high_order_boundary_enabled.or.high_order_wall_enabled.or. &
+      convection_form=='keep'.or.low_order_incident_enabled()
+    if(.not.defer_full_snapshot) call write_rhs_validation_snapshot('full')
     !
     if(trim(flowtype)=='channel') then 
       if(lihomo) call src_chan
@@ -432,11 +444,18 @@ module solver
     endif
     !
     call udf_src
+#ifdef ASTR_BUILD_TESTING
+    if(keep_sbp63_mms_enabled) call write_rhs_validation_snapshot('sbp63_pre_source')
+    call keep_sbp63_source_cpu()
+#endif
     call apply_high_order_wall_rhs()
     if(present(common_source)) common_source(common_i0:im,common_j0:jm,0:km,:)= &
       common_source(common_i0:im,common_j0:jm,0:km,:)+qrhs(common_i0:im,common_j0:jm,0:km,:)
+#ifdef ASTR_BUILD_TESTING
+    if(low_order_incident_enabled()) call write_rhs_validation_snapshot('incident_pre')
+#endif
     call apply_nscbc_incident_complete_rhs()
-    if(high_order_boundary_enabled.or.high_order_wall_enabled) call write_rhs_validation_snapshot('full')
+    if(defer_full_snapshot) call write_rhs_validation_snapshot('full')
 #ifdef ASTR_BUILD_TESTING
     if(high_order_boundary_enabled) call audit_h1_low_order_cpu()
 #endif
@@ -2746,6 +2765,26 @@ module solver
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! Writen by Fang Jian, 2009-06-03.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  function central_convection_derivative(asolver,f,dim) result(df)
+    use commvar, only: hm,conschm
+    use commtype, only: compact_scheme
+    use derivative, only: fds,diff6ec
+    use numerical_forms, only: viscous_form
+    use compact_runtime, only: global_compact_periodic_derivative_cpu
+    type(compact_scheme),intent(in) :: asolver
+    integer,intent(in) :: dim
+    real(real_kind),intent(in) :: f(-hm:dim+hm)
+    real(real_kind) :: df(0:dim)
+    if(viscous_form=='me6_opti'.and.conschm=='643c') then
+      ! The global line partition, including physical endpoints, owns the coupling.
+      df=global_compact_periodic_derivative_cpu(asolver,f,dim)
+    elseif(viscous_form=='me6_opti'.and.conschm=='643e') then
+      df=diff6ec(f,dim,asolver%nbctype)
+    else
+      df=fds%central(asolver,f,dim)
+    endif
+  end function
+
   subroutine convrsdcal6(timerept)
     !
     use commvar,  only: im,jm,km,hm,numq,num_species,num_modequ,       &
@@ -2806,7 +2845,7 @@ module solver
       endif
       !
       do n=1,numq
-        dfcs(:,n)=fds%central(fds_compact_i,fcs(:,n),dim=im)
+        dfcs(:,n)=central_convection_derivative(fds_compact_i,fcs(:,n),dim=im)
       enddo
       if(high_order_wall_enabled.and.high_order_wall_axis==1) then
         do side=1,2
@@ -2872,7 +2911,7 @@ module solver
         endif
         !
         do n=1,numq
-          dfcs(:,n)=fds%central(fds_compact_j,fcs(:,n),dim=jm)
+          dfcs(:,n)=central_convection_derivative(fds_compact_j,fcs(:,n),dim=jm)
         enddo
         if(high_order_wall_enabled.and.high_order_wall_axis==2) then
           do side=1,2
@@ -2941,7 +2980,7 @@ module solver
         endif
         !
         do n=1,numq
-          dfcs(:,n)=fds%central(fds_compact_k,fcs(:,n),dim=km)
+          dfcs(:,n)=central_convection_derivative(fds_compact_k,fcs(:,n),dim=km)
         enddo
         if(high_order_wall_enabled.and.high_order_wall_axis==3) then
           do side=1,2
@@ -3004,7 +3043,8 @@ module solver
   ! Writen by Fang Jian, 2009-06-09.
   ! Add scalar transport equation by Fang Jian, 2022-01-12.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  subroutine diffrsdcal6(timerept,physical_boundary_rhs)
+  subroutine diffrsdcal6(timerept,physical_boundary_rhs,wall_band_only)
+    use keep_sbp63_runtime, only: keep_sbp63_enabled,keep_sbp63_diffusion_cpu
     !
     use commvar,   only : im,jm,km,numq,npdci,npdcj,npdck,difschm,     &
                           conschm,ndims,num_species,num_modequ,        &
@@ -3021,6 +3061,7 @@ module solver
     use models,    only : komega,src_komega,baldwin_lomax_line
     use tecio
     use parallel,  only : yflux_sendrecv
+    use me6opti_runtime, only: me6_nodal_boundary_point
 #ifdef COMB
     use thermchem, only : tranmod,tranco,enthpy,convertxiyi,wmolar
 #endif
@@ -3028,6 +3069,7 @@ module solver
     ! arguments
     logical,intent(in),optional :: timerept
     logical,intent(in),optional :: physical_boundary_rhs
+    logical,intent(in),optional :: wall_band_only
     !
     ! local data
     integer :: i,j,k,n,ncolm,jspc,idir
@@ -3044,11 +3086,14 @@ module solver
                gradyi(num_species),sum1,sum2,mw
     real(real_kind),allocatable :: dfu(:)
     logical,save :: firstcall=.true.
+    logical :: restrict_wall_band
     !
     real(clock_kind) :: time_beg
     real(clock_kind),save :: subtime=0.e0_clock_kind
     !
     is=is_base; ie=ie_base; js=js_base; je=je_base; ks=ks_base; ke=ke_base
+    restrict_wall_band=.false.
+    if(present(wall_band_only)) restrict_wall_band=wall_band_only
     if(present(physical_boundary_rhs)) then
       if(physical_boundary_rhs) then
         if(.not.nondimen.or.ndims/=3.or.difschm/='643e'.or. &
@@ -3283,6 +3328,10 @@ module solver
     call dataswap(sigma,timerept=ltimrpt)
     !
     call dataswap(qflux,timerept=ltimrpt)
+    if(keep_sbp63_enabled) then
+      call keep_sbp63_diffusion_cpu(sigma,qflux)
+      return
+    endif
     !
     if(num_species>0) then
       call dataswap(yflux,timerept=ltimrpt)
@@ -3346,10 +3395,10 @@ module solver
       !| end of calculate derivative  |
       !+------------------------------+
       !
-      qrhs(is:ie,j,k,2)=qrhs(is:ie,j,k,2)+df(is:ie,2)
-      qrhs(is:ie,j,k,3)=qrhs(is:ie,j,k,3)+df(is:ie,3)
-      qrhs(is:ie,j,k,4)=qrhs(is:ie,j,k,4)+df(is:ie,4)
-      qrhs(is:ie,j,k,5)=qrhs(is:ie,j,k,5)+df(is:ie,5)
+      do i=is,ie
+        if(restrict_wall_band.and..not.me6_nodal_boundary_point(i,j,k)) cycle
+        qrhs(i,j,k,2:5)=qrhs(i,j,k,2:5)+df(i,2:5)
+      enddo
       ! freeze energy flux for startup
       ! if(flowtype=='tgvflame'.and.nstep*deltat<5.d-5)qrhs(is:ie,j,k,5)=0.d0
       
@@ -3422,10 +3471,10 @@ module solver
         !| end of calculate derivative  |
         !+------------------------------+
         !
-        qrhs(i,js:je,k,2)=qrhs(i,js:je,k,2)+df(js:je,2)
-        qrhs(i,js:je,k,3)=qrhs(i,js:je,k,3)+df(js:je,3)
-        qrhs(i,js:je,k,4)=qrhs(i,js:je,k,4)+df(js:je,4)
-        qrhs(i,js:je,k,5)=qrhs(i,js:je,k,5)+df(js:je,5)
+        do j=js,je
+          if(restrict_wall_band.and..not.me6_nodal_boundary_point(i,j,k)) cycle
+          qrhs(i,j,k,2:5)=qrhs(i,j,k,2:5)+df(j,2:5)
+        enddo
         ! freeze energy flux for startup
         ! if(flowtype=='tgvflame'.and.nstep*deltat<5.d-5)qrhs(i,js:je,k,5)=0.d0
         
@@ -3501,10 +3550,10 @@ module solver
         !| end of calculate derivative  |
         !+------------------------------+
         !
-        qrhs(i,j,ks:ke,2)=qrhs(i,j,ks:ke,2)+df(ks:ke,2)
-        qrhs(i,j,ks:ke,3)=qrhs(i,j,ks:ke,3)+df(ks:ke,3)
-        qrhs(i,j,ks:ke,4)=qrhs(i,j,ks:ke,4)+df(ks:ke,4)
-        qrhs(i,j,ks:ke,5)=qrhs(i,j,ks:ke,5)+df(ks:ke,5)
+        do k=ks,ke
+          if(restrict_wall_band.and..not.me6_nodal_boundary_point(i,j,k)) cycle
+          qrhs(i,j,k,2:5)=qrhs(i,j,k,2:5)+df(k,2:5)
+        enddo
         ! freeze energy flux for startup
         ! if(flowtype=='tgvflame'.and.nstep*deltat<5.d-5)qrhs(i,j,ks:ke,5)=0.d0
         !

@@ -1,0 +1,161 @@
+module keep_sbp63_runtime_gpu
+  use cudafor
+  use astr_precision, only: real_kind
+  use keep_sbp63_gpu
+  use keep_operator_gpu, only: sbp_pair=>keep_pair_device
+  use keep_sbp63_runtime, only: keep_sbp63_wall_temperature
+  implicit none
+  private
+  public :: keep_sbp63_gradient_gpu,keep_sbp63_convection_gpu,keep_sbp63_diffusion_gpu
+#ifdef ASTR_BUILD_TESTING
+  public :: keep_sbp63_source_gpu
+#endif
+#define GRID_PROC attributes(device)
+#include "../src/keep_sbp63_grid_body.inc"
+#ifdef ASTR_BUILD_TESTING
+#include "../src/keep_sbp63_mms_body.inc"
+
+  attributes(global) subroutine steady_mms_source_kernel(im,jm,km,gamma,mach,reynolds)
+    use commarray_gpu, only: x_d,jacob_d,qrhs_d
+    integer,value :: im,jm,km
+    real(real_kind),value :: gamma,mach,reynolds
+    integer :: i,j,k
+    real(real_kind) :: source(5),position(3)
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im.or.j>jm.or.k>km) return
+    position=x_d(i,j,k,:)
+    call sbp63_steady_mms_source(position,gamma,mach,reynolds,source)
+    qrhs_d(i,j,k,:)=qrhs_d(i,j,k,:)+jacob_d(i,j,k)*source
+  end subroutine
+
+  subroutine keep_sbp63_source_gpu()
+    use commvar, only: im,jm,km,gamma,mach,reynolds
+    use keep_sbp63_runtime, only: keep_sbp63_mms_enabled
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+    if(.not.keep_sbp63_mms_enabled) return
+    block=dim3(32,4,2);grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
+    call steady_mms_source_kernel<<<grid,block>>>(im,jm,km,gamma,mach,reynolds)
+    call sync_after_kernel('keep_sbp63_steady_mms_source')
+  end subroutine
+#endif
+
+  attributes(global) subroutine gradient_kernel(im,jm,km,hm,total,start,tw1,tw2)
+    use commarray_gpu, only: vel_d,tmp_d,dxi_d,dvel_d,dtmp_d
+    integer,value :: im,jm,km,hm,total,start
+    real(real_kind),value :: tw1,tw2
+    integer :: i,j,k,c,a
+    real(real_kind) :: gu(3,3),gt(3)
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im.or.j>jm.or.k>km) return
+    call sbp63_gradient_point(im,jm,km,hm,total,start,i,j,k,[tw1,tw2],vel_d,tmp_d,dxi_d,gu,gt)
+    do a=1,3
+      dtmp_d(i,j,k,a)=gt(a)
+      do c=1,3
+        dvel_d(i,j,k,c,a)=gu(c,a)
+      enddo
+    enddo
+  end subroutine
+
+  attributes(global) subroutine convection_kernel(im,jm,km,hm,total,start,gamma)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d
+    integer,value :: im,jm,km,hm,total,start
+    real(real_kind),value :: gamma
+    integer :: i,j,k
+    real(real_kind) :: rhs(5)
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im.or.j>jm.or.k>km) return
+    call sbp63_convection_point(im,jm,km,hm,total,start,i,j,k,gamma,rho_d,vel_d,prs_d,jacob_d,dxi_d,rhs)
+    qrhs_d(i,j,k,:)=qrhs_d(i,j,k,:)-rhs
+  end subroutine
+
+  attributes(global) subroutine flux_kernel(im,jm,km,reynolds,prandtl,const5,tempconst,tempconst1)
+    use commarray_gpu, only: vel_d,tmp_d,dvel_d,dtmp_d,sigma_d,qflux_d
+    integer,value :: im,jm,km
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    integer :: i,j,k,c,a
+    real(real_kind) :: gu(3,3),gt(3),v(3),stress(3,3),energy(3),t,mu
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im.or.j>jm.or.k>km) return
+    do a=1,3
+      gt(a)=dtmp_d(i,j,k,a);v(a)=vel_d(i,j,k,a)
+      do c=1,3
+        gu(c,a)=dvel_d(i,j,k,c,a)
+      enddo
+    enddo
+    t=tmp_d(i,j,k);mu=t*sqrt(t)*tempconst1/(t+tempconst)/reynolds
+    call sbp63_material_flux(mu,(mu/prandtl)/const5,v,gu,gt,stress,energy)
+    sigma_d(i,j,k,:)=[stress(1,1),stress(1,2),stress(1,3),stress(2,2),stress(2,3),stress(3,3)]
+    qflux_d(i,j,k,:)=energy
+  end subroutine
+
+  attributes(global) subroutine divergence_kernel(im,jm,km,hm,total,start,tw1,tw2,reynolds,prandtl,const5,tempconst,tempconst1)
+    use commarray_gpu, only: vel_d,tmp_d,dxi_d,jacob_d,dvel_d,dtmp_d,sigma_d,qflux_d,qrhs_d
+    integer,value :: im,jm,km,hm,total,start
+    real(real_kind),value :: tw1,tw2,reynolds,prandtl,const5,tempconst,tempconst1
+    integer :: i,j,k,c,a
+    real(real_kind) :: rhs(5),sat(5),gu(3,3),gt(3),v(3),metric(3),t,mu
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im.or.j>jm.or.k>km) return
+    call sbp63_diffusion_point(im,jm,km,hm,total,start,i,j,k,jacob_d,dxi_d,sigma_d,qflux_d,rhs)
+    if(start+j==0.or.start+j==total) then
+      do a=1,3
+        gt(a)=dtmp_d(i,j,k,a);v(a)=vel_d(i,j,k,a);metric(a)=dxi_d(i,j,k,2,a)
+        do c=1,3
+          gu(c,a)=dvel_d(i,j,k,c,a)
+        enddo
+      enddo
+      t=tmp_d(i,j,k);mu=t*sqrt(t)*tempconst1/(t+tempconst)/reynolds
+      call sbp63_viscous_sat(start+j,total,[tw1,tw2],mu,(mu/prandtl)/const5, &
+        jacob_d(i,j,k),metric,v,t,gu,gt,sat)
+      rhs=rhs+sat
+    endif
+    qrhs_d(i,j,k,:)=qrhs_d(i,j,k,:)+rhs
+  end subroutine
+
+  subroutine keep_sbp63_gradient_gpu()
+    use commvar, only: im,jm,km,hm,ja
+    use parallel, only: jg0
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+    block=dim3(32,4,2);grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
+    call gradient_kernel<<<grid,block>>>(im,jm,km,hm,ja,jg0,keep_sbp63_wall_temperature(1),keep_sbp63_wall_temperature(2))
+    call sync_after_kernel('keep_sbp63_gradient')
+  end subroutine
+
+  subroutine keep_sbp63_convection_gpu()
+    use commvar, only: im,jm,km,hm,ja,gamma
+    use parallel, only: jg0
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+    block=dim3(32,4,2);grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
+    call convection_kernel<<<grid,block>>>(im,jm,km,hm,ja,jg0,gamma)
+    call sync_after_kernel('keep_sbp63_convection')
+  end subroutine
+
+  subroutine keep_sbp63_diffusion_gpu()
+    use commvar, only: im,jm,km,hm,ja,reynolds,prandtl,const5,tempconst,tempconst1
+    use parallel, only: jg0
+    use halo_exchange_gpu, only: exchange_diffusion_flux_halo_gpu
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+    block=dim3(32,4,2);grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
+    call keep_sbp63_gradient_gpu()
+    call flux_kernel<<<grid,block>>>(im,jm,km,reynolds,prandtl,const5,tempconst,tempconst1)
+    call sync_after_kernel('keep_sbp63_flux')
+    call exchange_diffusion_flux_halo_gpu()
+    call divergence_kernel<<<grid,block>>>(im,jm,km,hm,ja,jg0, &
+      keep_sbp63_wall_temperature(1),keep_sbp63_wall_temperature(2),reynolds,prandtl,const5,tempconst,tempconst1)
+    call sync_after_kernel('keep_sbp63_diffusion_rhs')
+  end subroutine
+end module

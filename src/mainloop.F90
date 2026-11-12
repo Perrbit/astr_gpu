@@ -576,7 +576,7 @@ module mainloop
                          ndims,num_species,maxstep,rkscheme,use_gpu,lcomb,iomode,conschm,difschm,diffterm
     use commarray,only : x,q,qrhs,rho,vel,prs,tmp,spc,jacob,dvel,dtmp,bnorm_j0,bnorm_jm
     use fludyna,  only : updatefvar
-    use numerical_forms, only: convection_form
+    use numerical_forms, only: convection_form,viscous_form
     use comsolver,only : filterq,filter2e,gradcal
     use sponge_layer,only : spongefilter
     use solver,   only : rhscal
@@ -660,7 +660,7 @@ module mainloop
     cpu_statistics_seconds=0.e0_clock_kind
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      (convection_form=='keep'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
+      (convection_form=='keep'.or.viscous_form=='me6_opti'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
       ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
     air5_reacting_case=.false.
@@ -803,7 +803,7 @@ module mainloop
       
       if(lfilter) then
 #ifdef ASTR_BUILD_TESTING
-        if(high_order_wall_enabled.and.rhs_validation_requested()) &
+        if((high_order_wall_enabled.or.convection_form=='keep').and.rhs_validation_requested()) &
           call write_q_validation_snapshot('pre_filter')
 #endif
 #ifdef ASTR_AIR5_CHEMISTRY
@@ -821,7 +821,7 @@ module mainloop
 #endif
         call filterq(timerept=ltimrpt)
 #ifdef ASTR_BUILD_TESTING
-        if(high_order_wall_enabled.and.rhs_validation_requested()) &
+        if((high_order_wall_enabled.or.convection_form=='keep').and.rhs_validation_requested()) &
           call write_q_validation_snapshot('post_filter')
 #endif
         ! Derivatives and fluxes must use the filtered state at every physical node.
@@ -921,7 +921,8 @@ module mainloop
           call write_h1_outlet_filter_validation()
         end block
 #endif
-        if(conservative_case .or. lcomb .or. difschm=='643c' .or. flowtype=='tgv' .or. flowtype=='bl') &
+        if(conservative_case.or.lcomb.or.difschm=='643c'.or.flowtype=='tgv'.or.flowtype=='bl'.or. &
+          convection_form=='keep'.or.viscous_form=='me6_opti') &
           call write_primitive_validation_snapshot('pre_rhs_primitives')
         call write_gradient_validation_snapshot(dvel,dtmp,lower_normal=bnorm_j0,upper_normal=bnorm_jm)
       endif

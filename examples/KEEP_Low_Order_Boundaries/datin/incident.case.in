@@ -1,0 +1,34 @@
+&case_options
+ flowtype='bl',ltimrpt=f,use_gpu=$use_gpu,iomode='h'
+/
+&mesh
+ ia=16,ja=16,ka=16,lihomo=f,ljhomo=f,lkhomo=t,lreadgrid=t,
+ gridfile='datin/grid.flatplate.h5',lfftk=f
+/
+&physics
+ nondimen=t,diffterm=f,lcomb=f,ref_tem=288.d0,reynolds=1.d6,mach=2.d0,
+ num_species=0,turbmode='none'
+/
+&numerics
+ convection_form='keep',viscous_form='standard',conschm='643e',difschm='643e',
+ rkscheme='rk3',lfilter=f,recon_schem=3,lchardecomp=f,bfacmpld=.1d0,shkcrt=.001d0
+/
+&boundary
+ bctype=11,22,421,52,1,1,twall=0,0,0,0,0,0,turbinf='prof',
+ pout=$incident_pout,xslip=-1.d0
+/
+&boundary_options
+ nscbc_farfield_mode='sbli_grcbc',nscbc_farfield_shock_x=.25d0,
+ nscbc_farfield_shock_angle_deg=40.d0,nscbc_farfield_rho=1.d0,
+ nscbc_farfield_u=1.d0,nscbc_farfield_v=0.d0,nscbc_farfield_w=0.d0,
+ nscbc_farfield_t=1.d0
+/
+&initialization
+ limmbou=f,lrestart=f,ninit=3
+/
+&sponge
+ spg_i0=0,spg_im=0,spg_j0=0,spg_jm=0,spg_k0=0,spg_km=0,spg_def='layer'
+/
+&precision_options
+ gpu_precision_mode='fp64'
+/

@@ -599,6 +599,8 @@ contains
   end subroutine gradcal_dvel_zphysical_sp_kernel
 
   subroutine compute_gradcal_gpu()
+    use keep_sbp63_runtime, only: keep_sbp63_enabled
+    use keep_sbp63_runtime_gpu, only: keep_sbp63_gradient_gpu
     use compact_operator_gpu, only: compact_gradient_enabled,compact_gradcal_gpu
     use mpi, only: MPI_PROC_NULL
     use commvar, only: im,jm,km,hm
@@ -606,7 +608,7 @@ contains
     use commvar, only: flowtype,lcomb
     use chemistry_flow_runtime, only: air5_hbl_flowtype
 #endif
-    use boundary_gpu, only: gpu_physical_boundary_axis,gpu_s1_flatplate_boundary_case_pending
+    use boundary_gpu, only: gpu_physical_boundary_axis,gpu_s1_flatplate_boundary_case_pending,gpu_ldc_boundary_case_pending
     use commarray_gpu, only: gpu_mixed_derivative_workspace_enabled
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
@@ -614,12 +616,16 @@ contains
     type(dim3) :: block3,grid3
     logical :: mixed_derivative,xyphysical
 
+    if(keep_sbp63_enabled) then
+      call keep_sbp63_gradient_gpu()
+      return
+    endif
     if(compact_gradient_enabled()) then
       call compact_gradcal_gpu()
       return
     endif
     mixed_derivative=gpu_mixed_derivative_workspace_enabled()
-    xyphysical=gpu_s1_flatplate_boundary_case_pending()
+    xyphysical=gpu_s1_flatplate_boundary_case_pending().or.gpu_ldc_boundary_case_pending()
 #ifdef ASTR_AIR5_CHEMISTRY
     ! The sensor shares this entry; air5 transport also has two physical axes.
     if(lcomb) xyphysical=xyphysical .or. air5_hbl_flowtype(flowtype)

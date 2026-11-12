@@ -13,13 +13,14 @@ module output_runtime
     lreadgrid,gridfile,ninit,diffterm,lfilter,nondimen,turbmode,recon_schem,lchardecomp
   use commarray, only: q,rho,vel,prs,tmp,x,jacob,dxi,crinod
   use parallel, only: ig0,jg0,kg0,mpirank,irk,mpisize
-  use bc, only: nscbc_farfield_policy,NSCBC_FARFIELD_POLICY_COMPATIBILITY
+  use bc, only: nscbc_farfield_policy,NSCBC_FARFIELD_POLICY_COMPATIBILITY,nscbc_outlet_top_spanwise_enabled
   use bc, only: bctype,turbinf,ninflowslice,complete_inflow_cpu_file, &
-    configure_wall_blowing,wall_blowing_legacy_random, &
-    explicit_profile_nscbc_corrections_enabled,nscbc_farfield_sbli_shock_enabled,profile_nscbc_outlet_enabled
+    configure_wall_blowing,wall_blowing_legacy_random,wall_blowing_nmod_t, &
+    explicit_profile_nscbc_corrections_enabled,nscbc_farfield_sbli_shock_enabled,profile_low_order_nscbc_enabled, &
+    profile_state_boundary_enabled,low_order_y_nonreflecting_enabled,low_order_incident_enabled
   use output_input_resources, only: set_inflow_resource_root,inflow_source_path, &
     inflow_source_name,discover_inflow_sources,set_initial_resource_root,initial_source_path,initial_source_name, &
-    set_wall_resource_root
+    set_wall_resource_root,wall_source_path
   use wall_blowing_random, only: legacy_random_state_size,get_legacy_random_state, &
     put_legacy_random_state,legacy_random_runtime_signature
   use output_config, only: output_options
@@ -87,6 +88,8 @@ module output_runtime
   logical,save :: mean_statistics=.false.
   logical,save :: mean_path_ready=.false.,registered_mean_enabled=.false.
   logical,save :: restore_probe_pending=.false.
+  logical,save :: operator_statistics_new_window=.false.
+  logical,save :: profile_wall_file=.false.,profile_wall_phase_file=.false.
   logical,save :: cold_archives_pending=.false.
   integer(int64),save :: restored_mean_path=0
   logical,save :: conservation_statistics=.false.
@@ -388,7 +391,9 @@ contains
   end function
 
   logical function extruded_profile_output_case()
-    extruded_profile_output_case=.not.lreadgrid.and.profile_checkpoint_definition()
+    extruded_profile_output_case=.not.lreadgrid.and.(profile_checkpoint_definition().or. &
+      profile_state_boundary_enabled().or.profile_low_order_nscbc_enabled().or. &
+      (flowtype=='bl'.and.low_order_y_nonreflecting_enabled()))
   end function
 
   logical function read_profile_output_candidate()
@@ -463,6 +468,18 @@ contains
     if(extruded_profile_output_case()) path='datin/grid.2d'
   end function
 
+  logical function new_form_physical_boundary_case()
+    use numerical_forms, only: convection_form,viscous_form,simple_physical_boundary_axis,ldc_boundary_layout,x_open_boundary_layout
+    new_form_physical_boundary_case=(convection_form=='keep'.or.viscous_form=='me6_opti').and. &
+      (simple_physical_boundary_axis(bctype)>0.or.x_open_boundary_layout(bctype).or.profile_state_boundary_enabled().or. &
+      (flowtype=='ldcavity'.and.ldc_boundary_layout(bctype)).or.low_order_y_nonreflecting_enabled())
+  end function
+
+  logical function standalone_grid_resource_case()
+    standalone_grid_resource_case=lreadgrid.and.trim(flowtype)/='bl'.and. &
+      (trim(flowtype)=='tgv'.or.new_form_physical_boundary_case())
+  end function
+
   subroutine check_capability()
     use boundary_high_order, only: high_order_adiabatic_wall_enabled,high_order_wall_enabled
     logical :: supported_case
@@ -486,7 +503,8 @@ contains
           all(bctype==[1,1,421,421,1,1]))))).or. &
       (trim(flowtype)=='bl'.and.lreadgrid.and.(trim(turbinf)=='prof'.or.trim(turbinf)=='intp').and. &
       all(bctype==[11,21,41,51,1,1])).or.extruded_profile_output_case().or.read_profile_output_case().or. &
-      (joint_sbli_output_case().and.lreadgrid)
+      (joint_sbli_output_case().and.lreadgrid).or.(profile_low_order_nscbc_enabled().and.lreadgrid).or. &
+      new_form_physical_boundary_case()
 #ifdef ASTR_BUILD_TESTING
     ! This bounded RK probe has no output/restart contract to publish.
     call get_environment_variable('ASTR_VALIDATION_NSCBC_RK',validation_mode,status=validation_status)
@@ -508,9 +526,9 @@ contains
       'new output admits TGV, bc41 or hermite7 channel, profile/dynamic flatplate or fixed AIR5 HBL/SBLI RK3')
     call check(.not.lcracon.or.(numq==5.and.num_species==0.and..not.lcomb), &
       'checkpoint crashfix supports only non-reacting five-variable flow')
-    if((extruded_profile_output_case().or.read_profile_output_case()).and.bctype(2)==22) then
-      call check(.not.options%adaptive%enabled.and..not.lavg, &
-        'profile joint NSCBC admits same-topology restart; means/adaptive not validated')
+    if((extruded_profile_output_case().or.read_profile_output_case().or.profile_low_order_nscbc_enabled()).and.bctype(2)==22) then
+      call check(.not.options%adaptive%enabled.and.(.not.lavg.or.profile_low_order_nscbc_enabled()), &
+        'profile joint NSCBC admits same-topology restart; means require KEEP, adaptive not validated')
     endif
     call check(ninit>=0.and.ninit<=3,'new output initialization dimension must be 0:3')
     if(air5_output_case()) call check(ninit==0,'AIR5 external initialization is not registered')
@@ -547,23 +565,37 @@ contains
     character(1200) :: path
     path=fallback
     if(enabled.and.(trim(flowtype)=='bl'.or.trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli'.or. &
-      (trim(flowtype)=='tgv'.and.lreadgrid)).and. &
+      (trim(flowtype)=='tgv'.and.lreadgrid).or.new_form_physical_boundary_case()).and. &
       len_trim(options%restore_directory)>0) &
       path=trim(options%restore_directory)//'/../../resources/'//name
   end function
 
   subroutine bootstrap_output_resources()
+    integer :: ierr
     call load_output_options()
     if(.not.enabled) return
     if(len_trim(options%restore_directory)>0) then
-      if(extruded_profile_output_case().or.read_profile_output_candidate()) &
+      if(extruded_profile_output_case().or.read_profile_output_candidate().or. &
+        profile_state_boundary_enabled().or.profile_low_order_nscbc_enabled().or. &
+        (flowtype=='bl'.and.low_order_y_nonreflecting_enabled())) &
         call set_wall_resource_root(trim(options%restore_directory)//'/../../resources')
     endif
-    if(trim(flowtype)=='bl'.and.bctype(3)==41) call configure_wall_blowing()
-    if((extruded_profile_output_case().or.read_profile_output_candidate()).and.len_trim(options%restore_directory)>0) &
+    if(trim(flowtype)=='bl'.and.(bctype(3)==41.or.bctype(3)==421)) call configure_wall_blowing()
+    if(profile_state_boundary_enabled().or.profile_low_order_nscbc_enabled().or. &
+      (flowtype=='bl'.and.low_order_y_nonreflecting_enabled())) then
+      if(mpirank==0) inquire(file=trim(wall_source_path('datin/wallbs.dat')),exist=profile_wall_file)
+      call MPI_Bcast(profile_wall_file,1,MPI_LOGICAL,0,MPI_COMM_WORLD,ierr)
+      call check(ierr==MPI_SUCCESS,'wall resource inventory broadcast')
+      profile_wall_phase_file=profile_wall_file.and..not.wall_blowing_legacy_random.and.wall_blowing_nmod_t>0
+    endif
+    if((extruded_profile_output_case().or.read_profile_output_candidate()).and.len_trim(options%restore_directory)>0.and. &
+      .not.profile_state_boundary_enabled().and..not.profile_low_order_nscbc_enabled().and. &
+      .not.low_order_y_nonreflecting_enabled()) &
       call check(wall_blowing_legacy_random,'extruded profile restart requires legacy_random checkpoint')
     if(wall_blowing_legacy_random.and.(options%checkpoint%enabled.or.len_trim(options%restore_directory)>0)) then
-      call check(extruded_profile_output_case().or.read_profile_output_candidate(), &
+      call check(extruded_profile_output_case().or.read_profile_output_candidate().or. &
+        profile_state_boundary_enabled().or.profile_low_order_nscbc_enabled().or. &
+        (flowtype=='bl'.and.low_order_y_nonreflecting_enabled()), &
         'random wall checkpoint requires an extruded or Cartesian read-profile candidate')
       call check(.not.options%adaptive%enabled, 'random wall checkpoint adaptive scheduling is not admitted')
     endif
@@ -670,7 +702,7 @@ contains
         case(1)
           ok=.false.;message='GPU crashfix supports only non-reacting five-variable flow'
         case(2)
-          ok=.false.;message='GPU crashfix admits central 643e or MP7-LD 743e convection'
+          ok=.false.;message='GPU crashfix admits central 643e, KEEP 643c or MP7-LD 743e convection'
         end select
         if(.not.ok) return
       endif
@@ -837,6 +869,7 @@ contains
       call check(identity%step<=huge(nstep),'restored step exceeds solver integer range')
       if(options%checkpoint_statistics.and.restored_statistics_saved.and..not.precision_changed.and. &
         mean_history_available.and.restored_mean_path==iand(contract(8),6_int64).and. &
+        .not.operator_statistics_new_window.and. &
         (options%exact_restart.or..not.air5_output_case())) then
       if(statistics_active) call output_statistics_file(trim(path)//'/statistics.h5',.false., &
         identity,state_host_budget(),allow_repartition=repartitioning)
@@ -851,6 +884,8 @@ contains
         call reset_mean_statistics_history()
         call restart_output_statistics(identity%step,identity%time,source_bytes,state_header(10))
       endif
+      if(operator_statistics_new_window.and.mpirank==0) write(*,'(a,i0,a,es24.16)') &
+        'ASTR_KEEP_RESTART statistics_new_segment_step=',identity%step,' time=',identity%time
       if(air5_output_case().and..not.options%exact_restart.and.mpirank==0) write(*,'(a)') &
         'ASTR_AIR5_RESTART non-exact; complete chemical state retained; timestep and statistics start new histories'
       if(precision_changed.and.mpirank==0) write(*,'(a,i0,a,i0,a,i0,a,es24.16)') &
@@ -897,13 +932,14 @@ contains
       call write_geometry_resource(trim(options%directory)//'/resources/geometry.h5')
     if (mpirank==0) call copy_batch_file(trim(source),trim(options%directory)//'/resources/input.txt',ok)
     call check(ok,'cannot freeze primary input resource')
-    if(trim(flowtype)=='tgv'.and.lreadgrid) &
+    if(standalone_grid_resource_case()) &
       call freeze_static_resource('grid.h5',trim(gridfile))
     if(trim(flowtype)=='bl') then
       call freeze_static_resource(trim(profile_grid_resource_name()),trim(profile_grid_resource_source()))
       call freeze_static_resource('inlet.prof','datin/inlet.prof')
-      if(wall_blowing_legacy_random) &
+      if(wall_blowing_legacy_random.or.profile_wall_file) &
         call freeze_static_resource('wallbs.dat','datin/wallbs.dat')
+      if(profile_wall_phase_file) call freeze_static_resource('wallbs_phase.dat','datin/wallbs_phase.dat')
       if(dynamic_output_case()) call freeze_inflow_resources()
     endif
     if(air5_output_case()) then
@@ -1458,6 +1494,13 @@ contains
     endif
     driver=0
     driver_config=''
+    if(flowtype=='ldcavity'.and.new_form_physical_boundary_case()) then
+      block
+        use bc, only: twall
+        driver_config(1)='ldc-lid-u1t1-top-corners-v1'
+        write(driver_config(2),'(3(Z16.16))') real_to_word(twall(1:3))
+      end block
+    endif
     block
       use boundary_high_order, only: high_order_wall_enabled,high_order_wall_axis,high_order_adiabatic_wall_enabled
       if(trim(flowtype)=='tgv'.and.high_order_wall_enabled) then
@@ -1496,8 +1539,20 @@ contains
       call get_case_option('profile_inflow_mode',driver_config(3),status=status)
       call check(status==0.or.status==1,'profile inflow mode is truncated')
     endif
-    backflow_outlet=(use_gpu.or.joint_sbli_output_case().or.profile_nscbc_outlet_enabled()).and. &
-      numq==5.and.bctype(2)==22.and.trim(flowtype)/='channel'
+    if(new_form_physical_boundary_case().and.bctype(1)==11.and.all(bctype(3:6)==1)) then
+      block
+        use bc, only: profile_inflow_mach_pressure_enabled
+        if(profile_inflow_mach_pressure_enabled()) then
+          driver_config(3)=trim(driver_config(3))//'/x11-mach-pressure-v1'
+        else
+          driver_config(3)=trim(driver_config(3))//'/x11-complete-state-v1'
+        endif
+      end block
+    endif
+    if(new_form_physical_boundary_case().and.bctype(1)==12.and.all(bctype(3:6)==1)) &
+      driver_config(3)=trim(driver_config(3))//'/x12-stage-v1'
+    backflow_outlet=numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
+      bctype(2)==22.and.trim(flowtype)/='channel'
     if(backflow_outlet) then
       block
         use commvar, only: roinf,uinf,vinf,winf,pinf,gamma,xmin,xmax
@@ -1507,6 +1562,9 @@ contains
           pinf*pout/(gamma-1.e0_real_kind)+0.5e0_real_kind*roinf*pout*(uinf*uinf+vinf*vinf+winf*winf),xmax-xmin]
       end block
       driver_config(1)='bc22-backflow-v1'
+      if(nscbc_outlet_top_spanwise_enabled()) &
+        driver_config(1)=trim(driver_config(1))//'/yz-d2-v1'
+      if(profile_low_order_nscbc_enabled()) driver_config(1)=trim(driver_config(1))//'/wall-z0-v1'
       driver=outlet_reference
       root_driver=driver
       call MPI_Bcast(root_driver,6,mpi_real_type,0,MPI_COMM_WORLD,ierr)
@@ -1580,9 +1638,26 @@ contains
         endif
       end block
     endif
-    if(.not.use_gpu.and.numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
+    if(numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
        bctype(4)==52.and.nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_COMPATIBILITY) &
-      driver_config(2)='bc52-compat-incoming-v1'
+      driver_config(2)='bc52-compat-grazing-v2'
+    if(numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and.bctype(4)==52) then
+      block
+        use bc, only: NSCBC_FARFIELD_POLICY_TARGET_RELAXATION,NSCBC_FARFIELD_POLICY_NONREFLECTING, &
+          nscbc_farfield_target_state,nscbc_farfield_sbli_shock_enabled
+        real(real_kind) :: target(5)
+        select case(nscbc_farfield_policy)
+        case(NSCBC_FARFIELD_POLICY_TARGET_RELAXATION)
+          if(.not.nscbc_farfield_sbli_shock_enabled()) then
+            call nscbc_farfield_target_state(target(1),target(2),target(3),target(4),target(5))
+            write(driver_config(2),'(a,5(z16.16))') 'bc52-incoming-grazing-v2',real_to_word(target)
+          endif
+        case(NSCBC_FARFIELD_POLICY_NONREFLECTING)
+          if(profile_low_order_nscbc_enabled()) driver_config(2)='keep-top-nr-corner-conv-v1'
+          if(low_order_y_nonreflecting_enabled()) driver_config(2)='y52-nr-geom-source-v1'
+        end select
+      end block
+    endif
     root_config=driver_config
     call MPI_Bcast(root_config,384,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
     call check(ierr==MPI_SUCCESS.and.all(root_config==driver_config),'boundary/driver configuration differs between ranks')
@@ -1657,8 +1732,7 @@ contains
       if(.not.options%exact_restart.and.numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
          bctype(4)==52.and.nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_COMPATIBILITY) then
         if((saved_driver_config(2)==''.or.saved_driver_config(2)=='bc52-compat-incoming-v1').and. &
-           (driver_config(2)==''.or.driver_config(2)=='bc52-compat-incoming-v1').and. &
-           saved_driver_config(2)/=driver_config(2)) then
+           driver_config(2)=='bc52-compat-grazing-v2') then
           if(mpirank==0) write(*,'(a)') 'ASTR_OUTPUT non-exact bc52 compatibility identity migration'
           saved_driver_config(2)=driver_config(2)
         endif
@@ -1750,6 +1824,10 @@ contains
   end subroutine
 
   subroutine compact_control_file(unit,writing,status,source_bytes)
+    use keep_sbp63_runtime, only: keep_sbp63_enabled
+#ifdef ASTR_BUILD_TESTING
+    use keep_sbp63_runtime, only: keep_sbp63_mms_enabled
+#endif
     use commvar, only: alfa_filter,bfacmpld,shkcrt
     use numerical_forms, only: convection_form,viscous_form,filter_scheme,effective_filter_scheme
     integer,intent(in) :: unit
@@ -1761,7 +1839,7 @@ contains
     character(4) :: schemes(2),saved_schemes(2)
     integer(int64) :: settings(17),saved_settings(17)
     real(real_kind) :: parameters(3),saved_parameters(3)
-    logical :: active,present,matched
+    logical :: active,present,matched,source_keep,source_me6
     active=global_compact_enabled().or.convection_form=='keep'.or.viscous_form=='me6_opti'.or.(lfilter.and.len_trim(filter_scheme)>0)
     operator_id='astr-global-compact-v1'
     if(.not.global_compact_enabled()) operator_id='astr-standard-v1'
@@ -1769,12 +1847,41 @@ contains
     if(convection_form=='keep'.and.conschm=='643c') operator_id='astr-original-keep6c-v1'
     if(convection_form=='keep') then
       if(conschm=='643c') then
-        operator_id=trim(operator_id)//'/g1a'
+        if(all(bctype==1)) then
+          operator_id=trim(operator_id)//'/g1a'
+        else
+          operator_id=trim(operator_id)//'/gw'
+        endif
       else
         operator_id=trim(operator_id)//'/g1'
       endif
     endif
-    if(viscous_form=='me6_opti') operator_id=trim(operator_id)//'/me6opti-podd-v1'
+    if(convection_form=='keep'.and.any(bctype/=1)) then
+      if(keep_sbp63_enabled) then
+        operator_id=trim(operator_id)//'/s63sat-v1'
+      elseif(profile_low_order_nscbc_enabled()) then
+        if(conschm=='643e') operator_id=trim(operator_id)//'/o24'
+        if(conschm=='643c') operator_id=trim(operator_id)//'/o34'
+      else
+        if(conschm=='643e') operator_id=trim(operator_id)//'/w24'
+        if(conschm=='643c') operator_id=trim(operator_id)//'/w34'
+      endif
+    endif
+    if(low_order_incident_enabled()) operator_id=trim(operator_id)//'/inc1'
+    if(viscous_form=='me6_opti') then
+      if(all(bctype==1)) then
+        operator_id=trim(operator_id)//'/me6opti-g2-v2'
+      else
+        operator_id=trim(operator_id)//'/me6opti-g2w4-v1'
+      endif
+      if(convection_form/='keep'.and.difschm=='643c') operator_id=trim(operator_id)//'/gc1'
+      if(convection_form=='standard'.and.conschm=='543e'.and.all(bctype==1).and. &
+        .not.lchardecomp.and.(recon_schem==1.or.recon_schem==3)) &
+        operator_id=trim(operator_id)//'/mp5v1'
+    endif
+#ifdef ASTR_BUILD_TESTING
+    if(keep_sbp63_mms_enabled) operator_id=trim(operator_id)//'/mms-v1'
+#endif
     if(active) operator_id=trim(operator_id)//'/filter-'//trim(effective_filter_scheme(conschm,difschm,lfilter))
     schemes=[conschm,difschm]
     settings=[1_int64,int(hm,int64),int(ndims,int64),int(numq,int64),int(recon_schem,int64), &
@@ -1793,6 +1900,9 @@ contains
       return
     endif
     ! Old new-format batches have no tail; only non-exact compact migration is allowed.
+    operator_statistics_new_window=.false.
+    source_keep=.false.
+    source_me6=.false.
     present=.not.checkpoint_stream_at_end(unit)
     matched=.false.
     if(present) then
@@ -1804,9 +1914,13 @@ contains
       read(unit,iostat=status) saved_id,saved_schemes,saved_settings
       if(status==0) call read_source_reals(unit,saved_parameters,source_bytes,status)
       call check(status==0,'invalid compact operator identity record')
+      source_keep=index(saved_id,'astr-original-keep6')==1
+      source_me6=index(saved_id,'/me6opti-')>0
       matched=active.and.saved_id==operator_id.and.all(saved_schemes==schemes).and. &
         all(saved_settings==settings).and.all(saved_parameters==parameters)
     endif
+    operator_statistics_new_window=.not.options%exact_restart.and..not.air5_output_case().and. &
+      .not.matched.and.(convection_form=='keep'.or.source_keep.or.viscous_form=='me6_opti'.or.source_me6)
     if(.not.active.and..not.present) return
     if(options%exact_restart) then
       call check(present,'compact operator identity missing; select exact_restart=f for migration')
@@ -1944,16 +2058,17 @@ contains
     call archive_control_file(trim(path)//'/archives.bin',.true.,identity)
     call output_render_file(trim(path)//'/insitu_control.bin',.true.,identity,state_host_budget(),.false.)
     resource_count=2
-    if(trim(flowtype)=='tgv'.and.lreadgrid) resource_count=3
+    if(standalone_grid_resource_case()) resource_count=3
     if(trim(flowtype)=='bl') resource_count=4
     if(dynamic_output_case()) resource_count=5+inflow_count
     if(air5_output_case()) resource_count=2+size(air5_checkpoint_resources())
     if(ninit>=1.and.ninit<=3) resource_count=resource_count+1
-    if(wall_blowing_legacy_random) resource_count=resource_count+1
+    if(wall_blowing_legacy_random.or.profile_wall_file) resource_count=resource_count+1
+    if(profile_wall_phase_file) resource_count=resource_count+1
     allocate(resources(resource_count),stat=err)
     call check(err==0,'checkpoint resource-name allocation')
     resources(1:2)=[character(128) :: 'geometry.h5','input.txt']
-    if(trim(flowtype)=='tgv'.and.lreadgrid) resources(3)='grid.h5'
+    if(standalone_grid_resource_case()) resources(3)='grid.h5'
     if(trim(flowtype)=='bl') then
       resources(3)=profile_grid_resource_name()
       resources(4)='inlet.prof'
@@ -1974,7 +2089,11 @@ contains
       resources(3:resource_count)=air5_checkpoint_resources()
     endif
     i=resource_count
-    if(wall_blowing_legacy_random) then
+    if(profile_wall_phase_file) then
+      resources(i)='wallbs_phase.dat'
+      i=i-1
+    endif
+    if(wall_blowing_legacy_random.or.profile_wall_file) then
       resources(i)='wallbs.dat'
       i=i-1
     endif

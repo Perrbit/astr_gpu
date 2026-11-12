@@ -4,34 +4,47 @@ module keep_operator_gpu
   implicit none
   private
   public :: keep_explicit_line_kernel,keep_explicit_volume_kernel
+  public :: keep_pair_device
 contains
-  attributes(global) subroutine keep_explicit_volume_kernel(im,jm,km,hm,axis,gamma, &
-      rho,velocity,pressure,jacobian,dxi,rhs)
-    integer,value :: im,jm,km,hm,axis
+  attributes(global) subroutine keep_explicit_volume_kernel(im,jm,km,hm,axis,ntype,i0,i1,j0,j1,k0,k1,gamma, &
+      q,rho,velocity,pressure,jacobian,dxi,rhs)
+    integer,value :: im,jm,km,hm,axis,ntype,i0,i1,j0,j1,k0,k1
     real(real_kind),value :: gamma
     real(real_kind),device,intent(in) :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     real(real_kind),device,intent(in) :: pressure(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     real(real_kind),device,intent(in) :: velocity(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
     real(real_kind),device,intent(in) :: jacobian(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     real(real_kind),device,intent(in) :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(real_kind),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
     real(real_kind),device,intent(inout) :: rhs(0:im,0:jm,0:km,5)
-    real(real_kind) :: vl(3),vr(3),ml(3),mr(3),plus(5),minus(5),flux(5),result(5),a
-    integer :: i,j,k,l,c,s,point(3)
+    real(real_kind) :: vl(3),vr(3),ml(3),mr(3),plus(5),minus(5),flux(5),result(5),a,normal
+    integer :: i,j,k,l,c,s,point(3),node(3),dims(3),distance,radius
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
     k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
     if(i>im.or.j>jm.or.k>km) return
+    if(i<i0.or.i>i1.or.j<j0.or.j>j1.or.k<k0.or.k>k1) return
+    node=[i,j,k];dims=[im,jm,km];distance=3
+    if(ntype==1.or.ntype==4) distance=min(distance,node(axis))
+    if(ntype==2.or.ntype==4) distance=min(distance,dims(axis)-node(axis))
+    radius=min(distance,3)
     do c=1,3
       vl(c)=velocity(i,j,k,c)
       ml(c)=jacobian(i,j,k)*dxi(i,j,k,axis,c)
     enddo
     result=0.e0_real_kind
-    do l=1,3
+    do l=1,radius
       select case(l)
       case(1);a=0.75e0_real_kind
       case(2);a=-0.15e0_real_kind
       case(3);a=1.e0_real_kind/60.e0_real_kind
       end select
+      a=2.e0_real_kind*a
+      if(distance==1) a=0.5e0_real_kind
+      if(distance==2) then
+        a=2.e0_real_kind/3.e0_real_kind
+        if(l==2) a=-1.e0_real_kind/12.e0_real_kind
+      endif
       do s=-1,1,2
         point=[i,j,k]
         point(axis)=point(axis)+s*l
@@ -39,22 +52,27 @@ contains
           vr(c)=velocity(point(1),point(2),point(3),c)
           mr(c)=jacobian(point(1),point(2),point(3))*dxi(point(1),point(2),point(3),axis,c)
         enddo
-        call keep_pair_device(rho(i,j,k),vl,pressure(i,j,k),ml, &
-          rho(point(1),point(2),point(3)),vr,pressure(point(1),point(2),point(3)),mr,gamma,flux)
+        if(distance<3) then
+          normal=dot_product(vr,mr)
+          flux(1)=q(point(1),point(2),point(3),1)*normal
+          do c=1,3
+            flux(c+1)=q(point(1),point(2),point(3),c+1)*normal+pressure(point(1),point(2),point(3))*mr(c)
+          enddo
+          flux(5)=(q(point(1),point(2),point(3),5)+pressure(point(1),point(2),point(3)))*normal
+        else
+          call keep_pair_device(rho(i,j,k),vl,pressure(i,j,k),ml, &
+            rho(point(1),point(2),point(3)),vr,pressure(point(1),point(2),point(3)),mr,gamma,flux)
+        endif
         if(s==-1) then
           minus=flux
         else
           plus=flux
         endif
       enddo
-      result=result+2.e0_real_kind*a*(plus-minus)
+      result=result+a*(plus-minus)
     enddo
     ! Existing GPU convection kernels return the negative mapped divergence.
-    if(axis==1) then
-      rhs(i,j,k,:)=-result
-    else
-      rhs(i,j,k,:)=rhs(i,j,k,:)-result
-    endif
+    rhs(i,j,k,:)=rhs(i,j,k,:)-result
   end subroutine
 
   attributes(device) subroutine keep_pair_device(rl,vl,pl,ml,rr,vr,pr,mr,gamma,flux)

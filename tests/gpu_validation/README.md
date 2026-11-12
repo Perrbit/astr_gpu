@@ -1,5 +1,88 @@
 # GPU Validation
 
+## KEEP SBP6/3 Weak Isothermal Walls
+
+`run_keep_sbp63_component_gate.py` compares root-built CPU/GPU components at
+16/32/64 intervals with independent exact SBP matrices, KEEP fluxes and viscous
+work/heat identities. It checks near-wall cubic and internal sixth-order rows
+separately; `--memcheck` also checks device accesses and unchanged component tables.
+
+`run_keep_sbp63_wall_gate.py` selects the separately approved
+`boundary_options.high_order_wall_mode='keep_sbp63'`: explicit arithmetic KEEP,
+standard Sutherland viscosity, two stationary isothermal y walls and periodic
+x/z. It uses uniform 16-cubed NP1/2-y and 20-cubed NP1/4-y meshes, dt=1e-5,
+four complete steps, Tw=1, Re=3000, Ma=0.3, zero driver, no filter or crashfix.
+The 20-cubed NP4 case cuts the six-row boundary band at global shared node 5.
+Frozen three-stage RHS/gradients are compared with independent physical tensor
+matrices and SBP-weighted mass, energy, viscous work and numerical wall heat.
+Native CPU/GPU and decomposition fields use the approved 2e-10 scaled gate;
+same-topology 2+2 continuation compares all state datasets and three controls
+bitwise. Wall trace deviations are reported, not overwritten. The new numerical
+identity is `/s63sat-v1`; existing low-order w24/w34 paths stay unchanged.
+
+Example (run from the repository root after both root-CMake `astr` builds):
+
+```bash
+python tests/gpu_validation/run_keep_sbp63_wall_gate.py \
+  --cpu build_cpu_probe/bin/astr --gpu build_gpu_probe/bin/astr \
+  --mpiexec /opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec \
+  --output results/keep_sbp63_native --memcheck
+```
+
+This short scope is not a long-window stability, general CURVE wall, compact
+high-order boundary, ME6 wall SAT or filtered-path acceptance. Numerical wall
+heat includes its SAT penalty and is distinct from a raw gradient-only wall
+heat diagnostic.
+
+The wall gate now executes the shipped `examples/KEEP_SBP63_Walls/prepare.py`
+inputs directly; that preparation has no validation-tree dependency. Its
+installed copy must reproduce the named inputs and HDF5 grid/initial arrays.
+`run_keep_sbp63_migration_gate.py --sbp-source <wall-gate-root>` reuses its
+immutable 16-interval NP2-y checkpoint. It checks weak-SBP/strong-w24 switches
+in both directions on CPU/GPU: exact mode rejects the changed identity;
+non-exact mode uses the existing 2e-10 field gate across reconciled shared and
+periodic nodes, while all unshared nodes remain bit-identical before advancing.
+Target primitive caches must match the current conservative field, and the
+new checkpoint must name the target operator. The statistics-reset branch is
+checked, but this fixture has no nonzero accumulated statistics and does not
+replace the separate KEEP statistics-history tests. No restart code is modified.
+
+`study_keep_compact_norm_prerequisites.py` is exact algebra, not another CFD
+solver. It reuses archived native compact matrices for the diagonal-norm
+obstruction and constructs a separate four-node banded-norm SBP counterexample.
+The example satisfies positive-definite H, D1=0 and Dx=1, but pointwise original
+KEEP mass balance differs from zero wall flux by exactly
+`-rho.T*(diag(H*1)*D + D.T*diag(H*1) - B)*u/2`. This distinguishes linear SBP
+from nonlinear pointwise conservation; it does not select or reject all future
+compact closures. No SAT or production coefficient is changed.
+
+`run_keep_sbp63_wall_convergence.py` executes the separately approved section
+14.10 matrix: uniform 16/32/64 intervals, GPU NP2-y, CPU16, dt=1e-5 to t=.01,
+and GPU32 at half dt. Only final checkpoints are written. The numerical path is
+identified by `/s63sat-v1`; final admissibility and CPU/GPU16 use the existing
+2e-10 gate. SBP-weighted same-time grid differences, fixed-core versus wall
+locations, wall trace and checkpoint-derived numerical SAT heat are reported,
+without assuming a global order. `--analyze-existing --output <run-root>`
+reuses native checkpoints; Fortran metric packing has a fastest within b.
+It also derives the unforced time-compatibility defect, steady manufactured
+source and composed viscous local moments. Symbolic identities are not native
+MMS acceptance. Recorded wall times include I/O and analysis, not RK timing.
+
+Section 14.11 was subsequently approved. With `ASTR_BUILD_TESTING`,
+`--steady-mms` on the wall gate and fixed-time runner selects the shared
+CPU/device source through `ASTR_TEST_KEEP_SBP63_STEADY_MMS=1`. Production
+defaults are unchanged. Native `full - sbp63_pre_source` is compared with
+independent conservative-flux differentiation; the RK budget separates source
+and viscosity. Exact restart requires `/mms-v1`; source OFF is checked as a
+different-identity rejection. GPU NP1/2 memcheck and 2+2 attach to the four-step
+gate. The fixed-time matrix measures known steady solution errors at 16/32/64.
+Use `--analyze-existing --steady-mms --output <mms-root>` for read-only analysis.
+
+The first derivative is 6/3, but composing nodal gradients/divergence introduces
+a generic second-order near-wall viscous term and wider effective closure
+footprint. MMS v/w maximum errors approach second order. The implementation
+does not silently replace this approved discretization or retune theta.
+
 ## Current Goal Resource Policy
 
 The 2026-11-03 user instruction removes artificial resource quotas for new
@@ -2325,6 +2408,656 @@ OUT_DIR=tests/gpu_validation/out/symmetry_phasec_np2_zphysical_5steps \
 ```
 
 This validates the CPU-compatible Cartesian symmetry path only. It does not imply general curvilinear symmetry normals, wall boundaries, farfield, NSCBC, immersed boundary, species, turbulence, chemistry, compact schemes, or GPU HDF5/checkpoint writing.
+
+## Simple And LDC Physical Boundaries With KEEP And ME6
+
+`run_keep_simple_boundary_gate.py` exercises the boundary kernels' actual
+directions: 41/50/60 in x/y/z, 42 in x/y, and 31/411/421 in y. Each fixture has
+16 intervals per direction, four fixed steps of 1e-5, no repair and no means.
+It compares all three RK-stage input/cache/convection/full-RHS snapshots at
+NP=1 and physical states at NP=1/2; `--multi-axis` adds NP=4. Parallel runs
+restore step 2 without external grid/initial files and compare all final state
+datasets and the three control files bitwise against continuous step 4.
+
+The default matrix samples KEEP explicit/compact, standard nodal
+explicit/compact, filters off/explicit10/compact10 and scalar/full workspaces;
+it is not their Cartesian product. `--viscosity me6_opti` selects the fixed
+four-node physical-end nodal band and ME6 interior. `--diffusion 643c` tests
+the global compact nodal band; `--convection standard --scheme 643c` selects
+the original central compact convection independently. `--stretched` stretches
+only the physical direction. `--nodal-reference PATH` additionally requires
+identical first-stage states and compares the viscous contribution on the band
+against an immutable standard-nodal reference of the same configuration.
+`--memcheck` requires zero Compute Sanitizer errors on every GPU rank.
+MPI comparisons check all 13 physical coordinate/Jacobian/metric datasets,
+not rank-dependent metadata. The stretched ME6 compact-nodal fixture also
+checks that geometry was coupled globally before, rather than after, geomcal.
+
+Field/RHS/cache scaled maximum differences must not exceed 2e-10; final rho,
+internal energy and all five components must be finite and positive where
+appropriate. This gate does not validate long-window stability, general CURVE,
+open-face intersections, the mixed 411 segment or blowing. `--xslip` exposes
+the existing boundary parameter, and the 411 fixture independently checks
+velocity/temperature/pressure targets at every first-step RK stage. Placing
+that single threshold inside periodic x gives conflicting endpoint targets;
+the retained `wall411_mixed_keep` failure is not a passing mixed-wall case.
+The default threshold remains outside the domain (all-slip lower wall).
+It sets no runtime,
+directory or extra-memory cap. Evidence and remaining work are in the KEEP
+integration progress document, LA1/LA2.
+
+`--cases ldc` adds the supplied LDC 41/41/41/0/1/1 layout, not arbitrary UDFs.
+Its known lid/wall velocity and temperature targets are checked at all three
+first-step RK stages, including top-corner ownership. The ME6 band is the union
+of physical-end bands, not their sum. `--mpi-axis x|y|z` chooses the two-rank
+split; `--filter` and `--workspace` override the sampled filter configuration.
+`--nonexact-me6` restores a parallel KEEP/standard checkpoint with ME6, compares
+the before-advance native restore probe to the source q, and checks the new
+segment marker. This fixture disables statistics; it does not prove migration
+of a nonzero averaging window. The shipped independent LDC example is also
+exercised by `run_keep_low_boundary_examples.py --cases ldc`.
+
+`--cases inflow` selects the existing static single-x 11/21 layout, with a
+nonuniform inlet density that must actually be replaced by its target.
+`--inflow-mode complete_state|mach_pressure` and `--mach` exercise the two
+existing pressure policies, including both target-normal Mach branches.
+The fixed rho/u/p/T targets or the pressure extrapolation are checked at each
+first-step RK stage. `--cases nscbc` selects the 12/22 candidate, which is not
+currently a passing numerical gate: its inlet CPU/GPU characteristic contracts
+differ and its ordinary CPU outlet computes tangential RHS with stale filtered
+halos. See the KEEP progress decision item before running that matrix further.
+`analyze_keep_x_nscbc_rhs.py` independently accounts for the latter difference
+from saved uniform-tensor first-stage states and Euler tangential fluxes; it is
+a read-only diagnosis, not a flow integrator or a post-fix acceptance test.
+
+## Low-order explicit KEEP bc41 wall
+
+`keep_wall_probe` and `keep_wall_gpu_probe` check the actual volume operators:
+node Euler flux with D2/D4 at the first/second wall-normal interior rows,
+KEEP D6 elsewhere, both wall faces excluded from the convection write range.
+Physical-wall exterior data are NaN. Polynomial leading errors confirm the
+formal 2/4/6 orders; a wall-compatible streamfunction tests complete Euler RHS
+against analytic derivatives at 16/32/64 intervals. Its observed near-wall
+superconvergence is not the general stencil order. Build through the root:
+
+```sh
+cmake --build build_cpu_probe --target keep_wall_probe numerical_forms_probe -j 8
+build_cpu_probe/bin/keep_wall_probe
+cmake --build build_gpu_probe --target keep_wall_gpu_probe -j 8
+build_gpu_probe/bin/keep_wall_gpu_probe
+```
+
+`run_keep_wall_gate.py` uses a common deterministic 16-cubed initial resource,
+fixed dt=1e-4, four completed steps, fixed channel driving and no repair.
+Filter defaults to off; `--filter explicit10|compact10` selects an existing filter.
+It compares CPU/GPU physical states, actual native RHS/cache snapshots, NP=2
+x/y/z and optional NP=4 xy, exact 2+2 restart and explicit non-exact migration.
+Native boundary/cache rounding is reported separately from the component's
+strict common-input comparison. Geometry must be a flat axis-aligned tensor
+grid; this is not an admission of general CURVE walls. ME6 physical walls use
+the separately checked splice described below.
+`--scheme 643c` selects compact KEEP with its original physical-end equations;
+`--diffusion-scheme 643c` independently selects the existing compact viscosity.
+Compact auxiliary derivatives are globally coupled through MPI, including
+physical-end rows; only the active convection volume range is committed.
+
+```sh
+python tests/gpu_validation/run_keep_wall_gate.py \
+  --cpu build_cpu_probe/bin/astr --gpu build_gpu_probe/bin/astr \
+  --mpiexec "$(command -v mpiexec)" --output results/keep_wall_compare --multi-axis
+```
+
+Use `--axes --memcheck` for NP=1 memory checking without repeating the MPI matrix.
+`wall_state_budget` provides explicitly J-weighted stored-state changes; it does
+not assert zero total-energy change or replace a boundary balance derivation.
+`--timestep auto` replaces the fixed timestep with CFL target 0.5 and growth
+factor 1.1; it retains the four-step field and exact-restart comparisons.
+`--crashfix` explicitly enables the existing repair mechanism; omit it for
+numerical-format stability and accuracy checks. A healthy short trajectory
+tests its integration and restart path, not an actual repair event.
+
+The explicit volume probe also supplies a nonzero pre-existing RHS. Excluded
+physical faces must retain it exactly, and active nodes must add the volume
+contribution instead of resetting it. `keep_rhs_production_probe.F90` checks the
+same contract for the actual compact CPU/GPU production objects, NP=1 and NP=2
+x/y/z. Its synthetic field is not a physical NSCBC validation:
+
+```sh
+python tests/gpu_validation/run_keep_rhs_probe.py \
+  --build build_cpu_probe --mpiexec "$(command -v mpiexec)" \
+  --output results/keep_compact_rhs_cpu
+python tests/gpu_validation/run_keep_rhs_probe.py \
+  --build build_gpu_probe --gpu --mpiexec "$(command -v mpiexec)" \
+  --output results/keep_compact_rhs_gpu
+```
+
+These launchers link current root-build solver objects; build `astr` first.
+Add `--repair` to inject one negative-density and one negative-internal-energy
+node per rank after the RHS ownership check. The probe calls the original CPU
+and GPU repair routines and compares repaired states and critical-node masks.
+It does not count repaired trajectories as KEEP positivity evidence and does
+not test a checkpoint roundtrip containing a nonzero history.
+
+### ME6 Low-Order Physical Wall
+
+`run_me6_wall_component_gate.py` links `me6opti_wall_probe.F90` with the actual
+root-built operators. It measures the d<4 nodal / d>=4 G2 splice on a variable-
+temperature manufactured field, checks exterior NaNs, records separate row and
+J-weighted interior L1/L2/Linf errors, and reports nodal/hybrid mapped sums.
+The original nodal composition is approximately first-order near the wall for
+some momentum components; this is not a globally sixth-order closure.
+
+```sh
+python tests/gpu_validation/run_me6_wall_component_gate.py \
+  --build build_gpu_probe --gpu --mpiexec "$(command -v mpiexec)" \
+  --output results/me6_wall_components --mpi
+python tests/gpu_validation/run_keep_wall_gate.py \
+  --cpu build_cpu_probe/bin/astr --gpu build_gpu_probe/bin/astr \
+  --mpiexec "$(command -v mpiexec)" --output results/me6_wall_native \
+  --viscous-form me6_opti --multi-axis
+```
+
+`--transport device-aware` selects the existing CUDA-aware transport in the
+native wall driver. `me6opti_halo_probe` and its GPU target take optional fourth
+argument `wall` for a nonperiodic y direction; their default remains periodic.
+The component interface itself takes explicit periodic flags, not peer IDs as
+a substitute for periodicity. Physical MPI_PROC_NULL sides are never unpacked.
+`run_keep_wall_window.py` advances an existing common initial resource without
+filter/repair and checks its completed-state CFL log afterward. Pass the matching
+global initialized-q snapshot explicitly for its stored-state budget.
+
+### CPU Generic Right-X NSCBC
+
+`run_nscbc_cpu_outlet_probe.py` exercises actual CPU x+ bc22 without the MP7
+profile-selection predicate. Use `--gpu` with the GPU root build for direct
+production-kernel comparison. Its nine analytic states cover pressure recovery,
+supersonic outgoing-wave preservation and the existing constant-background
+sub/supersonic backflow extension, each at NP=1/2 by default.
+
+```sh
+python tests/gpu_validation/run_nscbc_cpu_outlet_probe.py \
+  --build build_gpu_probe --gpu --mpiexec "$(command -v mpiexec)" \
+  --output results/cpu_gpu_right_outlet
+```
+
+These are boundary-level checks, not full KEEP open-domain or acoustic-reflection
+validation. Other CPU normals and reacting boundaries are outside this repair.
+
+### KEEP Open-Boundary Prototype Gate
+
+`run_keep_open_gate.py` uses a common three-dimensional initial HDF field with
+weak spanwise variations on the top/outlet, a flat stretched tensor mesh,
+profile inlet, bc22/bc41/bc52 and periodic z. It compares post-boundary q/caches,
+signed boundary/volume/full RHS and then fields, selected MPI and exact restart.
+The first failed numerical comparison stops the matrix.
+
+The approved CPU x+/y+ missing-z repair now passes representative explicit and
+compact KEEP, compatibility/incoming-only, MPI and same-topology restart checks.
+`analyze_keep_open_corner.py` retains the original failed-state attribution.
+The independent compact-filter combination first stopped at a compatibility
+grazing-flow RHS mismatch. After approval, CPU/GPU compatibility use the existing
+wave-classification tolerance for the inflow branch. Representative MPI,
+exact restart, memcheck and active device-aware solution-halo checks pass.
+`analyze_keep_open_grazing.py` retains the strict-sign failure attribution.
+The separate incoming-only strict-sign problem was then independently approved
+and repaired using the same existing tolerance, only for nonshock targets.
+Use `--policy incoming_only` to analyze the retained failed frozen state.
+Analytic, compact-filter/MPI/restart and device-aware checks now pass. The KEEP
+outlet/lower-wall ownership correction also removes a spurious GPU Dz term;
+non-KEEP outlet behavior is unchanged.
+
+The actual `nscbc_physics_probe.cuf` includes +/-1e-20 normal speeds and states
+inside/outside the existing tolerance band. Exact KEEP incoming-only checkpoints
+now record all five effective target values; the open gate also checks that a
+changed target is rejected, rather than silently treated as an exact restart.
+
+`run_keep_corner_component_gate.py` links
+`keep_nonreflecting_corner_probe.cuf` against the actual root GPU build, which
+also contains the CPU boundary modules. It tests the proposed nonreflecting
+corner in isolation: actual outlet Dx/Dz, the top's raw-Dy branch, and the
+existing incoming-source projection. Uniform and weak inflow/outflow/grazing
+states are compared with independent ideal-gas acoustic projections. This is
+not a main-program nonreflecting trajectory or reflection-rate acceptance;
+the test's use of the raw-Dy GRCBC branch does not select GRCBC as the candidate
+physical model. A new directory is required for each immutable result batch.
+
+The subsequently approved native `--mode nonreflecting` gate now assembles
+classified Dx, raw Dy and one Dz before projecting the total convective corner
+RHS. `analyze_keep_nonreflecting_corner.py` independently reconstructs this RHS
+from frozen states and actual metrics, and checks incoming removal, outgoing
+preservation and profile-inlet corner ownership. Explicit KEEP passed NP=1,
+NP=2 x/y/z and NP=4 xy; compact KEEP passed NP=1/2 y. Both use the original 643e
+viscosity, dt=1e-5, four steps, no filter or repair, and exact 2+2 continuation.
+This is not acoustic-reflection or full viscous-characteristic acceptance.
+
+`run_keep_open_acoustic.py` executes the separately approved OPEN-P1 physical
+window in `ASTR_GPU_KEEP_GEOMETRY_CANDIDATES.md` section 13. It first compares
+four native CPU/GPU steps (NP=2 y, q and signed RHS), then runs the three
+explicit-KEEP top modes with their own no-packet baselines and an extended-domain
+reference. Only nonreflecting is y-refined. Long windows write completed-step
+fixed-j numerical planes every five steps, without checkpoints, volume series
+or rendering. The approved gates are incident-integral consistency within 1%,
+nonreflecting return amplitude at most 5%, coarse/fine amplitude difference at
+most 0.01, and measured C_upper at most 0.5 with finite positive states. Other
+top modes report their response, rather than being required to match one another.
+
+`analyze_keep_open_acoustic.py` subtracts each run's own baseline, forms
+`w_plus/minus = delta_p +/- rho0*a0*delta_v`, removes the extended reference's
+incoming signal, and integrates squared signals using physical x/z trapezoid
+weights and the actual saved times. Window membership uses approved integer
+steps. `test_keep_open_acoustic_analysis.py` checks a prescribed 3% return,
+different drifting baselines, physical area and mismatched clocks with synthetic
+arrays. This diagnostic is a probe return ratio, not an intrinsic single-frequency
+reflection coefficient or validation of compact KEEP or oblique acoustics.
+
+```bash
+python tests/gpu_validation/run_keep_open_acoustic.py \
+  --cpu build_cpu_probe/bin/astr --gpu build_gpu_probe/bin/astr \
+  --mpiexec /opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec \
+  --output results/keep_open_acoustic_fresh_directory
+```
+
+Use root-CMake FP64 binaries and a new result directory; the runner stops at
+the first failed scientific comparison and does not adjust numerical parameters.
+
+For the remaining low-order `nonreflecting` integration, the existing open gate
+also covers explicit KEEP/compact viscosity/compact10 (NP=1, NP=2 y, NP=4 xy,
+pinned, NP1 memcheck) and compact KEEP/compact viscosity/explicit10 (NP=1,
+NP=2 z, active device-aware solution halo). Each uses four steps at dt=1e-5,
+compares CPU/GPU and decomposition fields, checks the frozen corner, and checks
+bitwise same-backend 2+2 continuation. This is not a full Cartesian product or
+a statement about PCR transport or long-time compact-wall stability.
+
+The open gate also accepts `--timestep auto`, selecting the existing CFL target
+0.5 and growth factor 1.1 without an initial/max dt cap. The representative
+nonreflecting compact-KEEP/compact-viscosity/explicit10 case checks NP=1/2 y,
+CPU/GPU fields and clocks, and bitwise same-backend 2+2 continuation. Clock
+checks use each completed state's detailed acoustic C_upper to verify the next
+dt rule. They do not impose a post-step rejection gate or claim that the already
+used dt always gives C_upper <=0.5; the existing controller is target-based.
+
+`analyze_keep_open_budgets.py` reuses native NP1 snapshots with completed RK
+stages, main-filter changes and boundary preparation recorded separately. Its
+J/trapezoidal-x-y/unique-z measure is not a newly selected SBP norm. Euler
+surface fluxes and volume RHS differences are reported, not forced to vanish.
+The three representative nonreflecting batches close the time bookkeeping and
+agree between CPU/GPU; this does not prove a conservative physical-end stencil.
+Older filtered archives without pre/post-filter snapshots are not silently
+reconstructed. The analyzer rejects a perturbed post-update energy in a read-only
+test copy; it does not advance a separate Python flow solution.
+
+`analyze_keep_open_viscous_budgets.py` independently rebuilds standard nodal
+stress, conduction, work and the full-minus-conv mapped RHS in archived NP1
+11/22/41/52 cases, using production-extracted explicit/compact endpoint matrices
+and periodic-z symbols. Gas/transport scales must be supplied explicitly and
+match the archive. It distinguishes physical surface flux, the raw stencil's
+volume/surface defect and unsubmitted normal endpoint rows, retaining rather
+than zeroing the latter two. KE/internal/entropy balances are observations, not
+new stability gates. CPU/GPU comparisons include each physical face separately.
+This is frozen postprocessing, not a Python flow integrator or an implementation
+of ME6/open viscous-characteristic boundary sources.
+
+`study_keep_sbp63_sat_wall.py` analyzes the subsequently approved route-A design
+without porting its proposed formulas. It derives a proposed H-weighted leading
+boundary-error minimizer, verifies exact scalar variable-diffusion lifting/SAT
+identities, frozen-rest gas acoustic cancellation, and arithmetic-KEEP wall
+mass/energy and nonlinear viscous work/heat identities. The latter uses a
+one-dimensional normal variation with all three velocity components. Theta and
+the complete candidate formulas still require approval. These are symbolic or
+frozen-matrix checks, not native time integration, nonlinear entropy stability,
+positivity, or a compact-wall closure.
+
+Its `--preflight-only` mode instead reviews the proposed 16/20-interval
+decomposition/halo index ranges and full frozen-rest Fourier blocks for dt=1e-5.
+It reports eigenvalues and RK3 energy-norm amplification without a new pass
+threshold. This mode neither executes MPI nor advances a CFD field, and does
+not authorize the proposed theta criterion or nonlinear production closure.
+
+`run_keep_low_boundary_examples.py` prepares and runs the installed-source
+`examples/KEEP_Low_Order_Boundaries` inputs, at NP=2 y for wall and open cases,
+four steps with no filter or repair. It checks finite positive final states,
+CPU/GPU scaled differences <=2e-10 and measured C_upper <=0.5. `--cases open`
+can select only the affected example without rerunning an unchanged wall input.
+
+`run_keep_wall_time_convergence.py` measures fixed-time native grid differences,
+not errors against an exact solution. The existing wall initial field has a
+thermal initial-boundary compatibility limitation; do not interpret measured
+orders as an asymptotic global-sixth-order result.
+
+`run_keep_wall_window.py` now explicitly forwards the existing test-only
+read-only RK and pre-RHS state checks. With the low-order bc41 pressure
+extrapolation, compact KEEP without filtering develops negative wall pressure;
+`analyze_keep_wall_failure.py` retains invalid values for attribution, without
+weakening the strict acceptance snapshot reader. The same compact case with
+compact10 also fails its window; explicit KEEP without filtering and compact
+KEEP with explicit10 complete the representative 1000-step window. The latter
+still amplifies disturbances and is not a general stability acceptance.
+
+`analyze_keep_rk_budgets.py` reads all three native RK stages and separates
+convection, viscosity, filtering, periodic preparation and nonlinear RK defects
+for five conservative means, kinetic/internal energy and entropy density. It
+checks the actual stage recurrence; the telescoping budget is bookkeeping, not
+a nonlinear stability proof. Its source-free periodic TGV scope and supplied dt
+must match the archived run. Existing unfiltered snapshots can be reused.
+
+`run_keep_rk_budget_gate.py` collects the missing filter snapshots only: a 16-cubed
+explicit KEEP/standard viscosity/compact10 case, and a 32-cubed mapped compact
+KEEP/ME6/explicit10 case, each four steps at NP=1. Snapshot ON/OFF must leave all
+state datasets bit-identical in the same build; independently filtered CPU/GPU
+trajectories and budget terms use the existing scaled 2e-10 gate, not a claim of
+bit-identical frozen inputs. ME6 variable-property totals remain diagnostic.
+
+`run_keep_open_migration_gate.py` reuses native nonreflecting step-2 NP=2 y
+checkpoints for explicit/compact KEEP method switches. Exact switches must be
+rejected; explicitly nonexact restores must preserve the five conservative
+arrays before advancing, rebuild derived state, and record the target operator
+and corner identities. Statistics are disabled in this short test; it is not
+historical-statistics reset acceptance.
+
+`run_keep_statistics_migration_probe.py` checks the separately approved
+historical-statistics repair. Periodic 16-cubed explicit KEEP has a step-4
+checkpoint, then migrates to compact KEEP through step 6 without changing dt,
+viscosity, filter state or output schedule. `--statistics-path mean` tests the
+CPU legacy means; `--statistics-path insitu --gpu ...` tests CPU and GPU in-situ
+means/covariances. It does not enable legacy mean44 on GPU TGV. Use `--ranks 1 2`
+for the representative x decomposition. Changed-method windows start at step
+4/time .004; same-method exact/nonexact histories remain at step 0, and exact
+state/statistics datasets match the continuous run bitwise. At NP=1 the new
+moments are independently reconstructed from the actual three endpoint states.
+The retained pre-repair `failed_new_statistics_window` report is historical
+evidence, not a current passing report.
+
+The same driver accepts `--convection-form standard|keep`,
+`--source-viscosity standard|me6_opti`, `--target-viscosity standard|me6_opti`
+and `--source-scheme`/`--target-scheme` (`643e` or `643c`). This also checks
+ME6-to-ME6 E/C convection changes and entering/leaving ME6 without KEEP.
+Source or target ME6 now follows the same approved fresh-window contract;
+unchanged operators retain history. Same-method exact checks compare the three
+control files byte-for-byte as well as state/statistics datasets. CPU legacy
+and CPU/GPU in-situ representatives are recorded in the KEEP progress LA5-1;
+they are periodic lifecycle evidence, not physical-boundary statistics coverage.
+
+`run_keep_statistics_switches.py` reuses those native sources for C-to-E,
+KEEP-to-standard and standard-to-KEEP changes, plus a standard-to-standard
+nonexact control. This tests both source and target sides of the KEEP-specific
+scope. New cases compare the current nonexact shared-node behavior using the
+existing field tolerance, not an unapproved bitwise nonexact-field contract.
+
+`run_keep_open_statistics_migration.py` prepares the separate joint-open-boundary
+mean44/device-spanwise-statistics check. After separate approval, the KEEP-only
+mean-statistics admission passes its 16-cubed, NP=2 x, nonreflecting six-step
+matrix: statistics ON/OFF leaves all five conservative arrays bit-identical;
+same-method exact state/statistics datasets match; changed-method histories
+start a new window. CPU mean44 and GPU plane moments differ in p/rho*T ordering,
+so the first 12 quantities are explicitly mapped before physical-z quadrature.
+Use the source's frozen geometry for this analysis: a lean nonexact target does
+not store geometry.h5. Non-KEEP and adaptive-output restrictions remain intact.
+
+`run_keep_open_gate.py --viscosity me6_opti` reuses that static
+11/22/41/52 boundary contract with the fixed x/y nodal band and internal ME6.
+Representative E/C derivatives, explicit10/compact10 and
+`--filter-workspace scalar|full`, NP=1/2 x/y/z/4 xy, exact continuation and
+single-rank memcheck are recorded in progress LA3-3. This is not arbitrary
+boundary-combination, dynamic-inlet or general-CURVE support.
+`run_keep_open_statistics_migration.py` also accepts
+`--source-viscosity`/`--target-viscosity`; its ME6 six-step NP=2 x check covers
+statistics ON/OFF, exact state/statistics/control continuation, same-method
+nonexact history retention, E/C new-window construction, restored q and the
+first 12 CPU/GPU moments under actual spanwise geometric integration.
+
+The same profile gate accepts `--outlet 21 --top 50|51` for the existing
+static inlet/pressure-outlet/wall/conventional-top layouts.
+`--convection standard --viscosity me6_opti` checks original central convection
+with ME6, including the prepared 22/52 NSCBC layout in progress LA3-7.
+For that layout, representative E/C, nodal E/C, both main filters/workspaces,
+all three nonshock top modes, dynamic/modal forcing and actual device-aware
+halo have native checks. Its six-step statistics migration check also accepts
+`--source-convection standard --target-convection standard` with both viscosities
+set to `me6_opti`; it is not a repair of the generic single-x 12/22 CPU contract.
+The same gate accepts existing upwind choices with standard convection/ME6:
+`--scheme 543e --outlet 21 --top 51` for recon=3 physical reconstruction,
+or `--scheme 743e --initial-dimension 2 --blowing legacy_random --outlet 21 --top 50`
+for recon=5 with characteristic decomposition enabled. Progress LA3-8 records
+the tested subset, including nodal C plus compact10 for the latter.
+These smooth fixtures do not validate strong-shock behavior or every upwind layout.
+Progress LA3-10 adds actual state-profile ME6 wiring for independent nodal C:
+MP5 21/51 with `--diffusion 643c`, and MP5/MP7 with `--inlet-mode intp
+--blowing modal` and the recorded representative main filters/workspaces.
+The GPU routes physical-space MP5 and characteristic-enabled MP7 to their
+existing xy-physical reconstruction kernels, not to central convection.
+The statistics helper accepts `--source-scheme`, `--target-scheme` and a common
+`--diffusion`; the recorded 21/51 migration uses ME6 on both sides, 543e to
+643c convection and 643c nodal auxiliaries. Its ordinary E-to-C defaults remain.
+The new layouts compare all three RK-stage q/caches/RHS, independently recover
+primitive caches from q, and check density/pressure positivity. The
+`profile_state_targets` helper checks the supplied inlet, wall and outlet
+targets; for top 50 it uses the original second-order zero-normal-derivative
+relation, not an adjacent-node copy. Saved earlier native snapshots can be
+checked directly through that helper without rerunning the solver.
+`run_keep_open_statistics_migration.py` with `--outlet 21 --top 51` and
+`--target-convection standard --target-viscosity me6_opti` extends the existing
+six-step statistics check from KEEP/standard-viscosity to original-central/ME6.
+Progress LA3-4 records the actual matrices and evidence, not arbitrary
+boundary-combination or production-physics acceptance.
+
+Progress LA3-5 extends that read-tensor profile gate with `--inlet-mode intp`,
+`--inflow-mode complete_state|mach_pressure` and
+`--blowing off|modal|counter|legacy_random`. The dynamic source is the existing
+12-plane nonpolynomial sequence; four native steps actually advance the cache.
+Exact continuation compares `inflow.h5` when active. Modal/counter wall targets
+have independent formula checks; legacy random uses its prescribed envelope
+and strict same-topology CPU/GPU fields, plus exact RNG-containing controls.
+Since rank-local random forcing changes with decomposition, its NP=1/NP>1
+comparison is explicitly inapplicable, not a relaxed field-error threshold.
+Nonrandom modes retain decomposition comparisons. Every requested resume now
+passes the source's explicit topology, including the four-rank case.
+
+The resource arguments to `run_case` provide wall inputs for fresh runs only;
+restores intentionally have no local wall files. New-format profiles freeze
+wall parameters and modal phases, then bind frozen paths before configuration.
+`run_keep_open_statistics_migration.py --inlet-mode intp --blowing legacy_random`
+reuses its six-step NP=2 x statistics gate for combined inlet/RNG continuity.
+NSCBC22 pressure is not asserted to equal a strong pressure target. Top-y 50
+checks rho/u/v/w/p extrapolation and EOS T, not an extra independent T constraint.
+The retained first failure in `profile_dynamic_original_me6_counter` is that
+invalid T assertion; the corrected complete matrix has its own evidence directory.
+
+`run_keep_open_gate.py --extruded` selects the existing HBL UDF producer and
+native ninit=2 input, requiring matching root-CMake CPU/GPU builds with
+`ASTR_USERDEFINE_SOURCE=user_define_module/examples/userdefine_hbl.F90`.
+It preserves and checks that producer's spanwise length 90 and the supplied
+2D x/y coordinates. `--initial-dimension 0|2|3` selects the initializer
+independently; the default is 2 for extrusion and 3 for read-grid fixtures.
+The original `grid.2d`, not its generated 3D output, is frozen and restores
+have no local grid/profile/initial-state inputs. The converse read-3D-grid /
+2D-initial-state case still freezes grid.h5. Progress LA3-6 records the actual
+representatives, the retained pre-fix missing-resource failure, memcheck,
+same-topology exact state/cache/control checks and the separate six-step
+statistics window test (`run_keep_open_statistics_migration.py --extruded`).
+No new UDF mathematics, arbitrary-UDF admission or old-batch reconstruction
+is introduced.
+
+`review_keep_open_acoustic_parameters.py` is preparation-only analytic review for
+the pending OPEN-P1 proposal in KEEP geometry candidates section 13. It checks
+the small isentropic pulse initialization, uniform-grid resolution and separate
+incident/return windows; it never launches ASTR. Its original artifact remains
+a parameter-review record. The gates were subsequently approved and the native
+OPEN-P1 windows passed; see the separate acoustic runner and current progress
+record, not this parameter-review artifact, for that execution evidence.
+
+`audit_keep_boundary_sbp.py` extracts actual legacy explicit/compact and existing
+high-order derivative matrices from root-built CPU objects, then records simple
+necessary-condition obstructions to a positive diagonal-norm SBP identity. It
+does not diagnose all PDE closures as unstable. `study_keep_sbp63_family.py`
+independently derives a rational explicit 6/3 SBP family with the existing D6
+interior, retaining an unselected parameter. Exact matrix/moment, scalar-energy
+and frozen KEEP flux balances are analysis only, not production admission or
+full viscous-wall validation. Neither script advances a CFD solution.
+
+`run_keep_example_gate.py` copies the actual shipped
+`examples/KEEP_Taylor_Green_Vortex/datin` input. It changes only CPU/GPU selection
+and explicit/compact KEEP, runs NP=2 x for four complete steps, compares finite
+positive conservative fields, and checks bit-identical 2+2 continuation. It
+does not generate another legacy fixture or require a controller, external
+grid or initial HDF5 field.
+
+`--variant mp5-me6` instead runs the independent `input.mp5_me6.case`, without
+rewriting its convection/viscosity selection. It checks NP=2 x fields, the
+corrected `mp5v1` identity and exact state/control continuation. The default
+remains the original KEEP E/C example.
+
+`run_keep_periodic_gate.py --form standard --scheme 543e --viscous-form me6_opti`
+exercises the actual periodic MP5 reconstruction with ME6. Select
+`--diffusion-scheme 643e|643c` independently; `--rhs` compares bit-identical
+unfiltered first-stage q/geometry and the convection/full/viscous contributions.
+The 16-interval, four-step matrix includes NP=1/2 x/y/z/4 xy/8 xyz. Representative
+explicit10/compact10 checks recover filtered primitives from current q and
+compare exact continuation. `--transport device-aware` selects the existing
+solution-halo backend, not a hardware-P2P guarantee. The retained pre-fix
+`periodic_mp5_me6_before` output proves the former central-kernel misdispatch;
+`periodic_mp5_central_counterfactual` is its independent native CPU central
+reference. Progress LA2-P records the fix, label change, actual tests and scope.
+
+## KEEP Inviscid Incident Boundary
+
+`run_keep_incident_gate.py` uses the existing inviscid 11/22/421/52/1/1 GRCBC
+fixture with explicit or globally coupled compact KEEP. Select `--scheme 643e`
+or `643c`, and independently `--diffusion 643e` or `643c` for auxiliary
+operators (the fixture remains inviscid). Sixteen intervals, four fixed 1e-5 steps,
+no main filter or repair: `--entry-x 2` is the constant reference, while
+`--entry-x .25` requires a nonzero top density response. Both compare NP=1,
+NP=2 x/y/z and optional NP=4 xy; parallel runs restore step 2 to step 4 with
+bit-identical state and control files. The single-rank test compares all three
+first-step stage fields, property caches and RHS; the scaled tolerance is 2e-10.
+
+For the local NVHPC 26.1/Ada Compute Sanitizer run, use `--memcheck
+--memcheck-stack-bytes 2672`. The testing-only wrapper explicitly configures
+the instrumented GRCBC context and reports its actual stack. With no diagnostic
+input, ordinary MPI and restart runs retain the production behavior. The
+uninstrumented kernel reports 1272 local bytes; setting only that amount did
+not fix the sanitizer failure. An explicit 2672-byte control, matching the
+original MP7 context, did. These are local instrumented resource observations,
+not a portable stack-size rule or a disabled memory checker. Both final constant
+and response memchecks report zero errors. The final original-MP7 control also
+reports zero errors without this diagnostic input.
+
+Evidence is in `results/keep_low_all_20261111/incident_keep_uniform_checked/`
+and `incident_keep_response_checked/`. The standalone `--case incident` example
+has a separate NP=2 y CPU/GPU check, `incident_keep_shipped_correct_profile/`.
+The initial shipped example's integer-form profile records failed its legacy
+real-record scanner; correcting those generated records did not change the
+reader. This subset is not viscous-ME6, dynamic-inlet, filtered or long-time
+shock-capturing qualification.
+
+`incident_compact_response_checked/` adds actual compact 643c/643e, NP=1/2
+x/y/z/4 xy and exact continuation; the final field difference is at most
+1.444e-15 scaled. CPU/GPU stage fields/caches/RHS satisfy the same gate, and
+the instrumented GPU run reports zero errors. The unchanged compact physical
+end rows stay globally coupled. `incident_compact_auxiliary_uniform/` tests
+643c/643c constant preservation and exact continuation at NP=1/2 y;
+`incident_explicit_compact_auxiliary/` tests 643e/643c response at NP=1/2 x.
+Neither auxiliary-selection check is a viscous validation with diffusion off.
+The standalone `--case incident-compact` recipe has independent NP=2 y evidence
+in `incident_compact_shipped/`. `incident_explicit_after_compact/before_after.json`
+records bit-identical original explicit state/control values at CPU/GPU NP=1/2 y.
+The CPU compact response also differs from explicit by 5.334e-9 in conservative
+values, independently excluding accidental reuse of the original explicit body.
+
+The new viscous candidate uses `--viscosity standard` or `me6_opti`, bc41,
+Re=1000, Tw=1 and a weak three-dimensional profile in the same Cartesian box.
+`--convection standard --viscosity me6_opti` selects original central convection
+with `--scheme 643e` or `643c`; it does not select an upwind body. Main filtering
+and repair stay off. The testing-only `incident_pre` RHS is after diffusion and
+sources, before GRCBC. `full` is after GRCBC also for original-central/ME6;
+the diagnostic-phase correction leaves the native state/control values identical.
+`characteristic_closure` independently checks incoming acoustic forcing and
+outgoing projection on the captured first-stage state; its outgoing-change and
+diffusion-source quantities are mapped RHS values, while the acoustic rate is
+divided by J.
+
+Do not treat that candidate as accepted: `incident_viscous_nodal_explicit/`
+failed at the first NP=1 boundary-RHS comparison, before MPI or restart checks.
+`analyze_keep_incident_corner.py` reads the frozen evidence without another
+flow run. It reconstructs the missing periodic-z interface flux difference,
+then the acoustic-only GRCBC projection; transverse entropy/shear transport is
+retained by the convective compatibility. The CPU omission explains the raw
+1.063e-7 and final 5.315e-8 RHS discrepancies to 2.711e-19 and 5.578e-19,
+respectively. CPU/GPU diffusion increments differ by only 3.885e-19. The CPU
+low-order GRCBC corner-classification repair and restart-identity revision are
+awaiting approval; the existing GPU z contribution has not been removed.
+Prior inviscid constant/two-dimensional-response data did not excite this term
+and do not establish general three-dimensional GRCBC compatibility.
+
+## KEEP Physical-CURVE Geometry Diagnosis
+
+`run_keep_y_farfield_gate.py` separately checks the existing explicit geometric
+41/52 NSCBC/source contract, not the unapproved compact geometry fix. It uses
+16 y-wavy intervals, x/z periodicity, four 1e-5 steps, no main filter/repair,
+uniform or weak nonuniform fields, KEEP/standard-nodal, KEEP/ME6 or
+original-central/ME6. NP=1/2 x/y/z/4 xy checks include three-stage q/caches/RHS,
+finite positive fields and bit-identical exact state/control continuation.
+`source_projection` independently constructs Euler normal acoustic/contact
+projectors from current conservative q and geometric normals, checking the
+incoming part of full-minus-convective RHS; nonuniform runs require a nonzero
+retained top-plane increment. It does not validate acoustic reflection rates.
+
+The profile 11/21/41/52 attempt retained in `y_farfield_profile_keep` failed at
+the periodic-z outlet/top seam, so no MPI/restore matrix followed. The read-only
+`analyze_keep_y_farfield_halo.py` predicts the difference from old/new transverse
+fluxes and the outgoing Euler projector, residual 7.365e-17. CPU halo/primitive
+staging repair remains a human decision; the periodic-x box has no such outlet
+state mutation. Do not conflate its passing check with profile 21/52 acceptance.
+
+`run_keep_physical_metric_audit.py` runs CPU initialization with zero complete
+steps, no filtering/checkpoints and the existing y-wavy mapping with two y
+walls and periodic x/z. It does not remove the production geometry gate or
+advance a flow. It reads immutable production derivative matrices from
+`results/keep_wall_low_20261110/high_order_diagonal_sbp_audit/` (16 and 32
+intervals); the underlying derivative/compact-matrix source is unchanged.
+The 16-interval cases compare NP=1 and NP=2 x/y/z; the 32-interval cases
+measure analytic truncation independently. Curl/divergence and MPI checks
+do not accept analytic accuracy: the retained compact inverse-metric error
+is about .51 to .52 despite near-zero divergence. The physical affine
+phi=y gradient diagnostic exposes the same interior error. The optional
+candidate computation is explicitly unapproved and never replaces solver
+geometry; the current candidate preserves the native Jacobian array verbatim.
+The fixed-J reanalysis reuses the immutable native files without rerunning
+initialization. Current evidence and the proposed G1m are in progress LA5-2 and
+the geometry-candidate document; this is not CURVE boundary admission.
+
+## Actual CPU x-wall species and GPU wall dispatch
+
+`wall_species_boundary_probe.F90` calls the actual CPU `boucon` dispatcher.
+`run_wall_species_boundary_probe.py` links it against the selected root-CMake
+solver objects and libraries, replacing only the main program. Build `astr`
+first so the objects reflect the current source. This probe reads the generated
+Makefiles link metadata; it does not rebuild or modify the production target.
+
+```sh
+cmake --build build_cpu_probe --target astr -j 8
+python tests/gpu_validation/run_wall_species_boundary_probe.py \
+  --build build_cpu_probe --backend cpu --mpiexec "$(command -v mpiexec)" \
+  --output results/wall_species_cpu
+
+cmake --build build_gpu_probe --target astr -j 8
+python tests/gpu_validation/run_wall_species_boundary_probe.py \
+  --build build_gpu_probe --backend gpu --mpiexec "$(command -v mpiexec)" \
+  --output results/wall_species_gpu
+```
+
+CPU checks NP=1/2 and bc41/42 x walls, with zero species, a uniform passive
+species, a periodic tangentially varying species independent of x, and the same
+physical species field with changed transverse halo data. Both physical x walls
+must preserve the x-independent composition within 2e-12, including q6/rho;
+the interior must remain unchanged. This catches an erroneous `j-2` sample in
+the x-plus normal extrapolation. It is not a reactive chemistry validation.
+
+The GPU mode selects only the implemented nonreacting five-variable walls. It
+compares the actual GPU wall dispatcher against CPU for constant fields and
+fields varying in pressure/temperature along both normal and tangential
+directions, using a 2e-10 scaled conservative-state gate. The probe does not
+claim a GPU legacy-species x-wall implementation or MPI halo validation.
+Outputs and the complete compile/link commands are retained in `report.json`.
 
 ## Phase D Artificial TGV `bctype=41` Wall Slices
 

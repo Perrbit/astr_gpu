@@ -59,6 +59,8 @@ set(ASTR_SOURCES
   astr_precision.F90
   astr_precision_mpi.F90
   keep_operator.F90
+  keep_sbp63.F90
+  keep_sbp63_runtime.F90
   keep_geometry.F90
   me6opti_operator.F90
   me6opti_halo.F90
@@ -181,6 +183,8 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/compact_distributed_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_check.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/keep_operator_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/keep_sbp63_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/keep_sbp63_runtime_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/me6opti_operator_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/me6opti_halo_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/me6opti_runtime_gpu.cuf
@@ -287,12 +291,25 @@ if(BUILD_TESTING)
   enable_language(CXX)
   add_executable(keep_operator_probe EXCLUDE_FROM_ALL
     astr_precision.F90 keep_operator.F90 ../tests/gpu_validation/keep_operator_probe.F90)
+  add_executable(keep_sbp63_probe EXCLUDE_FROM_ALL
+    astr_precision.F90 keep_operator.F90 keep_sbp63.F90 ../tests/gpu_validation/keep_sbp63_probe.F90)
+  add_executable(keep_wall_probe EXCLUDE_FROM_ALL
+    astr_precision.F90 keep_operator.F90 ../tests/gpu_validation/keep_wall_probe.F90)
+  set_target_properties(keep_wall_probe PROPERTIES Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/keep_wall_modules")
+  target_include_directories(keep_wall_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/keep_wall_modules")
   add_executable(numerical_forms_probe EXCLUDE_FROM_ALL
     numerical_forms.F90 ../tests/gpu_validation/numerical_forms_probe.F90)
   add_executable(me6opti_symbol_audit EXCLUDE_FROM_ALL
     astr_precision.F90 ../tests/gpu_validation/me6opti_symbol_audit.F90)
   add_executable(me6opti_candidate_probe EXCLUDE_FROM_ALL
     astr_precision.F90 me6opti_operator.F90 ../tests/gpu_validation/me6opti_candidate_probe.F90)
+  add_executable(me6opti_mapped_probe EXCLUDE_FROM_ALL
+    astr_precision.F90 me6opti_operator.F90 ../tests/gpu_validation/me6opti_mapped_probe.F90)
+  set_target_properties(me6opti_mapped_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/me6opti_mapped_modules")
+  target_include_directories(me6opti_mapped_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/me6opti_mapped_modules" ${HDF5_INCLUDE_DIRS})
+  target_link_libraries(me6opti_mapped_probe PRIVATE MPI::MPI_Fortran ${HDF5_Fortran_LIBRARIES})
   add_executable(me6opti_halo_probe EXCLUDE_FROM_ALL
     astr_precision.F90 astr_precision_mpi.F90 me6opti_halo.F90 ../tests/gpu_validation/me6opti_halo_probe.F90)
   set_target_properties(me6opti_halo_probe PROPERTIES
@@ -310,15 +327,37 @@ if(BUILD_TESTING)
   target_include_directories(keep_geometry_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/keep_geometry_modules" ${HDF5_INCLUDE_DIRS})
   target_link_libraries(keep_geometry_probe PRIVATE MPI::MPI_Fortran ${HDF5_Fortran_LIBRARIES})
   if(ASTR_WITH_CUDA)
+    add_executable(keep_sbp63_gpu_probe EXCLUDE_FROM_ALL
+      astr_precision.F90 keep_operator.F90 keep_sbp63.F90 ../src_gpu/keep_operator_gpu.cuf
+      ../src_gpu/keep_sbp63_gpu.cuf ../tests/gpu_validation/keep_sbp63_probe.F90)
+    target_compile_definitions(keep_sbp63_gpu_probe PRIVATE TEST_CUDA)
+    target_compile_options(keep_sbp63_gpu_probe PRIVATE -cuda -gpu=lineinfo)
     add_executable(keep_operator_gpu_probe EXCLUDE_FROM_ALL
       astr_precision.F90 keep_operator.F90 ../src_gpu/keep_operator_gpu.cuf
       ../tests/gpu_validation/keep_operator_probe.F90)
     target_compile_definitions(keep_operator_gpu_probe PRIVATE TEST_CUDA)
     target_compile_options(keep_operator_gpu_probe PRIVATE -cuda -gpu=lineinfo)
+    add_executable(keep_wall_gpu_probe EXCLUDE_FROM_ALL
+      astr_precision.F90 keep_operator.F90 ../src_gpu/keep_operator_gpu.cuf
+      ../tests/gpu_validation/keep_wall_probe.F90)
+    target_compile_definitions(keep_wall_gpu_probe PRIVATE TEST_CUDA)
+    target_compile_options(keep_wall_gpu_probe PRIVATE -cuda -gpu=lineinfo)
+    set_target_properties(keep_wall_gpu_probe PROPERTIES Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/keep_wall_gpu_modules")
+    target_include_directories(keep_wall_gpu_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/keep_wall_gpu_modules")
     add_executable(me6opti_gpu_probe EXCLUDE_FROM_ALL
       astr_precision.F90 me6opti_operator.F90 ../src_gpu/me6opti_operator_gpu.cuf
       ../tests/gpu_validation/me6opti_gpu_probe.cuf)
     target_compile_options(me6opti_gpu_probe PRIVATE -cuda -gpu=lineinfo)
+    add_executable(me6opti_mapped_gpu_probe EXCLUDE_FROM_ALL
+      astr_precision.F90 me6opti_operator.F90 ../src_gpu/me6opti_operator_gpu.cuf
+      ../tests/gpu_validation/me6opti_mapped_probe.F90)
+    target_compile_definitions(me6opti_mapped_gpu_probe PRIVATE TEST_CUDA)
+    target_compile_options(me6opti_mapped_gpu_probe PRIVATE -cuda -gpu=lineinfo)
+    set_target_properties(me6opti_mapped_gpu_probe PROPERTIES
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/me6opti_mapped_gpu_modules")
+    target_include_directories(me6opti_mapped_gpu_probe PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/me6opti_mapped_gpu_modules" ${HDF5_INCLUDE_DIRS})
+    target_link_libraries(me6opti_mapped_gpu_probe PRIVATE MPI::MPI_Fortran ${HDF5_Fortran_LIBRARIES})
     add_executable(me6opti_halo_gpu_probe EXCLUDE_FROM_ALL
       astr_precision.F90 astr_precision_mpi.F90 me6opti_halo.F90
       ../src_gpu/gpu_check.cuf ../src_gpu/halo_transport_gpu.cuf ../src_gpu/device_mpi_transport_gpu.cuf

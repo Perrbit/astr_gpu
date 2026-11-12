@@ -29,13 +29,16 @@ contains
     use commvar, only: flowtype,conschm,difschm,recon_schem,lchardecomp, &
          lfilter,diffterm,lihomo,ljhomo,lkhomo,nondimen,ndims,numq, &
          num_species,num_modequ,turbmode
+    use numerical_forms, only: convection_form,viscous_form
     implicit none
+    logical :: me6
 
+    me6=convection_form=='standard'.and.viscous_form=='me6_opti'.and.diffterm
     gpu_tgv_explicit_upwind_supported = trim(flowtype)=='tgv' .and. ndims==3 .and. &
          numq==5 .and. num_species==0 .and. num_modequ==0 .and. &
          trim(turbmode)=='none' .and. trim(conschm)=='543e' .and. &
-         trim(difschm)=='643e' .and. (recon_schem==1 .or. recon_schem==3) .and. &
-         (.not.lchardecomp) .and. (.not.lfilter) .and. (.not.diffterm) .and. &
+         (difschm=='643e'.or.(me6.and.difschm=='643c')).and.(recon_schem==1.or.recon_schem==3).and. &
+         (.not.lchardecomp).and.(.not.lfilter.or.me6).and.(.not.diffterm.or.me6).and. &
          lihomo .and. ljhomo .and. lkhomo .and. nondimen
   end function gpu_tgv_explicit_upwind_supported
 

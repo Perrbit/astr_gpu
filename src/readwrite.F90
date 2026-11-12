@@ -495,7 +495,8 @@ module readwrite
     use bc,      only : bctype,twall,xslip,turbinf,xrhjump,angshk,pout
     use ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
     use case_model_options, only: reset_model_options,read_model_group,publish_model_options,write_model_option_receipt
-    use numerical_forms, only: convection_form,keep_configuration_error,filter_scheme,viscous_form,me6_configuration_error
+    use numerical_forms, only: convection_form,keep_configuration_error,filter_scheme,viscous_form, &
+      me6_configuration_error,profile_nscbc_boundary_layout,ldc_boundary_layout,profile_state_boundary_layout
     use mpi, only: MPI_COMM_WORLD
     !
 #ifdef COMB
@@ -661,9 +662,27 @@ module readwrite
         if(.not.lfex) call reject_case_input(inputfile,'chemfile not found: '//trim(chemfile))
       endif
 #endif
-      detail=keep_configuration_error(conschm,num_species,lcomb,bctype,turbmode)
+      detail=keep_configuration_error(conschm,difschm,num_species,lcomb,bctype,turbmode)
       if(len_trim(detail)>0) call reject_case_input(inputfile,trim(detail))
-      detail=me6_configuration_error(num_species,lcomb,bctype,turbmode,diffterm)
+      if((convection_form=='keep'.or.viscous_form=='me6_opti').and.ldc_boundary_layout(bctype)) then
+        if(flowtype/='ldcavity'.or.lihomo.or.ljhomo.or..not.lkhomo) &
+          call reject_case_input(inputfile,'LDC boundary layout requires ldcavity, physical x/y and periodic z')
+      endif
+      if((convection_form=='keep'.or.viscous_form=='me6_opti').and.profile_state_boundary_layout(bctype)) then
+        if(lihomo.or.ljhomo.or..not.lkhomo.or.flowtype/='bl'.or.(turbinf/='prof'.and.turbinf/='intp')) &
+          call reject_case_input(inputfile,'State-profile boundaries require prof/intp inlet, physical x/y and periodic z')
+      endif
+      if((convection_form=='keep'.or.viscous_form=='me6_opti').and.any(bctype/=1)) then
+        if(profile_nscbc_boundary_layout(bctype)) then
+          if(lihomo.or.ljhomo.or..not.lkhomo.or.flowtype/='bl'.or.(turbinf/='prof'.and.turbinf/='intp')) &
+            call reject_case_input(inputfile,'Low-order profile NSCBC requires prof/intp inflow, physical x/y and periodic z')
+        else
+          if(any([lihomo,ljhomo,lkhomo].neqv. &
+            [all(bctype(1:2)==1),all(bctype(3:4)==1),all(bctype(5:6)==1)])) &
+            call reject_case_input(inputfile,'KEEP periodic flags must agree with its physical boundary axes')
+        endif
+      endif
+      detail=me6_configuration_error(num_species,lcomb,bctype,turbmode,diffterm,difschm)
       if(len_trim(detail)>0) call reject_case_input(inputfile,trim(detail))
       if(viscous_form=='me6_opti'.and.real_bytes/=8) call reject_case_input(inputfile,'ME6 is currently FP64 only')
       if(len_trim(filter_scheme)>0.and.filter_scheme/='explicit10'.and.filter_scheme/='compact10') &

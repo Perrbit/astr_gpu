@@ -1,8 +1,8 @@
 module keep_geometry
   use astr_precision, only: real_kind
   use astr_precision_mpi, only: mpi_real_type
-  use numerical_forms, only: convection_form
-  use commvar, only: im,jm,km,hm,ia,ja,ka,conschm
+  use numerical_forms, only: convection_form,viscous_form,ldc_boundary_layout
+  use commvar, only: im,jm,km,hm,ia,ja,ka,conschm,difschm,lihomo,ljhomo,lkhomo
   use commarray, only: x
   use parallel, only: ig0,jg0,kg0,lio
   use derivative, only: fds_compact_i,fds_compact_j,fds_compact_k
@@ -11,9 +11,83 @@ module keep_geometry
   implicit none
   private
   public :: periodic_keep_geometry_active,build_keep_periodic_area
+  public :: validate_keep_wall_geometry
 contains
+  subroutine validate_keep_wall_geometry()
+    use keep_sbp63_runtime, only: keep_sbp63_enabled
+    use bc, only: bctype,profile_low_order_nscbc_enabled,profile_state_boundary_enabled,low_order_y_nonreflecting_enabled, &
+      low_order_incident_enabled
+    use numerical_forms, only: keep_open_boundary_selected,y_nonreflecting_boundary_layout,inviscid_incident_boundary_layout, &
+      simple_physical_boundary_axis
+    real(real_kind) :: local_error,global_error,scale
+    integer :: i,j,k,ierr,ignored,physical_axis
+    if(convection_form/='keep'.and..not.(viscous_form=='me6_opti'.and. &
+      (ldc_boundary_layout(bctype).or.profile_state_boundary_enabled().or.profile_low_order_nscbc_enabled().or. &
+       y_nonreflecting_boundary_layout(bctype).or.low_order_incident_enabled()))) return
+    if(lihomo.and.ljhomo.and.lkhomo) return
+    if(inviscid_incident_boundary_layout(bctype).and..not.low_order_incident_enabled()) &
+      error stop 'KEEP incident coupling requires the existing unfiltered inviscid prof/GRCBC configuration'
+    if(y_nonreflecting_boundary_layout(bctype)) then
+      if(.not.low_order_y_nonreflecting_enabled()) &
+        error stop 'Wall/nonreflecting-y coupling requires existing 643e/643e unfiltered TGV or prof inlet configuration'
+      if(lio) write(*,'(A)') 'LOW-ORDER Y52: existing geometric normal and complete viscous-source projection'
+      return
+    endif
+    if(keep_open_boundary_selected(bctype).and..not.profile_low_order_nscbc_enabled().and. &
+      .not.low_order_incident_enabled()) &
+      error stop 'KEEP open boundaries require an implemented profile boundary configuration'
+    if(.not.keep_sbp63_enabled.and.conschm=='643e'.and.difschm=='643e') then
+      physical_axis=simple_physical_boundary_axis(bctype)
+      if(physical_axis>0) then
+        if(bctype(2*physical_axis-1)==41) then
+          ! Existing explicit gradients/fluxes retain all nine metric entries.
+          ! Pressure still uses the original coordinate-line wall extrapolation.
+          if(lio) write(*,'(A)') 'KEEP WALL: explicit full-metric low-order isothermal wall'
+          return
+        endif
+      endif
+    endif
+    local_error=0.e0_real_kind
+    scale=max(1.e0_real_kind,maxval(abs(x(0:im,0:jm,0:km,:))))
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      local_error=max(local_error,maxval(abs(x(i,j,k,:)-[x(i,0,0,1),x(0,j,0,2),x(0,0,k,3)]))/scale)
+    enddo
+    enddo
+    enddo
+    call mpi_allreduce(local_error,global_error,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
+    if(global_error>128.e0_real_kind*epsilon(1.e0_real_kind)) &
+      error stop 'KEEP physical ends currently require a flat axis-aligned tensor grid'
+    if(lio) then
+      if(convection_form/='keep') then
+        if(profile_state_boundary_enabled().or.profile_low_order_nscbc_enabled().or.low_order_incident_enabled()) then
+          write(*,'(A)') 'ME6 PROFILE: existing axis-aligned tensor-grid boundary geometry'
+        else
+          write(*,'(A)') 'ME6 LDC: existing axis-aligned tensor-grid boundary geometry'
+        endif
+        return
+      endif
+      if(keep_sbp63_enabled) then
+        write(*,'(A)') 'KEEP WALL: global SBP 6/3 rows with weak isothermal SAT; axis-aligned tensor grid'
+        return
+      endif
+      if(keep_open_boundary_selected(bctype)) then
+        write(*,'(A)') 'KEEP OPEN: low-order physical-end volume rows; existing classified NSCBC faces'
+        return
+      endif
+      if(all(bctype==[1,1,41,41,1,1])) then
+        if(conschm=='643e') write(*,'(A)') 'KEEP WALL w24: second/fourth-order nodal flux rows; sixth-order KEEP interior'
+        if(conschm=='643c') write(*,'(A)') 'KEEP WALL w34: global compact split with existing third/fourth-order endpoint rows'
+      else
+        write(*,'(A,6(I0,1X))') 'KEEP low-order physical ends: ',bctype
+      endif
+    endif
+  end subroutine
+
   logical function periodic_keep_geometry_active() result(active)
-    active=convection_form=='keep'.and.conschm=='643c'
+    active=convection_form=='keep'.and.conschm=='643c'.and.lihomo.and.ljhomo.and.lkhomo
   end function
 
   pure function cross(a,b) result(c)

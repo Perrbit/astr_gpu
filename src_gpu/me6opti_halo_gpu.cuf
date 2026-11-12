@@ -2,6 +2,7 @@ module me6opti_halo_gpu
   use astr_precision, only: real_kind
   use me6opti_halo, only: me6_edge_tags
   use cudafor
+  use mpi, only: MPI_PROC_NULL
   use gpu_check, only: sync_after_kernel
   use halo_transport_gpu, only: device_aware_transport_enabled,exchange_host_pair
   use device_mpi_transport_gpu, only: exchange_device_pair
@@ -14,16 +15,28 @@ module me6opti_halo_gpu
   end type
   type(edge_buffers),save :: buffers(2)
 contains
-  subroutine extend_me6_edges_gpu(im,jm,km,hm,velocity,temperature,parts,peers)
+  subroutine extend_me6_edges_gpu(im,jm,km,hm,velocity,temperature,parts,peers,periodic)
     integer,intent(in) :: im,jm,km,hm,parts(3),peers(2,3)
+    logical,intent(in) :: periodic(3)
     real(real_kind),device,intent(inout) :: velocity(-hm:,-hm:,-hm:,:),temperature(-hm:,-hm:,-hm:)
-    integer :: axis,slot,nx,nt,n
+    integer :: axis,slot,nx,nt,n,ilo,ihi,jlo,jhi,apply_low,apply_high
+    ilo=-hm;ihi=im+hm
+    if(.not.periodic(1)) then
+      if(parts(1)==1.or.peers(1,1)==MPI_PROC_NULL) ilo=0
+      if(parts(1)==1.or.peers(2,1)==MPI_PROC_NULL) ihi=im
+    endif
+    jlo=-hm;jhi=jm+hm
+    if(.not.periodic(2)) then
+      if(parts(2)==1.or.peers(1,2)==MPI_PROC_NULL) jlo=0
+      if(parts(2)==1.or.peers(2,2)==MPI_PROC_NULL) jhi=jm
+    endif
     do axis=2,3
+      if(parts(axis)==1.and..not.periodic(axis)) cycle
       slot=axis-1;nx=im+2*hm+1;nt=km+1
       if(axis==3) nt=jm+2*hm+1
       n=hm*nx*nt*4
       if(parts(axis)==1) then
-        call wrap_edges_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,axis,nt,n,velocity,temperature)
+        call wrap_edges_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,axis,nt,n,ilo,ihi,jlo,jhi,velocity,temperature)
         call sync_after_kernel('ME6 local extended halo',force_sync=.true.)
         cycle
       endif
@@ -33,7 +46,7 @@ contains
         if(.not.device_aware_transport_enabled) allocate(buffers(slot)%slh(hm,nx,nt,4), &
           buffers(slot)%shh(hm,nx,nt,4),buffers(slot)%rhh(hm,nx,nt,4),buffers(slot)%rlh(hm,nx,nt,4))
       endif
-      call pack_edges_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,axis,nt,n,velocity,temperature, &
+      call pack_edges_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,axis,nt,n,ilo,ihi,jlo,jhi,velocity,temperature, &
         buffers(slot)%sl,buffers(slot)%sh)
       call sync_after_kernel('ME6 extended halo pack',force_sync=.true.)
       if(device_aware_transport_enabled) then
@@ -43,9 +56,11 @@ contains
         buffers(slot)%slh=buffers(slot)%sl;buffers(slot)%shh=buffers(slot)%sh
         call exchange_host_pair(buffers(slot)%slh,buffers(slot)%shh,buffers(slot)%rhh,buffers(slot)%rlh, &
           n,peers(1,axis),peers(2,axis),me6_edge_tags(1,slot),me6_edge_tags(2,slot))
-        buffers(slot)%rh=buffers(slot)%rhh;buffers(slot)%rl=buffers(slot)%rlh
+        if(peers(2,axis)/=MPI_PROC_NULL) buffers(slot)%rh=buffers(slot)%rhh
+        if(peers(1,axis)/=MPI_PROC_NULL) buffers(slot)%rl=buffers(slot)%rlh
       endif
-      call unpack_edges_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,axis,nt,n,velocity,temperature, &
+      apply_low=merge(1,0,peers(1,axis)/=MPI_PROC_NULL);apply_high=merge(1,0,peers(2,axis)/=MPI_PROC_NULL)
+      call unpack_edges_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,axis,nt,n,ilo,ihi,jlo,jhi,apply_low,apply_high,velocity,temperature, &
         buffers(slot)%rh,buffers(slot)%rl)
       call sync_after_kernel('ME6 extended halo unpack',force_sync=.true.)
     enddo
@@ -66,13 +81,17 @@ contains
     hg=lo;hg(axis)=last+h
   end subroutine
 
-  attributes(global) subroutine pack_edges_kernel(im,jm,km,hm,axis,nt,n,v,t,sl,sh)
-    integer,value :: im,jm,km,hm,axis,nt,n
+  attributes(global) subroutine pack_edges_kernel(im,jm,km,hm,axis,nt,n,ilo,ihi,jlo,jhi,v,t,sl,sh)
+    integer,value :: im,jm,km,hm,axis,nt,n,ilo,ihi,jlo,jhi
     real(real_kind),device :: v(-hm:,-hm:,-hm:,:),t(-hm:,-hm:,-hm:),sl(:,:,:,:),sh(:,:,:,:)
     integer :: index,h,i,j,c,lo(3),hi(3),lg(3),hg(3)
     index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(index>=n) return
     call edge_indices(index,im,jm,km,hm,axis,nt,h,i,j,c,lo,hi,lg,hg)
+    if(lo(1)<ilo.or.lo(1)>ihi.or.(axis==3.and.(lo(2)<jlo.or.lo(2)>jhi))) then
+      sl(h,i,j,c)=0.e0_real_kind;sh(h,i,j,c)=0.e0_real_kind
+      return
+    endif
     if(c<=3) then
       sl(h,i,j,c)=v(lo(1),lo(2),lo(3),c);sh(h,i,j,c)=v(hi(1),hi(2),hi(3),c)
     else
@@ -80,27 +99,31 @@ contains
     endif
   end subroutine
 
-  attributes(global) subroutine unpack_edges_kernel(im,jm,km,hm,axis,nt,n,v,t,rh,rl)
-    integer,value :: im,jm,km,hm,axis,nt,n
+  attributes(global) subroutine unpack_edges_kernel(im,jm,km,hm,axis,nt,n,ilo,ihi,jlo,jhi,apply_low,apply_high,v,t,rh,rl)
+    integer,value :: im,jm,km,hm,axis,nt,n,ilo,ihi,jlo,jhi,apply_low,apply_high
     real(real_kind),device :: v(-hm:,-hm:,-hm:,:),t(-hm:,-hm:,-hm:),rh(:,:,:,:),rl(:,:,:,:)
     integer :: index,h,i,j,c,lo(3),hi(3),lg(3),hg(3)
     index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(index>=n) return
     call edge_indices(index,im,jm,km,hm,axis,nt,h,i,j,c,lo,hi,lg,hg)
+    if(lo(1)<ilo.or.lo(1)>ihi.or.(axis==3.and.(lo(2)<jlo.or.lo(2)>jhi))) return
     if(c<=3) then
-      v(lg(1),lg(2),lg(3),c)=rl(h,i,j,c);v(hg(1),hg(2),hg(3),c)=rh(h,i,j,c)
+      if(apply_low/=0) v(lg(1),lg(2),lg(3),c)=rl(h,i,j,c)
+      if(apply_high/=0) v(hg(1),hg(2),hg(3),c)=rh(h,i,j,c)
     else
-      t(lg(1),lg(2),lg(3))=rl(h,i,j,c);t(hg(1),hg(2),hg(3))=rh(h,i,j,c)
+      if(apply_low/=0) t(lg(1),lg(2),lg(3))=rl(h,i,j,c)
+      if(apply_high/=0) t(hg(1),hg(2),hg(3))=rh(h,i,j,c)
     endif
   end subroutine
 
-  attributes(global) subroutine wrap_edges_kernel(im,jm,km,hm,axis,nt,n,v,t)
-    integer,value :: im,jm,km,hm,axis,nt,n
+  attributes(global) subroutine wrap_edges_kernel(im,jm,km,hm,axis,nt,n,ilo,ihi,jlo,jhi,v,t)
+    integer,value :: im,jm,km,hm,axis,nt,n,ilo,ihi,jlo,jhi
     real(real_kind),device :: v(-hm:,-hm:,-hm:,:),t(-hm:,-hm:,-hm:)
     integer :: index,h,i,j,c,lo(3),hi(3),lg(3),hg(3)
     index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(index>=n) return
     call edge_indices(index,im,jm,km,hm,axis,nt,h,i,j,c,lo,hi,lg,hg)
+    if(lo(1)<ilo.or.lo(1)>ihi.or.(axis==3.and.(lo(2)<jlo.or.lo(2)>jhi))) return
     if(c<=3) then
       v(lg(1),lg(2),lg(3),c)=v(hi(1),hi(2),hi(3),c)
       v(hg(1),hg(2),hg(3),c)=v(lo(1),lo(2),lo(3),c)

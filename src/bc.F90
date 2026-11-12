@@ -172,7 +172,9 @@ module bc
 #endif
 
   subroutine configure_high_order_wall()
+    use keep_sbp63_runtime, only: configure_keep_sbp63
     use astr_precision, only: numerical_precision
+    use numerical_forms, only: convection_form
     use commvar, only: conschm,difschm,rkscheme,lcomb,nondimen,lfilter,diffterm, &
       lihomo,ljhomo,lkhomo,turbmode
     implicit none
@@ -185,7 +187,12 @@ module bc
     high_order_wall_axis=2
     call get_case_option('high_order_wall_mode',mode,status=status)
     if(status==1.or.trim(mode)=='off'.or.trim(mode)=='') return
+    if(status==0.and.trim(mode)=='keep_sbp63') then
+      call configure_keep_sbp63(bctype,twall(3:4))
+      return
+    endif
     if(status/=0.or.trim(mode)/='hermite7') error stop 'Unknown ASTR_HIGH_ORDER_WALL_MODE'
+    if(convection_form=='keep') error stop 'KEEP Hermite7 wall coupling is not implemented; use the low-order wall mode'
     homogeneous=[lihomo,ljhomo,lkhomo]
     if(count(.not.homogeneous)/=1) error stop 'Hermite7 wall requires one physical axis'
     axis=maxloc(merge(0,1,homogeneous),dim=1)
@@ -485,8 +492,7 @@ module bc
     implicit none
     integer :: fh,i,ich,env_status,env_length
     logical :: lexist
-    character(len=1400) :: filewbs
-    character(len=64) :: filephase
+    character(len=1400) :: filewbs,filephase
     character(len=32) :: mode
 
     if(wall_blowing_configured) return
@@ -527,7 +533,7 @@ module bc
         close(fh)
 
         if(wall_blowing_nmod_t>0 .and. .not.wall_blowing_legacy_random) then
-          filephase='datin/wallbs_phase.dat'
+          filephase=wall_source_path('datin/wallbs_phase.dat')
           inquire(file=trim(filephase),exist=lexist)
           if(.not.lexist) stop 'modal wall blowing requires datin/wallbs_phase.dat'
           fh=get_unit()
@@ -718,7 +724,7 @@ module bc
     call configure_nscbc_farfield
     if(.not.ready) then
       if(.not.explicit_profile_nscbc_corrections_enabled().or.lfilter) &
-        stop 'sbli_grcbc requires an explicit five-variable profile flow with bc41 or inviscid bc421 and no main filter'
+        stop 'sbli_grcbc requires a supported five-variable profile flow with bc41 or inviscid bc421 and no main filter'
       saved_pre=[nscbc_farfield_rho_target, &
         nscbc_farfield_rho_target*nscbc_farfield_u_target, &
         nscbc_farfield_rho_target*nscbc_farfield_v_target, &
@@ -1007,6 +1013,19 @@ module bc
       nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_NONREFLECTING
   end function nscbc_farfield_nonreflecting_enabled
 
+  logical function nscbc_outlet_top_spanwise_enabled()
+    use commvar, only: lcomb
+    implicit none
+
+    call configure_nscbc_farfield
+    nscbc_outlet_top_spanwise_enabled=ndims==3.and.numq==5.and. &
+      num_species==0.and.num_modequ==0.and..not.lcomb.and. &
+      bctype(2)==22.and.bctype(4)==52.and..not.high_order_boundary_enabled.and. &
+      (nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_COMPATIBILITY.or. &
+       (nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_TARGET_RELAXATION.and. &
+        .not.nscbc_farfield_sbli_shock).or.profile_nonreflecting_corner_enabled())
+  end function nscbc_outlet_top_spanwise_enabled
+
   logical function nscbc_farfield_viscous_source_enabled()
     use commvar, only: conschm,difschm,lfilter,diffterm,lihomo,ljhomo, &
                        lkhomo,nondimen,turbmode
@@ -1099,20 +1118,88 @@ module bc
 
   logical function explicit_profile_nscbc_corrections_enabled()
     use commvar, only: conschm,difschm,lcomb,nondimen,recon_schem,lchardecomp
+    use numerical_forms, only: convection_form
     implicit none
-    logical :: scheme_supported,boundary_supported
+    logical :: scheme_supported,boundary_supported,auxiliary_supported
 
     scheme_supported=conschm=='743e'
+    auxiliary_supported=difschm=='643e'
     if(nscbc_farfield_sbli_shock_enabled()) scheme_supported= &
       ((conschm=='743e'.and.recon_schem==5).or.(conschm=='543e'.and.recon_schem==3)).and.lchardecomp
+    if(low_order_incident_enabled()) then
+      scheme_supported=conschm=='643e'.or.conschm=='643c'
+      auxiliary_supported=difschm=='643e'.or.difschm=='643c'
+    endif
 
     boundary_supported=all(bctype==[11,22,41,52,1,1]).or.nscbc_inviscid_incident_enabled()
     explicit_profile_nscbc_corrections_enabled=flowtype=='bl'.and.ndims==3.and. &
-      scheme_supported.and.difschm=='643e'.and.numq==5.and. &
+      scheme_supported.and.auxiliary_supported.and.numq==5.and. &
       num_species==0.and.num_modequ==0.and..not.lcomb.and.nondimen.and. &
       turbinf=='prof'.and.boundary_supported.and. &
       nscbc_farfield_incoming_only_enabled()
   end function explicit_profile_nscbc_corrections_enabled
+
+  logical function low_order_incident_enabled() result(enabled)
+    use numerical_forms, only: inviscid_incident_boundary_layout,profile_nscbc_boundary_layout, &
+      convection_form,viscous_form
+    use commvar, only: conschm,difschm,lcomb,nondimen,lihomo,ljhomo,lkhomo,lfilter,turbmode,diffterm
+    logical :: boundary_supported
+    boundary_supported=(inviscid_incident_boundary_layout(bctype).and..not.diffterm).or. &
+      (profile_nscbc_boundary_layout(bctype).and.diffterm)
+    enabled=(convection_form=='keep'.or.viscous_form=='me6_opti').and.boundary_supported.and. &
+      (conschm=='643e'.or.conschm=='643c').and.(difschm=='643e'.or.difschm=='643c').and. &
+      .not.lfilter.and. &
+      ndims==3.and.numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
+      nondimen.and.turbmode=='none'.and.flowtype=='bl'.and.turbinf=='prof'.and. &
+      .not.lihomo.and..not.ljhomo.and.lkhomo
+    if(enabled) enabled=nscbc_farfield_grcbc_enabled()
+  end function
+
+  logical function low_order_y_nonreflecting_enabled() result(enabled)
+    use numerical_forms, only: y_nonreflecting_boundary_layout,convection_form,viscous_form
+    use commvar, only: conschm,difschm,lcomb,nondimen,lihomo,ljhomo,lkhomo,lfilter,turbmode
+    logical :: physical_x
+    physical_x=all(bctype(1:2)==[11,21])
+    enabled=(convection_form=='keep'.or.viscous_form=='me6_opti').and. &
+      y_nonreflecting_boundary_layout(bctype).and.conschm=='643e'.and.difschm=='643e'.and. &
+      .not.lfilter.and.ndims==3.and.numq==5.and.num_species==0.and.num_modequ==0.and. &
+      .not.lcomb.and.nondimen.and.turbmode=='none'.and..not.ljhomo.and.lkhomo.and. &
+      ((.not.physical_x.and.lihomo.and.flowtype=='tgv').or. &
+       (physical_x.and..not.lihomo.and.flowtype=='bl'.and.turbinf=='prof'))
+    if(enabled) enabled=nscbc_farfield_nonreflecting_enabled()
+  end function
+
+  logical function profile_state_boundary_enabled() result(enabled)
+    use numerical_forms, only: profile_state_boundary_layout,convection_form,viscous_form
+    use commvar, only: conschm,difschm,lcomb,nondimen,lihomo,ljhomo,lkhomo,recon_schem,lchardecomp
+    logical :: volume_supported
+    volume_supported=conschm=='643e'.or.conschm=='643c'
+    if(convection_form=='standard'.and.viscous_form=='me6_opti') volume_supported=volume_supported.or. &
+      (conschm=='543e'.and.recon_schem==3.and..not.lchardecomp).or. &
+      (conschm=='743e'.and.recon_schem==5.and.lchardecomp)
+    enabled=(convection_form=='keep'.or.viscous_form=='me6_opti').and. &
+      profile_state_boundary_layout(bctype).and. &
+      volume_supported.and.(difschm=='643e'.or.difschm=='643c').and. &
+      flowtype=='bl'.and.ndims==3.and.numq==5.and.num_species==0.and.num_modequ==0.and. &
+      .not.lcomb.and.nondimen.and..not.lihomo.and..not.ljhomo.and.lkhomo.and. &
+      (turbinf=='prof'.or.turbinf=='intp')
+  end function
+
+  logical function profile_state_upwind_enabled() result(enabled)
+    use commvar, only: conschm
+    enabled=profile_state_boundary_enabled().and.(conschm=='543e'.or.conschm=='743e')
+  end function
+
+  logical function profile_low_order_nscbc_enabled() result(enabled)
+    use numerical_forms, only: profile_nscbc_boundary_layout,convection_form,viscous_form
+    use commvar, only: conschm,difschm,lcomb,nondimen,lihomo,ljhomo,lkhomo
+    enabled=profile_nscbc_boundary_layout(bctype).and.(convection_form=='keep'.or.viscous_form=='me6_opti').and. &
+      (conschm=='643e'.or.conschm=='643c').and.(difschm=='643e'.or.difschm=='643c').and. &
+      flowtype=='bl'.and.ndims==3.and.numq==5.and.num_species==0.and.num_modequ==0.and. &
+      .not.lcomb.and.nondimen.and..not.lihomo.and..not.ljhomo.and.lkhomo.and. &
+      (turbinf=='prof'.or.turbinf=='intp')
+    if(enabled) enabled=.not.nscbc_farfield_sbli_shock_enabled()
+  end function
 
   logical function profile_nscbc_outlet_enabled()
     use commvar, only: conschm,difschm,lcomb,nondimen,recon_schem,lchardecomp
@@ -1122,7 +1209,34 @@ module bc
       conschm=='743e'.and.(difschm=='643e'.or.difschm=='643c').and. &
       recon_schem==5.and.lchardecomp.and.turbinf=='prof'.and. &
       all(bctype==[11,22,41,52,1,1])
+    profile_nscbc_outlet_enabled=profile_nscbc_outlet_enabled.or.profile_low_order_nscbc_enabled()
   end function profile_nscbc_outlet_enabled
+
+  logical function profile_nonreflecting_corner_enabled() result(enabled)
+    enabled=profile_low_order_nscbc_enabled()
+    if(enabled) enabled=nscbc_farfield_nonreflecting_enabled()
+  end function profile_nonreflecting_corner_enabled
+
+  subroutine apply_profile_nonreflecting_corner_rhs()
+    use fludyna, only: sos
+    implicit none
+    real(real_kind) :: pnor(5,5),pinv(5,5),rhs(5),source(5),lambda(5),css
+    logical :: incoming(5)
+    integer :: k
+    if(.not.profile_nonreflecting_corner_enabled()) return
+    if(irk/=irkm.or.jrk/=jrkm) return
+    do k=0,km
+      pnor=pmatrix(rho(im,jm,k),vel(im,jm,k,1),vel(im,jm,k,2),vel(im,jm,k,3), &
+        tmp(im,jm,k),spc(im,jm,k,:),dxi(im,jm,k,2,:),inv=.false.)
+      pinv=pmatrix(rho(im,jm,k),vel(im,jm,k,1),vel(im,jm,k,2),vel(im,jm,k,3), &
+        tmp(im,jm,k),spc(im,jm,k,:),dxi(im,jm,k,2,:),inv=.true.)
+      css=sos(tmp(im,jm,k),spc(im,jm,k,:))
+      source=qrhs(im,jm,k,1:5);rhs=source
+      call nscbc_remove_incoming_source(rhs,source,pnor,pinv,jacob(im,jm,k), &
+        dxi(im,jm,k,2,:),vel(im,jm,k,:),css,lambda,incoming)
+      qrhs(im,jm,k,1:5)=rhs
+    enddo
+  end subroutine apply_profile_nonreflecting_corner_rhs
 
   subroutine nscbc_farfield_target_state(rho_target,u_target,v_target, &
                                           w_target,t_target)
@@ -1312,7 +1426,7 @@ module bc
     integer,intent(in) :: i,j,k
     real(real_kind) :: qtarget(5),dq(5),char_delta(5),normal(3),normal_speed,  &
                lambda(5),sigma_in,sigma_out,p_target,norm,shock_x,   &
-               rho_target,u_target,v_target,w_target,t_target
+               rho_target,u_target,v_target,w_target,t_target,wave_tolerance
     logical :: use_shock
     integer :: m
 
@@ -1341,9 +1455,12 @@ module bc
 
     sigma_in=0.25e0_real_kind*css/(ymax-ymin)
     sigma_out=max(0.e0_real_kind,0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin))
+    wave_tolerance=0.e0_real_kind
+    if(.not.nscbc_farfield_sbli_shock) &
+      wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
     do m=1,5
-      if(lambda(m)<0.e0_real_kind) then
-        if(normal_speed>=0.e0_real_kind) then
+      if(lambda(m)<-wave_tolerance) then
+        if(normal_speed>=-wave_tolerance) then
           lodi(m)=sigma_out*char_delta(m)
         else
           lodi(m)=sigma_in*char_delta(m)
@@ -1363,7 +1480,7 @@ module bc
     un=sum(dxi(i,j,k,2,:)*vel(i,j,k,:))/norm
     lambda=[un,un,un,un+css,un-css]
     tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(un))
-    if(un<0.e0_real_kind) then
+    if(un<-tolerance) then
       target=[roinf,roinf*uinf,roinf*vinf,roinf*winf, &
         pinf*const6+0.5e0_real_kind*roinf*(uinf*uinf+vinf*vinf+winf*winf)]
       delta=q(i,j,k,1:5)-target
@@ -1656,6 +1773,7 @@ module bc
   !| 13-02-2021: Created by J. Fang @ Warrington                       |
   !+-------------------------------------------------------------------+
   subroutine boucon(subtime)
+    use keep_sbp63_runtime, only: keep_sbp63_enabled
     !
     use commvar, only : limmbou,conschm,difschm,lcomb,nondimen
     use userdefine, only : udf_bc
@@ -1668,6 +1786,7 @@ module bc
     logical :: compact_stage_wall,split_profile_outlet
     real(clock_kind) :: time_beg
     !
+    if(keep_sbp63_enabled) return
     if(bctype(3)==41 .or. bctype(3)==42 .or. bctype(3)==411 .or.       &
        bctype(3)==421) call configure_wall_blowing
     compact_stage_wall=conschm=='743e'.and.difschm=='643c'.and. &
@@ -1675,7 +1794,7 @@ module bc
       trim(flowtype)=='bl'.and.bctype(2)==22.and.bctype(3)==41.and.jrk==0
     compact_stage_wall=compact_stage_wall.or.(explicit_profile_nscbc_corrections_enabled().and. &
       bctype(3)==41.and.jrk==0)
-    split_profile_outlet=profile_nscbc_outlet_enabled().and.difschm=='643e'.and. &
+    split_profile_outlet=profile_nscbc_outlet_enabled().and.(difschm=='643e'.or.profile_low_order_nscbc_enabled()).and. &
       .not.explicit_profile_nscbc_corrections_enabled()
     compact_stage_wall=compact_stage_wall.or.(split_profile_outlet.and.jrk==0)
     !
@@ -1757,6 +1876,7 @@ module bc
     !
     ! Compatibility GPU stages filter the outlet before the top, then assemble its RHS.
     if(split_profile_outlet) call outflow_nscbc(2,rhs_only=.true.)
+    if(split_profile_outlet) call apply_profile_nonreflecting_corner_rhs()
     ! if(present(subtime)) time_beg=ptime()
     !
     ! if(present(subtime)) subtime=subtime+ptime()-time_beg
@@ -2736,6 +2856,23 @@ module bc
   !| -------------                                                     |
   !| 24-02-2021: Created by J. Fang @ Warrington                       |
   !+-------------------------------------------------------------------+
+  subroutine initialize_x_inflow_target()
+    ! Construct target buffers, not the flow state; shared with GPU initialization.
+    call alloinflow(1)
+    if(trim(flowtype)=='jet') then
+      call jetinflow
+    elseif(trim(flowtype)=='mixlayer') then
+      call mixlayerinflow
+    elseif(trim(flowtype)=='channel') then
+      call channelinflow
+    elseif(trim(flowtype)=='bl'.or.trim(flowtype)=='swbli'.or.trim(flowtype)=='1dflame') then
+      call profileinflow
+    else
+      call freestreaminflow
+    endif
+    inflow_first_call=.false.
+  end subroutine initialize_x_inflow_target
+
   subroutine inflow(ndir)
     !
     use commvar,   only : turbmode,nondimen,spcinf,rkstep
@@ -2761,24 +2898,7 @@ module bc
     if(ndir==1 .and. irk==0) then
       !   
       if(inflow_first_call) then
-        !
-        call alloinflow(ndir)
-        !
-        if(trim(flowtype)=='jet') then
-          call jetinflow
-        elseif(trim(flowtype)=='mixlayer') then
-          call mixlayerinflow
-        elseif(trim(flowtype)=='channel') then
-          call channelinflow
-        elseif(trim(flowtype)=='bl' .or. trim(flowtype)=='swbli' .or. trim(flowtype)=='1dflame') then
-          !
-          call profileinflow
-          !
-        else
-          call freestreaminflow 
-        endif
-        !
-        inflow_first_call=.false.
+        call initialize_x_inflow_target()
         !
       endif
       !
@@ -5190,12 +5310,13 @@ module bc
                jcbi(3),LODi1(5),LODi(5)
     real(real_kind),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
     real(real_kind) :: uu,css,gmachmax2,kinout,kin,var1,var2,lambda(5),source(5)
-    logical :: incoming(5)
+    logical :: incoming(5),keep_corner
     !
     logical,save :: lfirstcal=.true.
     !
     if(high_order_boundary_enabled.and.ndir==4) return
     call configure_nscbc_farfield
+    keep_corner=profile_nonreflecting_corner_enabled()
     if(nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_COMPATIBILITY .and. &
        ndir/=4) then
       stop 'target and nonreflecting NSCBC farfield modes support upper-y bctype=52 only'
@@ -5660,10 +5781,15 @@ module bc
         ! if(uu>=0.d0) then
         select case(nscbc_farfield_policy)
         case(NSCBC_FARFIELD_POLICY_NONREFLECTING)
-          call nscbc_farfield_y_upper_source(i,j,k,Rest,source)
-          call nscbc_farfield_balance_incoming_lodi(LODi,source,pinv,   &
-               jacob(i,j,k),dxi(i,j,k,2,:),vel(i,j,k,:),css,lambda,     &
-               incoming)
+          if(keep_corner.and.irk==0.and.i==0) cycle
+          if(keep_corner.and.irk==irkm.and.i==im) then
+            source=Rest
+          else
+            call nscbc_farfield_y_upper_source(i,j,k,Rest,source)
+            call nscbc_farfield_balance_incoming_lodi(LODi,source,pinv,   &
+                 jacob(i,j,k),dxi(i,j,k,2,:),vel(i,j,k,:),css,lambda,     &
+                 incoming)
+          endif
         case(NSCBC_FARFIELD_POLICY_TARGET_RELAXATION)
           call nscbc_farfield_y_upper_incoming_lodi(LODi,pinv,i,j,k,css,&
                                                      gmachmax2)
@@ -6264,7 +6390,7 @@ module bc
     logical,intent(in),optional :: filter_only,rhs_only
     !
     ! local data
-    integer :: i,j,k,l,jspc,jq,ii,n,m
+    integer :: i,j,k,l,jspc,jq,ii,n,m,spanwise_jlast
     real(real_kind) :: pinv(5,5),pnor(5,5),Pmult(5,5),E(5),F(5),G(5),Rest(5),  &
                jcbi(3),LODi1(5),LODi(5)
     real(real_kind),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
@@ -6655,21 +6781,15 @@ module bc
         
         css=sos(tmp(i,j,k),spc(i,j,k,:))
         !
-        if(compact_plate_outlet) then
+        if(numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb) then
           metric_norm=sqrt(sum(dxi(i,j,k,1,:)**2))
           normal_speed=sum(dxi(i,j,k,1,:)*vel(i,j,k,:))/metric_norm
           wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
-          if(normal_speed < -wave_tolerance.and..not.nscbc_farfield_sbli_shock_enabled().and. &
-             .not.profile_nscbc_outlet_enabled()) then
-            print *,'bc22 right-x outlet does not support backflow',i,j,k,normal_speed
-            error stop 'bc22 right-x outlet backflow'
-          endif
           if(normal_speed-css < -wave_tolerance) then
             kinout=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(normal_speed/css)**2)*css/(xmax-xmin)
             LODi(5)=kinout*((prs(i,j,k)-pinf*pout)/rho(i,j,k)/css)*sqrt(2.e0_real_kind)
           endif
-          if(normal_speed < -wave_tolerance.and. &
-             (nscbc_farfield_sbli_shock_enabled().or.profile_nscbc_outlet_enabled())) then
+          if(normal_speed < -wave_tolerance) then
             qtarget=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
               pinf*pout/(gamma-1.e0_real_kind)+0.5e0_real_kind*roinf*pout*(uinf*uinf+vinf*vinf+winf*winf)]
             dq=q(i,j,k,1:5)-qtarget
@@ -6736,7 +6856,10 @@ module bc
         if(ndims==3) then
           !
           allocate(fcs(-hm:km+hm,1:numq),dfcs(0:km,1:numq))
-          do j=js,je
+          spanwise_jlast=je
+          ! The top face excludes physical x endpoints: the outlet owns this z term.
+          if(jrk==jrkm.and.nscbc_outlet_top_spanwise_enabled()) spanwise_jlast=jm
+          do j=js,spanwise_jlast
             !
             do k=-hm,km+hm
               !
@@ -8049,7 +8172,7 @@ module bc
           tmp(i,j,k)  =tw
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i-1,j,k,1)-spc(i,j-2,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i-1,j,k,1)-spc(i-2,j,k,1))
           endif
           !
           if(nondimen) then
@@ -8442,7 +8565,7 @@ module bc
           tmp(i,j,k)  =te
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i-1,j,k,1)-spc(i,j-2,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i-1,j,k,1)-spc(i-2,j,k,1))
           endif
           !
           if(nondimen) then 

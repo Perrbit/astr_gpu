@@ -82,7 +82,9 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              runtime_line_oracle=False,trace_collective_fault=False,runtime_allocation_refusal=None,wall_publication_failure=None,
              runtime_compatible_oracle=False,geometry_publication_failure=None,trace_allocation_refusal=None,
              wall_capture_refusal=None,tgv_cartesian_grid=None,run_config_text=None,capture_checkpoint_step=None,
-             numerics=None):
+             numerics=None,flatplate_warp=(0.08,0.04),flatplate_bctype=(21,51),boundary_options=None,
+             rk_state_check=False,rk_stage_state_check=False,wallbs_resource=None,wall_phase_resource=None,
+             flatplate_extruded=False):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -106,8 +108,9 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         raise ValueError('output host budget must contain the requested packing buffer')
     if unrestricted:
         device_budget_bytes=-1
-    if grid is not None and (args.case != 'tgv' or args.initial_dimension != 0):
-        raise ValueError('explicit validation grid requires internally initialized TGV')
+    if grid is not None and not ((args.case=='tgv' and args.initial_dimension==0) or
+            (args.case=='channel' and args.initial_dimension==3 and initial_resource is not None)):
+        raise ValueError('explicit validation grid requires internal TGV or a provided 3D channel field')
     if tgv_cartesian_grid is not None and (args.case!='tgv' or tgv_mapping is not None):
         raise ValueError('read-Cartesian TGV uses a separate grid source, not a CURVE mapping')
     if tgv_mapping is not None and (args.case != 'tgv' or args.initial_dimension != 0 or
@@ -137,10 +140,22 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         subprocess.run([
             sys.executable, str(root / "tests/gpu_validation/prepare_s1_flatplate_case.py"),
             "--dst-case", str(case), "--use-gpu", "t" if backend == "gpu" else "f",
-            "--im", "16", "--jm", "16", "--km", "16", "--warp-x", "0.08", "--warp-y", "0.04",
+            "--im", "16", "--jm", "16", "--km", "16", "--warp-x", str(flatplate_warp[0]), "--warp-y", str(flatplate_warp[1]),
+            "--x-max-bctype",str(flatplate_bctype[0]),"--upper-bctype",str(flatplate_bctype[1]),
             "--maxstep", str(max(1, steps - 1)), "--feqchkpt", "1", "--deltat", str(dt),
             "--lfilter", "t" if lfilter else "f", "--diffterm", "t", "--conschm", "543e",
             "--turbinf", "intp" if dynamic else "prof"], check=True)
+        if flatplate_extruded:
+            from prepare_tgv_case import set_runtime_flags,set_gridfile
+            with h5py.File(case/'datin/grid.flatplate.h5') as source, h5py.File(case/'datin/grid.2d','x') as plane:
+                for component in ('x','y','z'):
+                    plane[component]=source[component][0,:,:]
+            set_runtime_flags(case/'datin'/input_name,'t' if backend=='gpu' else 'f',None,None,'f')
+            set_gridfile(case/'datin'/input_name,'datin/grid.generated.h5')
+        if wallbs_resource is not None and restore is None:
+            shutil.copyfile(wallbs_resource,case/'datin/wallbs.dat')
+        if wall_phase_resource is not None and restore is None:
+            shutil.copyfile(wall_phase_resource,case/'datin/wallbs_phase.dat')
         if dynamic:
             subprocess.run([
                 sys.executable, str(root / "tests/gpu_validation/generate_dynamic_inflow_slices.py"),
@@ -220,10 +235,10 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         if initial_resource is None:
             initial_path = prepare_initial_resource(case, input_name, args.initial_dimension)
         else:
-            if not channel or args.initial_dimension != 3 or source_fault is not None:
-                raise ValueError("frozen external initial resource is limited to the channel gate")
-            set_ninit(case / "datin" / input_name, 3)
-            initial_path = case / "datin/flowini3d.h5"
+            if (args.initial_dimension!=3 and not (curve and args.initial_dimension==2)) or source_fault is not None:
+                raise ValueError("shared initial resource requires a 3D field or an explicit extruded 2D profile, without fault injection")
+            set_ninit(case / "datin" / input_name, args.initial_dimension)
+            initial_path = case / f"datin/flowini{args.initial_dimension}d.h5"
             shutil.copyfile(initial_resource, initial_path)
         if source_fault == "initial_external":
             with h5py.File(initial_path, "r+") as state:
@@ -318,6 +333,10 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     env.update(ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, topology)),
                ASTR_GPU_SYNC_MODE=gpu_sync_mode, ASTR_GPU_HALO_TRANSPORT=solver_halo_transport,
                ASTR_GPU_PRECISION_MODE=gpu_precision_mode, ASTR_INSITU_SAMPLE_PREFIX="outdat/sample")
+    if rk_state_check:
+        env['ASTR_VALIDATION_RK_STATE']='1'
+    if rk_stage_state_check:
+        env['ASTR_VALIDATION_PROFILE_STAGE_STATE']='1'
     env["ASTR_GPU_FILTER_WORKSPACE"] = args.filter_workspace
     if gpu_statistics_interval is not None:
         env['ASTR_GPU_STATISTICS_INTERVAL'] = str(gpu_statistics_interval)
@@ -445,6 +464,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         # The frozen shared resources must suffice without the original inputs.
         (case / "datin/grid.flatplate.h5").unlink()
         (case / "datin/inlet.prof").unlink()
+        if flatplate_extruded:
+            (case/'datin/grid.2d').unlink()
         if dynamic:
             shutil.rmtree(case / "inflow")
     if tgv_mapping is not None and restore:
@@ -495,7 +516,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         product_id,step=wall_publication_failure
         env.update(ASTR_TEST_WALL_FAIL_ID=product_id,ASTR_TEST_WALL_FAIL_STEP=str(step))
     # Legacy fixture editing ends here; the solver receives only named inputs.
-    primary=prepare_named_run(case,'datin/'+input_name,env,numerics=numerics)
+    primary=prepare_named_run(case,'datin/'+input_name,env,numerics=numerics,boundary_options=boundary_options)
     runtime=case/'datin/input.run'
     if run_config_text is not None:
         runtime.write_text(run_config_text)

@@ -47,7 +47,7 @@ module comsolver
   !| 03-07-2025  | Remastered by J. Fang @ Imech, CAS, Beijing         |
   !+-------------------------------------------------------------------+
   subroutine solvrinit
-    use numerical_forms, only: compact_filter_selected,convection_form
+    use numerical_forms, only: compact_filter_selected,convection_form,viscous_form
   
     use commvar,    only : numq, npdci, npdcj, npdck, conschm, difschm,   &
                            lfilter, alfa_filter, hm, turbmode
@@ -93,7 +93,7 @@ module comsolver
   
     if (mod(nscheme / 100, 2) == 0) then
       ! Central convection scheme
-      if (trim(conschm) /= trim(difschm).and.convection_form/='keep') then
+      if (trim(conschm) /= trim(difschm).and.convection_form/='keep'.and.viscous_form/='me6_opti') then
         print *, ' !! WARNING !! Central schemes for convection and diffusion are inconsistent.'
         print *, ' !! WARNING !! Consider using the same scheme to avoid unexpected behavior.'
         print *, ' ** conschm:', conschm
@@ -247,6 +247,7 @@ module comsolver
   !| 08-10-2021  | Moved from  diffrsdcal6 by J. Fang @ Warrington     |
   !+-------------------------------------------------------------------+
   subroutine gradcal(timerept)
+    use keep_sbp63_runtime, only: keep_sbp63_enabled,keep_sbp63_gradient_cpu
     !
     use commvar,   only : im,jm,km,npdci,npdcj,npdck,difschm,ndims,    &
                           num_species,is,ie,js,je,ks,ke,              &
@@ -265,6 +266,10 @@ module comsolver
     real(clock_kind) :: time_beg
     real(clock_kind),save :: subtime=0.e0_clock_kind
     !
+    if(keep_sbp63_enabled) then
+      call keep_sbp63_gradient_cpu()
+      return
+    endif
     if(present(timerept)) then
 
       if(timerept) time_beg=ptime()
