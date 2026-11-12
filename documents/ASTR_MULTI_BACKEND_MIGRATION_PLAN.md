@@ -84,7 +84,7 @@ DCC、hipprof及 hipgdb文档。官方下载入口：
 架构参考为 `documents/ASTR_FULL_GPU_ARCHITECTURE_PLAN.md`及
 `docs/adr/0013-use-backend-neutral-facade-for-full-gpu-migration.md`。
 KEEP/ME6 的实际成熟范围以 `documents/ASTR_GPU_KEEP_INTEGRATION_PROGRESS.md`
-为准。当前 ME6 G2映射扩展等尚未完成，本计划不替其验收或自动扩大支持范围。
+为准。本计划不替代 KEEP/ME6 的分阶段验收，也不自动扩大其支持范围。
 
 ### 3.4 冻结参考的实际边界
 

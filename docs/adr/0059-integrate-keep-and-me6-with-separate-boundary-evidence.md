@@ -56,3 +56,57 @@ acceptance are deferred. These decisions authorize planning only; implementation
 new mathematical candidates and remote jobs retain their separate review points.
 
 The staged plan is `documents/ASTR_GPU_KEEP_INTEGRATION_PLAN.md`.
+
+## Low-order boundary staging update, 2026-11-10
+
+The user approved adapting existing low-order physical-boundary closures before
+designing the higher-order compatible closures. KP5-L starts with explicit KEEP,
+standard viscosity and a flat bc41 wall, using the donor second-/fourth-order
+near-wall connection after checking its actual formulas. Compact KEEP, ME6
+half-point wall closure, filtering/restart integration and open boundaries are
+separate units. This supersedes treating the donor connection only as a control;
+it is now also an interim delivery path, not the final high-order specification.
+No new high-order stability derivation is required before that implementation.
+Consistency, CPU/GPU parity, measured accuracy, balances and representative
+stability remain explicit evidence, without claiming global sixth order or a
+general energy-stability proof. Missing ME6 formulas and new high-order
+candidates retain their mathematical review point. The update is a plan change,
+not evidence that physical boundaries have already been implemented.
+
+## Explicit weak-wall candidate approval, 2026-11-11
+
+The user subsequently approved geometry candidates section 14, including the
+H-weighted leading-error minimizer for the explicit diagonal-norm SBP6/3 family,
+the inviscid wall flux, primitive-gradient lifts, and the viscous traction/heat
+SAT. This supersedes the earlier statement that no particular candidate was
+approved. It preserves the original arithmetic KEEP interior and the old
+low-order defaults; it is not a compact, ME6, filtered or open-end closure.
+
+The separately selected `high_order_wall_mode='keep_sbp63'` has CPU/device
+components and flat two-y-wall native four-step evidence at 16 intervals NP1/2-y
+and 20 intervals NP1/4-y. Exact same-method continuation is bitwise; changed
+wall identities are rejected in exact mode. Explicit non-exact switches use
+the existing shared-node reconciliation and new statistics-window lifecycle,
+not a new promise that every duplicated node remains bitwise unchanged.
+
+The standalone input is `examples/KEEP_SBP63_Walls/`. Local derivative order,
+frozen balances, full RK remainder and CPU/GPU parity remain distinct from
+long-window stability or a demonstrated global solution order. The next
+window/refinement scope in geometry candidates section 14.10 is pending user
+confirmation; other new high-order formulas retain their review point.
+
+The user later approved section 14.10 and its native fixed-time windows have
+completed. CPU/GPU parity and admissibility passed; global maximum mesh
+differences remain wall-dominated and do not establish an asymptotic order.
+Analytic initial/boundary time incompatibility is confirmed. A steady
+manufactured-source control retaining the same velocity and wall shear is
+proposed in section 14.11, not yet authorized or implemented. This keeps the
+completed window separate from the unresolved precision/stability delivery.
+
+Section 14.11 was then explicitly approved and implemented as a test-build-only
+shared CPU/device source. Its four-step identity/restart/memcheck and native
+fixed-time matrix have completed. All manufactured errors decrease, with
+finer-pair v/w maximum-error orders about 2.11/2.06. Exact local moments confirm
+a generic second-order wall term in the approved nodal D63*D63 composition.
+This is separate from the 6/3 first-derivative order and from any future direct
+compatible D2 construction. No production default or viscous formula changed.
