@@ -1,8 +1,8 @@
 module output_runtime
   use case_model_options, only: get_case_option
-  use iso_fortran_env, only: int64,real64,compiler_version,compiler_options
+  use iso_fortran_env, only: int32,int64,real64,compiler_version,compiler_options
   use astr_precision, only: real_kind,c_real_kind,clock_kind,real_bytes,real_to_word,word_to_real
-  use astr_precision_io, only: read_source_reals,source_real_matches
+  use astr_precision_io, only: read_source_reals,source_real_matches,pack_logical32,unpack_logical32
   use astr_precision_mpi, only: mpi_real_type
   use iso_c_binding, only: c_int,c_char,c_null_char
   use ieee_arithmetic, only: ieee_is_finite
@@ -48,6 +48,9 @@ module output_runtime
     write_schedule_state,restore_schedule_state
   use statistic, only: channel_driver_state,complete_mean_statistics_file,nsamples
   use benchmark_runtime, only: benchmark_field_io_disabled,insitu_clock,report_insitu_timing
+#ifdef ASTR_GPU_CPP
+  use fluid_runtime, only: cpp_export_host_state,cpp_import_host_state
+#endif
 #ifdef ASTR_AIR5_CHEMISTRY
   use commarray, only: tve,spc
   use chemistry_compensation, only: air5_carry,air5_compensated
@@ -489,9 +492,6 @@ contains
 #endif
 #ifdef ASTR_GPU_CPP
     if(use_gpu) then
-      call check(.not.options%checkpoint%enabled.and..not.options%volume%enabled.and. &
-        .not.options%slices%enabled.and.len_trim(options%restore_directory)==0, &
-        'C++ device checkpoint/field publishers and restoration are not implemented (MB4)')
       call check(.not.options%adaptive%enabled,'C++ adaptive-output field collector is not connected')
     endif
 #endif
@@ -826,7 +826,16 @@ contains
 #endif
       case(2)
         call get_environment_variable('ASTR_GPU_SYNC_MODE',value,status=status)
+#ifdef ASTR_GPU_CPP
+        if(use_gpu) then
+          call check(status==1.or.trim(value)==''.or.trim(value)=='explicit'.or.trim(value)=='dependency', &
+            'C++ restart sync mode must be dependency or explicit')
+        else
+#endif
         call check(status==1.or.trim(value)==''.or.trim(value)=='explicit','new restart first gate requires explicit sync')
+#ifdef ASTR_GPU_CPP
+        endif
+#endif
       case(3)
         call get_environment_variable('ASTR_GPU_FILTER_WORKSPACE',value,status=status)
         contract(7)=merge(1_int64,0_int64,trim(value)=='full')
@@ -1098,6 +1107,9 @@ contains
         'exact_restart=t cannot restore a non-exact checkpoint')
       lean=header(13)==11
     endif
+#ifdef ASTR_GPU_CPP
+    if(use_gpu.and.writing) call cpp_export_host_state(.not.lean)
+#endif
 #ifdef ASTR_AIR5_CHEMISTRY
     if(air5_output_case()) then
 #ifdef _CUDA
@@ -1163,6 +1175,9 @@ contains
     endif
 #endif
     if (.not.writing) then
+#ifdef ASTR_GPU_CPP
+      if(use_gpu) call cpp_import_host_state()
+#endif
       repartitioning=.not.matched
       call check(identity%step==expected%step.and.identity%time==expected%time.and. &
         identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next,'flow/control clock mismatch')
@@ -1473,6 +1488,7 @@ contains
     real(real_kind) :: dt_interval,origin_time,schedule_period
     integer :: unit,err,closed,legacy_counter,status,ierr
     logical :: saved_pending,saved_initial,ok,same_schedule,backflow_outlet
+    integer(int32) :: wire_pending,wire_initial
     real(real_kind) :: driver(6),root_driver(6),outlet_reference(6)
     character(128) :: driver_config(3),saved_driver_config(3),root_config(3)
     type(sample_schedule) :: restored_schedule
@@ -1684,8 +1700,8 @@ contains
           convert='little_endian',action='write',iostat=err)
         if (err==0) then
           write(unit,iostat=err) magic,contract,identity%step,identity%time,identity%dt_used,identity%dt_next, &
-            counter,pending,last_step,options%checkpoint%mode,options%checkpoint%interval_steps, &
-            options%checkpoint%interval_time,options%checkpoint%initial_frame,schedule_origin_step,schedule_origin_time, &
+            counter,pack_logical32(pending),last_step,options%checkpoint%mode,options%checkpoint%interval_steps, &
+            options%checkpoint%interval_time,pack_logical32(options%checkpoint%initial_frame),schedule_origin_step,schedule_origin_time, &
             driver_config,driver
           if(err==0) then
             call write_schedule_state(unit,checkpoint_schedule,'checkpoint',identity%step,identity%time,ok)
@@ -1722,9 +1738,11 @@ contains
           saved_counter=int(legacy_counter,int64)
         endif
       endif
-      if(err==0) read(unit,iostat=err) saved_pending,saved_last,mode,interval
+      if(err==0) read(unit,iostat=err) wire_pending,saved_last,mode,interval
+      if(err==0) saved_pending=unpack_logical32(wire_pending)
       if(err==0) call read_source_reals(unit,dt_interval,source_bytes,err)
-      if(err==0) read(unit,iostat=err) saved_initial,origin_step
+      if(err==0) read(unit,iostat=err) wire_initial,origin_step
+      if(err==0) saved_initial=unpack_logical32(wire_initial)
       if(err==0) call read_source_reals(unit,origin_time,source_bytes,err)
       if(err==0) read(unit,iostat=err) saved_driver_config
       if(err==0) call read_source_reals(unit,driver,source_bytes,err)

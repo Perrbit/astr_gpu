@@ -10,6 +10,7 @@ struct Buffer {
 };
 struct HaloTransport;
 int release_transport(HaloTransport *transport);
+bool transport_in_flight(const HaloTransport *transport);
 struct State {
     cudaStream_t stream = nullptr;
     Buffer fields[ASTR_DEVICE_FIELD_COUNT];

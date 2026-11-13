@@ -132,8 +132,15 @@ contains
     block
       use commvar, only: use_gpu
       if(use_gpu.and.runtime_catalog_count()>0) then
-        if(rank==0) write(*,'(a)') 'C++ dynamic product field providers are not implemented'
-        call MPI_Abort(MPI_COMM_WORLD,1,err)
+        do p=1,runtime_catalog_count()
+          call runtime_catalog_state(p,state)
+          if(state%status/=runtime_active.and.state%status/=runtime_waiting) cycle
+          if(state%definition%source/='instantaneous'.or.state%definition%view%channel/='data'.or. &
+             state%definition%view%kind/='slice') then
+            if(rank==0) write(*,'(a)') 'C++ mean/render product field providers are not implemented'
+            call MPI_Abort(MPI_COMM_WORLD,1,err)
+          endif
+        enddo
       endif
     end block
 #endif

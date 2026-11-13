@@ -4,10 +4,12 @@ module benchmark_runtime
   implicit none
   private
   public :: configure_benchmark_runtime,benchmark_field_io_disabled, &
-            benchmark_cpu_rk_timing_enabled,begin_complete_step_timing,end_complete_step_timing, &
+            benchmark_cpu_rk_timing_enabled,benchmark_gpu_rk_timing_enabled, &
+            begin_complete_step_timing,end_complete_step_timing, &
             configure_insitu_timing,insitu_clock,report_insitu_timing,benchmark_buffered_output_enabled,insitu_timing_active
   logical,save :: configured=.false.,field_io_disabled=.false.
   logical,save :: cpu_rk_timing_enabled_flag=.false.
+  logical,save :: gpu_rk_timing_enabled_flag=.false.
   logical,save :: complete_step_timing_enabled=.false.
   logical,save :: buffered_output=.false.
   real(8),save :: complete_step_start=0.d0
@@ -137,6 +139,7 @@ contains
       call mpi_abort(MPI_COMM_WORLD,1,ignored)
     endif
     cpu_rk_timing_enabled_flag=cpu_rk_timing==1
+    gpu_rk_timing_enabled_flag=rk_timing==1
     supported_flow=trim(flowtype)=='bl'.or. &
       ((trim(flowtype)=='tgv'.or.trim(flowtype)=='shuosher').and. &
        lihomo.and.ljhomo.and.lkhomo.and.periodic_boundary_case)
@@ -160,6 +163,10 @@ contains
   logical function benchmark_cpu_rk_timing_enabled()
     benchmark_cpu_rk_timing_enabled=configured.and.cpu_rk_timing_enabled_flag
   end function benchmark_cpu_rk_timing_enabled
+
+  logical function benchmark_gpu_rk_timing_enabled()
+    benchmark_gpu_rk_timing_enabled=configured.and.gpu_rk_timing_enabled_flag
+  end function benchmark_gpu_rk_timing_enabled
 
   logical function benchmark_buffered_output_enabled()
     benchmark_buffered_output_enabled=configured.and.buffered_output

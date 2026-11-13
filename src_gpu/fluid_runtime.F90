@@ -1,13 +1,14 @@
 module fluid_runtime
   use iso_c_binding, only: c_ptr,c_null_ptr,c_int,c_double,c_size_t,c_associated,c_sizeof
   use iso_fortran_env, only: int64
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use astr_precision, only: real_kind,clock_kind
   use mpi
   use commvar, only: im,jm,km,hm,ia,ja,ka,numq,num_species,num_modequ,use_gpu,flowtype,ndims, &
     lihomo,ljhomo,lkhomo,lreadgrid,nondimen,lcomb,lfilter,diffterm,conschm,difschm,rkscheme,turbmode, &
     const2,const5,const6,mach,gamma,rgas,reynolds,prandtl,tempconst,tempconst1,nstep,deltat,lcracon,lavg, &
     roinf,uinf,xmax,rkstep
-  use commarray, only: q,jacob,dxi
+  use commarray, only: q,rho,vel,prs,tmp,jacob,dxi
   use parallel, only: mpirank,lio,ig0,jg0,kg0,isize,jsize,ksize, &
     mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
   use device_state
@@ -17,8 +18,11 @@ module fluid_runtime
   implicit none
   private
   public :: cpp_after_flowinit,cpp_before_finalize,cpp_time_integration,cpp_check_state
+  public :: cpp_export_host_state,cpp_import_host_state
+  public :: cpp_export_host_primitives
   public :: collect_timestep_rates_cpp,collect_cfl_cpp
   type(c_ptr),save :: context=c_null_ptr
+  logical,save :: host_primitives_current=.false.
 #ifdef ASTR_BUILD_TESTING
   integer(c_int),save :: exchange_sequence=0
 #endif
@@ -41,8 +45,10 @@ contains
     use bc, only: bctype
     use numerical_forms, only: convection_form,viscous_form,filter_scheme
     use case_model_options, only: get_case_option
-    integer :: node,local_rank,local_size,ierr,choice,low,high,env_status
-    integer(c_int) :: visible
+    use benchmark_runtime, only: benchmark_gpu_rk_timing_enabled
+    integer :: node,local_rank,local_size,ierr,choice,low,high,env_status,filter_components
+    integer(c_int) :: visible,transport_mode
+    type(device_view) :: filter_view
     character(32) :: sync,value
     call require(trim(flowtype)=='tgv'.and.ndims==3.and.all(bctype==1).and. &
       lihomo.and.ljhomo.and.lkhomo.and..not.lreadgrid.and.nondimen.and. &
@@ -54,21 +60,34 @@ contains
     call require(.not.lcracon.and..not.lavg,'crashfix and mean-field statistics are not connected to the C++ state')
     call get_case_option('gpu_precision_mode',value,status=env_status)
     call require(env_status==1.or.(env_status==0.and.value=='fp64'),'C++ numerical fields currently require fp64')
+    filter_components=0
     if(lfilter) then
       value=''
       call get_environment_variable('ASTR_GPU_FILTER_WORKSPACE',value,status=env_status)
-      if(env_status==1) value='full'
-      call require((env_status==0.or.env_status==1).and.value=='full', &
-        'C++ filter implements the full workspace; scalar workspace migration is pending')
-      if(lio) write(*,'(a)') 'ASTR_GPU_CPP filter_workspace=full'
+      if(env_status==1) value='scalar'
+      call require((env_status==0.or.env_status==1).and.(value=='full'.or.value=='scalar'), &
+        'ASTR_GPU_FILTER_WORKSPACE must be scalar or full')
+      filter_components=merge(5,1,value=='full')
+      call MPI_Allreduce(filter_components,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+      call check(ierr,'filter storage minimum')
+      call MPI_Allreduce(filter_components,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      call check(ierr,'filter storage maximum')
+      call require(low==high,'filter storage differs across ranks')
+      if(lio) write(*,'(2a)') 'ASTR_GPU_CPP filter_workspace=',trim(value)
     endif
-    if(any([isize,jsize,ksize]>1)) then
-      value=''
-      call get_environment_variable('ASTR_GPU_HALO_TRANSPORT',value,status=env_status)
-      if(env_status==1) value='pinned'
-      call require((env_status==0.or.env_status==1).and.value=='pinned', &
-        'C++ transport implements pinned host staging; GPU-aware transport is not connected')
-    endif
+    value=''
+    call get_environment_variable('ASTR_GPU_HALO_TRANSPORT',value,status=env_status)
+    if(env_status==1) value='pinned'
+    call require((env_status==0.or.env_status==1).and.(value=='pinned'.or.value=='device'), &
+      'ASTR_GPU_HALO_TRANSPORT must be pinned or device; device requires GPU-aware MPI')
+    transport_mode=merge(halo_device,halo_pinned,value=='device')
+    call MPI_Allreduce(transport_mode,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call check(ierr,'transport minimum')
+    call MPI_Allreduce(transport_mode,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call check(ierr,'transport maximum')
+    call require(low==high,'transport mode differs across ranks')
+    if(lio) write(*,'(3a)') 'ASTR_GPU_CPP transport=',trim(value), &
+      '; shared reconciliation then halo-only refresh'
     call MPI_Comm_split_type(MPI_COMM_WORLD,MPI_COMM_TYPE_SHARED,0,MPI_INFO_NULL,node,ierr)
     call check(ierr,'node communicator')
     call MPI_Comm_rank(node,local_rank,ierr)
@@ -97,28 +116,82 @@ contains
     ! TGV scalar enstrophy/dissipation consume gradients even for inviscid runs.
     call check(fluid_prepare(context,1_c_int),'prepare primitive and gradient fields')
     call check(fluid_rhs_prepare(context,int(merge(1,0,diffterm),c_int)),'prepare RHS fields')
-    if(lfilter) call check(fluid_filter_prepare(context),'prepare filter workspace')
+    if(lfilter) then
+      if(filter_components==1) then
+        call check(fluid_filter_prepare_scalar(context),'prepare scalar filter workspace')
+      else
+        call check(fluid_filter_prepare(context),'prepare full filter workspace')
+      endif
+      call check(device_state_view(context,device_filter_work,filter_view),'filter storage view')
+      if(lio) write(*,'(a,i0)') 'ASTR_GPU_CPP filter_workspace_bytes=', &
+        bytes(product(int(filter_view%extent,c_size_t)))
+    endif
     call check(device_transport_prepare(context,int(MPI_COMM_WORLD,c_int), &
       int([mpileft,mpidown,mpiback],c_int),int([mpiright,mpiup,mpifront],c_int), &
-      int([isize,jsize,ksize],c_int),int(merge(6,5,diffterm),c_int)),'prepare pinned halo transport')
+      int([isize,jsize,ksize],c_int),int(merge(6,5,diffterm),c_int),transport_mode, &
+      int(merge(1,0,benchmark_gpu_rk_timing_enabled()),c_int)),'prepare halo transport')
     call check(device_state_upload(context,device_q,q,bytes(size(q,kind=c_size_t))),'initial q upload')
     call check(device_state_upload(context,device_metric,dxi,bytes(size(dxi,kind=c_size_t))),'metric upload')
     call check(device_state_upload(context,device_jacobian,jacob,bytes(size(jacob,kind=c_size_t))),'Jacobian upload')
     call check(fluid_primitives(context,const2,const6),'initial primitive reconstruction')
     call cpp_check_state()
+    if(benchmark_gpu_rk_timing_enabled()) call report_device_memory('initialized')
     write(*,'(a,i0,2a,a,i0,2a)') 'ASTR_GPU_CPP rank=',mpirank,' backend=',ASTR_GPU_CPP_NAME, &
       ' device=',local_rank,' sync=',trim(sync)
     write(*,'(a,i0,3(a,3(i0,1x)),a,i0,3(a,3(i0,1x)))') 'ASTR_GPU_CPP_LAYOUT rank=',mpirank, &
       ' global=',ia,ja,ka,' origin=',ig0,jg0,kg0,' upper=',im,jm,km,' halo=',hm, &
       ' topology=',isize,jsize,ksize,' lower=',mpileft,mpidown,mpiback,' higher=',mpiright,mpiup,mpifront
-    if(lio) write(*,'(a)') 'ASTR_GPU_CPP transport=pinned; shared reconciliation then halo-only refresh'
   end subroutine
   integer(c_size_t) function bytes(count)
     integer(c_size_t),intent(in) :: count
     bytes=count*c_sizeof(0.d0)
   end function
+  subroutine report_device_memory(phase)
+    character(*),intent(in) :: phase
+    integer(c_size_t) :: free_bytes,total_bytes
+    call check(device_memory_info(context,free_bytes,total_bytes),'device memory observation')
+    write(*,'(a,1x,a,3(1x,i0))') 'ASTR_CPP_DEVICE_MEMORY',trim(phase),mpirank,free_bytes,total_bytes
+  end subroutine
   subroutine cpp_check_state()
     call check(fluid_check(context),'finite positive physical state')
+  end subroutine
+  subroutine cpp_export_host_state(include_caches)
+    logical,intent(in) :: include_caches
+    integer(int64) :: downloaded
+    call require(c_associated(context),'missing device state for checkpoint publication')
+    ! Preserve stored primitive caches, including their complete-step halo phase.
+    call check(device_state_download(context,device_q,q,bytes(size(q,kind=c_size_t))),'checkpoint q download')
+    if(include_caches) call cpp_export_host_primitives(downloaded)
+  end subroutine
+  subroutine cpp_export_host_primitives(downloaded)
+    integer(int64),intent(out) :: downloaded
+    downloaded=0
+    call require(c_associated(context),'missing device state for field publication')
+    if(host_primitives_current) return
+    call check(device_state_download(context,device_rho,rho,bytes(size(rho,kind=c_size_t))),'checkpoint density download')
+    call check(device_state_download(context,device_velocity,vel,bytes(size(vel,kind=c_size_t))),'checkpoint velocity download')
+    call check(device_state_download(context,device_pressure,prs,bytes(size(prs,kind=c_size_t))),'checkpoint pressure download')
+    call check(device_state_download(context,device_temperature,tmp,bytes(size(tmp,kind=c_size_t))),'checkpoint temperature download')
+    downloaded=int(bytes(size(rho,kind=c_size_t))+bytes(size(vel,kind=c_size_t))+ &
+      bytes(size(prs,kind=c_size_t))+bytes(size(tmp,kind=c_size_t)),int64)
+    host_primitives_current=.true.
+  end subroutine
+  subroutine cpp_import_host_state()
+    call require(c_associated(context),'missing device state for checkpoint restoration')
+    call require(all(ieee_is_finite(q(0:im,0:jm,0:km,:))).and. &
+      all(ieee_is_finite(rho(0:im,0:jm,0:km))).and.all(rho(0:im,0:jm,0:km)>0).and. &
+      all(ieee_is_finite(vel(0:im,0:jm,0:km,:))).and. &
+      all(ieee_is_finite(prs(0:im,0:jm,0:km))).and.all(prs(0:im,0:jm,0:km)>0).and. &
+      all(ieee_is_finite(tmp(0:im,0:jm,0:km))).and.all(tmp(0:im,0:jm,0:km)>0), &
+      'checkpoint physical state must be finite with positive density, pressure and temperature')
+    call check(device_state_upload(context,device_q,q,bytes(size(q,kind=c_size_t))),'checkpoint q upload')
+    call check(device_state_upload(context,device_rho,rho,bytes(size(rho,kind=c_size_t))),'checkpoint density upload')
+    call check(device_state_upload(context,device_velocity,vel,bytes(size(vel,kind=c_size_t))),'checkpoint velocity upload')
+    call check(device_state_upload(context,device_pressure,prs,bytes(size(prs,kind=c_size_t))),'checkpoint pressure upload')
+    call check(device_state_upload(context,device_temperature,tmp,bytes(size(tmp,kind=c_size_t))),'checkpoint temperature upload')
+    call check(device_state_upload(context,device_metric,dxi,bytes(size(dxi,kind=c_size_t))),'checkpoint metric upload')
+    call check(device_state_upload(context,device_jacobian,jacob,bytes(size(jacob,kind=c_size_t))),'checkpoint Jacobian upload')
+    host_primitives_current=.true.
   end subroutine
   subroutine collect_timestep_rates_cpp(values,valid)
     real(real_kind),intent(out) :: values(3)
@@ -139,24 +212,63 @@ contains
       values,keys,yvalues),'CFL diagnostic')
   end subroutine
   subroutine cpp_time_integration(statistics_started)
+    use benchmark_runtime, only: benchmark_gpu_rk_timing_enabled
     real(clock_kind),intent(in) :: statistics_started
+    logical :: timing
+    real(clock_kind) :: started,prepared,statistics_begin,statistics_seconds,elapsed
+    real(c_double) :: halo_times(6)
+    timing=benchmark_gpu_rk_timing_enabled()
+    statistics_seconds=0.d0
+    prepared=0.d0
+    if(timing) then
+      call check(device_state_synchronize(context),'timing start dependency')
+      started=MPI_Wtime()
+    endif
+    ! Host publication caches are reusable only until the next RK advancement.
+    host_primitives_current=.false.
     do rkstep=1,3
 #ifdef ASTR_BUILD_TESTING
       exchange_sequence=0
 #endif
       call check(fluid_prepare_stage(context,const2,const6,lfilter,cpp_exchange_axis),'prepare RK stage')
+      if(timing.and.rkstep==1) then
+        call check(device_state_synchronize(context),'timing stage-one preparation')
+        prepared=MPI_Wtime()-started
+      endif
 #ifdef ASTR_BUILD_TESTING
       call snapshot_prepared_stage()
 #endif
-      if(rkstep==1.and.nstep>0) call publish_tgv_statistics(statistics_started)
+      if(rkstep==1.and.nstep>0) then
+        if(timing) statistics_begin=MPI_Wtime()
+        call publish_tgv_statistics(statistics_started)
+        if(timing) statistics_seconds=MPI_Wtime()-statistics_begin
+      endif
       call check(fluid_advance_prepared_stage(context,rkstep,deltat,const2,const6,reynolds,prandtl, &
-        const5,tempconst,tempconst1,diffterm,cpp_exchange_axis),'advance RK stage')
+        const5,tempconst,tempconst1,diffterm,cpp_exchange_axis,device_exchange_begin,cpp_exchange_end),'advance RK stage')
     enddo
+    if(timing) then
+      call check(device_state_synchronize(context),'timing complete RK')
+      elapsed=MPI_Wtime()-started-statistics_seconds
+      if(lio) write(*,'(a,1x,i0,3(1x,es24.16e3))') &
+        'ASTR_GPU_RK_TIMING',nstep,prepared,elapsed-prepared,elapsed
+      write(*,'(a,2(1x,i0),3(1x,es24.16e3))') &
+        'ASTR_GPU_RANK_RK_TIMING',mpirank,nstep,prepared,elapsed-prepared,elapsed
+      call check(device_transport_metrics(context,halo_times,1_c_int),'RK halo timing')
+      write(*,'(a,2(1x,i0),6(1x,es24.16e3))') 'ASTR_CPP_HALO_TIMING',mpirank,nstep,halo_times
+    endif
   end subroutine
   integer(c_int) function cpp_exchange_axis(handle,field,axis,reconcile) bind(C,name='astr_cpp_exchange_axis') result(status)
     type(c_ptr),value :: handle
     integer(c_int),value :: field,axis,reconcile
     status=device_exchange_axis(handle,field,axis,reconcile)
+#ifdef ASTR_BUILD_TESTING
+    if(status==0) call snapshot_exchange(handle,field,axis,reconcile)
+#endif
+  end function
+  integer(c_int) function cpp_exchange_end(handle,field,axis,reconcile) bind(C,name='astr_cpp_exchange_end') result(status)
+    type(c_ptr),value :: handle
+    integer(c_int),value :: field,axis,reconcile
+    status=device_exchange_end(handle,field,axis,reconcile)
 #ifdef ASTR_BUILD_TESTING
     if(status==0) call snapshot_exchange(handle,field,axis,reconcile)
 #endif
@@ -224,6 +336,7 @@ contains
     call statout(started)
   end subroutine
   subroutine cpp_before_finalize()
+    use benchmark_runtime, only: benchmark_gpu_rk_timing_enabled
 #ifdef ASTR_BUILD_TESTING
     use validation_io, only: rhs_validation_requested,write_q_validation_snapshot
     if(rhs_validation_requested()) then
@@ -231,7 +344,9 @@ contains
       call write_q_validation_snapshot('cpp_final',nstep,1)
     endif
 #endif
+    if(benchmark_gpu_rk_timing_enabled()) call report_device_memory('final')
     call require(c_associated(context),'missing C++ device context at finalize')
     call check(device_state_destroy(context),'release device state')
+    host_primitives_current=.false.
   end subroutine
 end module

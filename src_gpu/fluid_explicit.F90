@@ -7,6 +7,8 @@ module fluid_explicit
   public :: fluid_rhs_prepare,fluid_convection,fluid_viscous_flux,fluid_viscous_divergence
   public :: fluid_filter_prepare,fluid_filter_axis,fluid_filter_commit,fluid_rk_save,fluid_rk_update
   public :: fluid_statistics,fluid_cfl_diagnostics
+  public :: fluid_filter_prepare_scalar,fluid_filter_workspace_components
+  public :: fluid_filter_component_axis,fluid_filter_component_commit
   interface
     integer(c_int) function fluid_statistics(handle,reynolds,tc,tc1,values) bind(C,name='astr_device_fluid_statistics')
       import c_int,c_ptr,c_double
@@ -28,6 +30,26 @@ module fluid_explicit
     integer(c_int) function fluid_filter_prepare(handle) bind(C,name='astr_device_fluid_filter_prepare')
       import c_int,c_ptr
       type(c_ptr),value :: handle
+    end function
+    integer(c_int) function fluid_filter_prepare_scalar(handle) bind(C,name='astr_device_fluid_filter_prepare_scalar')
+      import c_int,c_ptr
+      type(c_ptr),value :: handle
+    end function
+    integer(c_int) function fluid_filter_workspace_components(handle) bind(C,name='astr_device_fluid_filter_workspace_components')
+      import c_int,c_ptr
+      type(c_ptr),value :: handle
+    end function
+    integer(c_int) function fluid_filter_component_axis(handle,axis,component) &
+        bind(C,name='astr_device_fluid_filter_component_axis')
+      import c_int,c_ptr
+      type(c_ptr),value :: handle
+      integer(c_int),value :: axis,component
+    end function
+    integer(c_int) function fluid_filter_component_commit(handle,component) &
+        bind(C,name='astr_device_fluid_filter_component_commit')
+      import c_int,c_ptr
+      type(c_ptr),value :: handle
+      integer(c_int),value :: component
     end function
     integer(c_int) function fluid_filter_axis(handle,axis) bind(C,name='astr_device_fluid_filter_axis')
       import c_int,c_ptr

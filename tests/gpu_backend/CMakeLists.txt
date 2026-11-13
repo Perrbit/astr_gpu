@@ -62,3 +62,8 @@ target_link_libraries(astr_backend_halo PRIVATE astr_device_state MPI::MPI_Fortr
 if(CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC|PGI")
   target_sources(astr_backend_halo PRIVATE ${ASTR_MB0_FORTRAN_MAIN})
 endif()
+
+add_executable(astr_backend_compare EXCLUDE_FROM_ALL field_compare.cpp)
+target_compile_features(astr_backend_compare PRIVATE cxx_std_17)
+target_include_directories(astr_backend_compare PRIVATE ${HDF5_INCLUDE_DIRS})
+target_link_libraries(astr_backend_compare PRIVATE MPI::MPI_C ${HDF5_Fortran_LIBRARIES})

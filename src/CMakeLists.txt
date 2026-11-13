@@ -1715,6 +1715,11 @@ target_include_directories(centered_diffusion_response_probe PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/diffusion_response_modules")
 endif()
 
+if(BUILD_TESTING)
+  add_executable(checkpoint_logical_probe EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/checkpoint_logical_probe.F90)
+endif()
+
 # Standalone probes use the same kinds and startup options as production.
 get_property(ASTR_LOCAL_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(ASTR_TARGET IN LISTS ASTR_LOCAL_TARGETS)

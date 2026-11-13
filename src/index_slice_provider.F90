@@ -12,6 +12,9 @@ module index_slice_provider
   use index_slice_stencil, only: slice_stencil_start,slice_stencil_weights,slice_diagnostics
   use insitu_boundary_layer, only: wall_transport,nonreacting_wall_material
   use iso_c_binding, only: c_int
+#ifdef ASTR_GPU_CPP
+  use fluid_runtime, only: cpp_export_host_primitives
+#endif
 #ifdef _CUDA
   use index_slice_gpu
 #endif
@@ -134,11 +137,17 @@ contains
     wall_needed=any(definition%fields>=31.and.definition%fields<=34).and..not.wall_mean
     vortex_mask=merge(1,0,any(definition%fields==35))+merge(2,0,any(definition%fields==36))
     ok=.false.;message='';neighborhood_bytes=0;download_bytes=0;exchange_bytes=0;compute_seconds=0
+#ifdef ASTR_GPU_CPP
+    block
+      use commvar, only: use_gpu
+      if(use_gpu.and..not.device_output) call cpp_export_host_primitives(download_bytes)
+    end block
+#endif
     if(device_output.and..not.gpu_fields) then
       message='retained device slices require the GPU source'
       call MPI_Comm_free(comm,err);call mpi_ok(err);return
     endif
-    call agree_allocation(product(int(extent,int64))<=int(huge(nout),int64)/nfields,valid)
+    valid=allocations_agree(product(int(extent,int64))<=int(huge(nout),int64)/nfields)
     if(.not.valid) then
       message='selected slice exceeds addressable packing indices'
       call MPI_Comm_free(comm,err);call mpi_ok(err);return
@@ -183,7 +192,7 @@ contains
       box(1,:)=0;box(2,:)=-1
     endif
     shape=max(0,box(2,:)-box(1,:)+1)
-    call agree_allocation(product(int(shape,int64))<=int(huge(nn),int64)/max(1,nraw),valid)
+    valid=allocations_agree(product(int(shape,int64))<=int(huge(nn),int64)/max(1,nraw))
     if(.not.valid) then
       message='slice stencil neighborhood exceeds addressable packing indices'
       call MPI_Comm_free(comm,err);call mpi_ok(err);return
@@ -191,7 +200,7 @@ contains
     nn=product(shape)
     n=merge(0,nout,device_output)
     allocate(values(n,nfields),xyz(3,n),boxes(2,3,ranks),owners(2,3,ranks),stat=status)
-    call agree_allocation(status==0,valid)
+    valid=allocations_agree(status==0)
     if(.not.valid) then
       message='cannot allocate selected two-dimensional slice';goto 900
     endif
@@ -206,7 +215,7 @@ contains
       capacity=max(capacity,product(max(0,boxes(2,:,p)-boxes(1,:,p)+1)))
     enddo
     allocate(indices(3,capacity),positions(capacity),recv_indices(3,capacity),recv_positions(capacity),stat=status)
-    call agree_allocation(status==0,valid)
+    valid=allocations_agree(status==0)
     if(.not.valid) then
       message='cannot allocate slice neighborhood index lists';goto 900
     endif
@@ -236,7 +245,7 @@ contains
 #ifdef _CUDA
     endif
 #endif
-    call agree_allocation(valid,valid)
+    valid=allocations_agree(valid)
     if(.not.valid) then
       message='cannot allocate slice stencil neighborhood';goto 900
     endif
@@ -255,7 +264,7 @@ contains
 #ifdef _CUDA
     endif
 #endif
-    call agree_allocation(valid,valid)
+    valid=allocations_agree(valid)
     if(.not.valid) then
       message='cannot pack local slice stencil';goto 900
     endif
@@ -263,7 +272,7 @@ contains
     if(private_transport.and.nraw>0.and.ranks>1) then
       call begin_index_slice_exchange_gpu(capacity,trim(transport_mode),valid,message)
       if(.not.valid) print '(a)','ASTR_RUNTIME_TRANSPORT_FAILED '//trim(message)
-      call agree_allocation(valid,valid)
+      valid=allocations_agree(valid)
       if(.not.valid) then
         message='cannot prepare requested private image MPI transport; inspect the failing rank log';goto 900
       endif
@@ -282,7 +291,7 @@ contains
       endif
 #endif
       allocate(send_values(nsend,nraw),recv_values(nrecv,nraw),stat=status)
-      call agree_allocation(status==0,valid)
+      valid=allocations_agree(status==0)
       if(.not.valid) then
         message='cannot allocate private slice communication strip';goto 900
       endif
@@ -301,7 +310,7 @@ contains
 #ifdef _CUDA
       endif
 #endif
-      call agree_allocation(valid,valid)
+      valid=allocations_agree(valid)
       if(.not.valid) then
         message='cannot pack private slice communication strip';goto 900
       endif
@@ -322,7 +331,7 @@ contains
 #ifdef _CUDA
       endif
 #endif
-      call agree_allocation(valid,valid)
+      valid=allocations_agree(valid)
       if(.not.valid) then
         message='cannot store private slice communication strip';goto 900
       endif
@@ -337,7 +346,7 @@ contains
 #ifdef _CUDA
     if(gpu_fields.and.host_eval) then
       allocate(neighborhood(nn,nraw),stat=status)
-      call agree_allocation(status==0,valid)
+      valid=allocations_agree(status==0)
       if(.not.valid) then
         message='cannot allocate selected host diagnostic neighborhood';goto 900
       endif
@@ -448,7 +457,7 @@ contains
 #ifdef _CUDA
     endif
 #endif
-    call agree_allocation(valid,ok)
+    ok=allocations_agree(valid)
     if(.not.ok) message='invalid selected diagnostic state or slice transfer failure'
 900 continue
 #ifdef _CUDA
@@ -463,14 +472,14 @@ contains
       if(code/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,code,ierr)
     end subroutine
 
-    subroutine agree_allocation(local_ok,global_ok)
-      logical,value :: local_ok
-      logical,intent(out) :: global_ok
+    logical function allocations_agree(local_ok) result(global_ok)
+      ! A return value avoids aliasing the caller's input and output flag.
+      logical,intent(in) :: local_ok
       integer :: bad,total
       bad=merge(0,1,local_ok)
       call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,comm,err);call mpi_ok(err)
       global_ok=total==0
-    end subroutine
+    end function
 
   end subroutine
 

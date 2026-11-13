@@ -28,6 +28,12 @@ int astr_device_fluid_viscous_divergence(void *handle);
 int astr_device_fluid_filter_prepare(void *handle);
 int astr_device_fluid_filter_axis(void *handle, int axis);
 int astr_device_fluid_filter_commit(void *handle);
+/* Scalar storage: q(c)->work in x, work->q(c) in y; after all y components
+ * exchange q's z halo once, then q(c)->work in z and commit that component. */
+int astr_device_fluid_filter_prepare_scalar(void *handle);
+int astr_device_fluid_filter_workspace_components(void *handle);
+int astr_device_fluid_filter_component_axis(void *handle, int axis, int component);
+int astr_device_fluid_filter_component_commit(void *handle, int component);
 int astr_device_fluid_rk_save(void *handle);
 int astr_device_fluid_rk_update(void *handle, double dt, double a, double b, double c);
 int astr_device_fluid_check(void *handle);

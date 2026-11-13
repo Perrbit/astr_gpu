@@ -300,8 +300,10 @@ template<bool viscous> int divergence(State &s)
     return 0;
 }
 
+template<int components>
 __global__ __launch_bounds__(threads)
-void filter_kernel(AstrDeviceView source, AstrDeviceView destination, int nx, int ny, size_t count, int axis)
+void filter_kernel(AstrDeviceView source, AstrDeviceView destination, int nx, int ny, size_t count, int axis,
+                   int source_component,int destination_component)
 {
     const size_t id = static_cast<size_t>(blockIdx.x)*threads+threadIdx.x;
     if (id < count) {
@@ -309,9 +311,9 @@ void filter_kernel(AstrDeviceView source, AstrDeviceView destination, int nx, in
         point(id,nx,ny,i,j,k);
         const size_t stride = source.stride[axis];
         const double *v = static_cast<const double *>(source.data);
-        for (int c = 1; c <= 5; ++c) {
-            const size_t p = astr::offset(source,i,j,k,c);
-            at(destination,i,j,k,c) = (193.0/256.0)*v[p]+(105.0/512.0)*(v[p+stride]+v[p-stride])
+        for (int c = 0; c < components; ++c) {
+            const size_t p = astr::offset(source,i,j,k,source_component+c);
+            at(destination,i,j,k,destination_component+c) = (193.0/256.0)*v[p]+(105.0/512.0)*(v[p+stride]+v[p-stride])
                 -(15.0/128.0)*(v[p+2*stride]+v[p-2*stride])
                 +(45.0/1024.0)*(v[p+3*stride]+v[p-3*stride])
                 -(5.0/512.0)*(v[p+4*stride]+v[p-4*stride])
@@ -321,14 +323,17 @@ void filter_kernel(AstrDeviceView source, AstrDeviceView destination, int nx, in
     return;
 }
 
+template<int components>
 __global__ __launch_bounds__(threads)
-void physical_copy_kernel(AstrDeviceView source, AstrDeviceView destination, int nx, int ny, size_t count)
+void physical_copy_kernel(AstrDeviceView source, AstrDeviceView destination, int nx, int ny, size_t count,
+                          int source_component,int destination_component)
 {
     const size_t id = static_cast<size_t>(blockIdx.x)*threads+threadIdx.x;
     if (id < count) {
         int i,j,k;
         point(id,nx,ny,i,j,k);
-        for (int c = 1; c <= 5; ++c) at(destination,i,j,k,c) = at(source,i,j,k,c);
+        for (int c = 0; c < components; ++c)
+            at(destination,i,j,k,destination_component+c) = at(source,i,j,k,source_component+c);
     }
     return;
 }
@@ -370,15 +375,53 @@ extern "C" int astr_device_fluid_filter_prepare(void *handle)
     return astr::allocate_field(s.fields[ASTR_DEVICE_FILTER_WORK],s.upper,s.halo,4,5);
 }
 
+extern "C" int astr_device_fluid_filter_prepare_scalar(void *handle)
+{
+    if (!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
+    State &s = *static_cast<State *>(handle);
+    if (s.halo < 5 || s.fields[ASTR_DEVICE_FILTER_WORK].view.data) return ASTR_DEVICE_INVALID_ARGUMENT;
+    return astr::allocate_field(s.fields[ASTR_DEVICE_FILTER_WORK],s.upper,s.halo,3);
+}
+
+extern "C" int astr_device_fluid_filter_workspace_components(void *handle)
+{
+    if (!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
+    const AstrDeviceView &work = static_cast<State *>(handle)->fields[ASTR_DEVICE_FILTER_WORK].view;
+    return work.data ? work.extent[3] : ASTR_DEVICE_NOT_ALLOCATED;
+}
+
+extern "C" int astr_device_fluid_filter_component_axis(void *handle,int axis,int component)
+{
+    if (!handle || axis<0 || axis>2 || component<1 || component>5) return ASTR_DEVICE_INVALID_ARGUMENT;
+    if (astr_device_fluid_filter_workspace_components(handle)!=1) return ASTR_DEVICE_INVALID_ARGUMENT;
+    State &s = *static_cast<State *>(handle);
+    const size_t count = physical_count(s);
+    const AstrDeviceView q=s.fields[0].view,work=s.fields[ASTR_DEVICE_FILTER_WORK].view;
+    filter_kernel<1><<<(count+threads-1)/threads,threads,0,s.stream>>>(axis==1 ? work : q,axis==1 ? q : work,
+        s.upper[0]+1,s.upper[1]+1,count,axis,axis==1 ? 1 : component,axis==1 ? component : 1);
+    return astr::finish_launch(s);
+}
+
+extern "C" int astr_device_fluid_filter_component_commit(void *handle,int component)
+{
+    if (!handle || component<1 || component>5) return ASTR_DEVICE_INVALID_ARGUMENT;
+    if (astr_device_fluid_filter_workspace_components(handle)!=1) return ASTR_DEVICE_INVALID_ARGUMENT;
+    State &s = *static_cast<State *>(handle);
+    const size_t count = physical_count(s);
+    physical_copy_kernel<1><<<(count+threads-1)/threads,threads,0,s.stream>>>(
+        s.fields[ASTR_DEVICE_FILTER_WORK].view,s.fields[0].view,s.upper[0]+1,s.upper[1]+1,count,1,component);
+    return astr::finish_launch(s);
+}
+
 extern "C" int astr_device_fluid_filter_axis(void *handle, int axis)
 {
     if (!handle || axis < 0 || axis > 2) return ASTR_DEVICE_INVALID_ARGUMENT;
     State &s = *static_cast<State *>(handle);
-    if (!s.fields[ASTR_DEVICE_FILTER_WORK].view.data) return ASTR_DEVICE_NOT_ALLOCATED;
+    if (astr_device_fluid_filter_workspace_components(handle)!=5) return ASTR_DEVICE_INVALID_ARGUMENT;
     const size_t count = physical_count(s);
     const AstrDeviceView q = s.fields[0].view, work = s.fields[ASTR_DEVICE_FILTER_WORK].view;
-    filter_kernel<<<(count+threads-1)/threads,threads,0,s.stream>>>(
-        axis == 1 ? work : q,axis == 1 ? q : work,s.upper[0]+1,s.upper[1]+1,count,axis);
+    filter_kernel<5><<<(count+threads-1)/threads,threads,0,s.stream>>>(
+        axis == 1 ? work : q,axis == 1 ? q : work,s.upper[0]+1,s.upper[1]+1,count,axis,1,1);
     return astr::finish_launch(s);
 }
 
@@ -386,10 +429,10 @@ extern "C" int astr_device_fluid_filter_commit(void *handle)
 {
     if (!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
     State &s = *static_cast<State *>(handle);
-    if (!s.fields[ASTR_DEVICE_FILTER_WORK].view.data) return ASTR_DEVICE_NOT_ALLOCATED;
+    if (astr_device_fluid_filter_workspace_components(handle)!=5) return ASTR_DEVICE_INVALID_ARGUMENT;
     const size_t count = physical_count(s);
-    physical_copy_kernel<<<(count+threads-1)/threads,threads,0,s.stream>>>(
-        s.fields[ASTR_DEVICE_FILTER_WORK].view,s.fields[0].view,s.upper[0]+1,s.upper[1]+1,count);
+    physical_copy_kernel<5><<<(count+threads-1)/threads,threads,0,s.stream>>>(
+        s.fields[ASTR_DEVICE_FILTER_WORK].view,s.fields[0].view,s.upper[0]+1,s.upper[1]+1,count,1,1);
     return astr::finish_launch(s);
 }
 

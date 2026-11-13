@@ -230,5 +230,5 @@ def test_unvalidated_derived_wall_partition_rejected(backend, tmp_path):
     args.statistics = False
     args.case = "channel"
     run_case(args, ROOT, backend, 2, "rejected", 1, archive_groups=archive(),
-        buffer_bytes=4096, reject="derived fields require registered 16-cubed explicit TGV/channel/CURVE/AIR5 NP<=2")
+        buffer_bytes=4096, reject="derived fields require registered 16-cubed explicit cases and supported backend/rank/stencil")
     directory_budget(tmp_path)

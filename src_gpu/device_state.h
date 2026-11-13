@@ -40,6 +40,7 @@ int astr_device_state_download(void *handle, int field, double *host, size_t byt
  * Other entries are zero padding, not reads of undefined corner storage. */
 int astr_device_state_snapshot_axis(void *handle, int field, int axis, double *host, size_t bytes);
 int astr_device_state_synchronize(void *handle);
+int astr_device_memory_info(void *handle,size_t *free_bytes,size_t *total_bytes);
 int astr_device_state_destroy(void **handle);
 
 #ifdef __cplusplus

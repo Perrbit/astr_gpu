@@ -31,5 +31,6 @@ export LD_LIBRARY_PATH="$gcc/lib64:$mpi/lib:$hdf5/lib:$LD_LIBRARY_PATH"
   -DASTR_BUILD_GPU_BACKEND_PROBES=ON -DASTR_WITH_CUDA=OFF \
   -DASTR_GPU_CPP_BACKEND=gpufusion \
   -DASTR_WITH_CATALYST=OFF -DASTR_WITH_AIR5_CHEMISTRY=OFF -DBUILD_TESTING=ON
-"$cmake" --build "$work/build" --target astr astr_backend_mb0 astr_backend_mb1 astr_backend_fluid astr_backend_rhs --parallel 4 --verbose
+"$cmake" --build "$work/build" --target astr astr_backend_mb0 astr_backend_mb1 astr_backend_fluid astr_backend_rhs \
+  astr_backend_halo astr_backend_compare --parallel 4 --verbose
 ldd "$work/build/bin/astr_backend_mb0"

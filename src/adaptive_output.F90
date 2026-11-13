@@ -1,6 +1,6 @@
 module adaptive_output
-  use astr_precision_io, only: read_source_reals,source_real_matches
-  use iso_fortran_env, only: int64
+  use astr_precision_io, only: read_source_reals,source_real_matches,pack_logical32,unpack_logical32
+  use iso_fortran_env, only: int32,int64
   use astr_precision, only: real_kind,real_bytes
   use ieee_arithmetic, only: ieee_is_finite
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule, &
@@ -490,16 +490,19 @@ contains
     character(8) :: magic
     integer :: err
     logical :: valid,converted_clock
+    integer(int32) :: wire_enabled,wire_clock(3)
     if(writing) then
       ok=.not.c%pending; same=.true.
       if(.not.ok) return
-      write(unit,iostat=err) 'ASTRAC01',b%enabled,b%dense_steps,b%dense_time,b%events,b%windows, &
+      write(unit,iostat=err) 'ASTRAC01',pack_logical32(b%enabled),b%dense_steps,b%dense_time,b%events,b%windows, &
         c%mode,c%normal_steps,c%normal_time,c%origin_step,c%origin_time,c%success,c%success_time, &
-        c%attempt,c%attempt_time,c%seen,c%seen_time,c%next_step,c%next_time,c%dense,c%initial,c%final, &
+        c%attempt,c%attempt_time,c%seen,c%seen_time,c%next_step,c%next_time, &
+        pack_logical32(c%dense),pack_logical32(c%initial),pack_logical32(c%final), &
         c%reason,c%code,c%phase,c%requested_step,c%requested_time
       ok=err==0; return
     endif
-    read(unit,iostat=err) magic,binding%enabled,binding%dense_steps
+    read(unit,iostat=err) magic,wire_enabled,binding%dense_steps
+    if(err==0) binding%enabled=unpack_logical32(wire_enabled)
     if(err==0) call read_source_reals(unit,binding%dense_time,source_bytes,err)
     if(err==0) read(unit,iostat=err) binding%events,binding%windows,saved%mode,saved%normal_steps
     if(err==0) call read_source_reals(unit,saved%normal_time,source_bytes,err)
@@ -513,7 +516,12 @@ contains
     if(err==0) call read_source_reals(unit,saved%seen_time,source_bytes,err)
     if(err==0) read(unit,iostat=err) saved%next_step
     if(err==0) call read_source_reals(unit,saved%next_time,source_bytes,err)
-    if(err==0) read(unit,iostat=err) saved%dense,saved%initial,saved%final,saved%reason,saved%code,saved%phase,saved%requested_step
+    if(err==0) read(unit,iostat=err) wire_clock,saved%reason,saved%code,saved%phase,saved%requested_step
+    if(err==0) then
+      saved%dense=unpack_logical32(wire_clock(1))
+      saved%initial=unpack_logical32(wire_clock(2))
+      saved%final=unpack_logical32(wire_clock(3))
+    endif
     if(err==0) call read_source_reals(unit,saved%requested_time,source_bytes,err)
     same=.false.; ok=.false.
     if(err/=0.or.magic/='ASTRAC01') return
@@ -562,11 +570,13 @@ contains
     type(adaptive_config),intent(inout) :: c
     integer,intent(out) :: err
     integer,optional,intent(in) :: source_bytes
+    integer(int32) :: wire_enabled
     if(writing) then
-      write(unit,iostat=err) c%enabled,c%indicator,c%monitor_mode,c%monitor_steps,c%monitor_time, &
+      write(unit,iostat=err) pack_logical32(c%enabled),c%indicator,c%monitor_mode,c%monitor_steps,c%monitor_time, &
         c%event_ids,c%s_ref,c%t_ref,c%r_on,c%r_off,c%hold_time,c%window_ids,c%window_modes,c%window_steps,c%window_times
     else
-      read(unit,iostat=err) c%enabled,c%indicator,c%monitor_mode,c%monitor_steps
+      read(unit,iostat=err) wire_enabled,c%indicator,c%monitor_mode,c%monitor_steps
+      if(err==0) c%enabled=unpack_logical32(wire_enabled)
       if(err==0) call read_source_reals(unit,c%monitor_time,source_bytes,err)
       if(err==0) read(unit,iostat=err) c%event_ids
       if(err==0) call read_source_reals(unit,c%s_ref,source_bytes,err)
@@ -592,6 +602,7 @@ contains
     character(256) :: message
     integer :: err,i,j
     logical :: same_monitor,same_event,same_window,valid,same_scale
+    integer(int32) :: wire_previous,wire_events(adaptive_capacity),wire_active(adaptive_capacity)
     ok=.false.
     if(writing) then
       write(unit,iostat=err) 'ASTRAP01'
@@ -599,7 +610,8 @@ contains
       call config_file(unit,.true.,adaptive_shared_config,err)
       if(err/=0) return
       saved=adaptive_shared_state
-      write(unit,iostat=err) saved%has_previous,saved%event_previous,saved%active,saved%previous_s,saved%previous_time, &
+      write(unit,iostat=err) pack_logical32(saved%has_previous),pack_logical32(saved%event_previous), &
+        pack_logical32(saved%active),saved%previous_s,saved%previous_time, &
         saved%r,saved%entry_time,saved%last_step,saved%last_time,saved%window_phase,saved%origin_step,saved%origin_time
       if(err/=0) return
       if(adaptive_shared_config%enabled.and.any(adaptive_shared_config%event_ids/='')) then
@@ -615,7 +627,12 @@ contains
     if(err/=0) return
     call validate_adaptive_config(old,valid,message)
     if(.not.valid) return
-    read(unit,iostat=err) saved%has_previous,saved%event_previous,saved%active
+    read(unit,iostat=err) wire_previous,wire_events,wire_active
+    if(err==0) then
+      saved%has_previous=unpack_logical32(wire_previous)
+      saved%event_previous=unpack_logical32(wire_events)
+      saved%active=unpack_logical32(wire_active)
+    endif
     if(err==0) call read_source_reals(unit,saved%previous_s,source_bytes,err)
     if(err==0) call read_source_reals(unit,saved%previous_time,source_bytes,err)
     if(err==0) call read_source_reals(unit,saved%r,source_bytes,err)

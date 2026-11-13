@@ -187,7 +187,8 @@ contains
   end function
 
   subroutine run_control_history(unit,writing,exact,step,status,source_bytes)
-    use astr_precision_io, only: read_source_reals
+    use astr_precision_io, only: read_source_reals,pack_logical32,unpack_logical32
+    use iso_fortran_env, only: int32
     integer,intent(in) :: unit
     logical,intent(in) :: writing,exact
     integer(int64),intent(in) :: step
@@ -198,13 +199,14 @@ contains
     character(32) :: clocks(2,2)
     character(8) :: tag
     logical :: first,valid
+    integer(int32) :: wire_first
     type(run_control_options) :: effective,snapshot
     character(512) :: message
     status=0
     if(writing) then
       call pack_control(active_run,integers(:,1),reals(:,1),clocks(:,1))
       call pack_control(observed_file,integers(:,2),reals(:,2),clocks(:,2))
-      write(unit,iostat=status) 'ASTRDT01',integers,reals,clocks,last_reload_step,first_choice
+      write(unit,iostat=status) 'ASTRDT01',integers,reals,clocks,last_reload_step,pack_logical32(first_choice)
       return
     endif
     inquire(unit,pos=position)
@@ -221,7 +223,8 @@ contains
     read(unit,iostat=status) integers
     if(status==0) call read_source_reals(unit,reals(:,1),source_bytes,status)
     if(status==0) call read_source_reals(unit,reals(:,2),source_bytes,status)
-    if(status==0) read(unit,iostat=status) clocks,reload_step,first
+    if(status==0) read(unit,iostat=status) clocks,reload_step,wire_first
+    if(status==0) first=unpack_logical32(wire_first)
     if(status/=0) return
     if(.not.exact) then
       last_reload_step=step

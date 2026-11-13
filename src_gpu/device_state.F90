@@ -18,7 +18,13 @@ module device_state
   public :: device_count
   public :: device_state_upload,device_state_download,device_state_synchronize,device_state_destroy
   public :: device_state_snapshot_axis
+  public :: device_memory_info
   interface
+    integer(c_int) function device_memory_info(handle,free_bytes,total_bytes) bind(C,name='astr_device_memory_info')
+      import c_int,c_ptr,c_size_t
+      type(c_ptr),value :: handle
+      integer(c_size_t),intent(out) :: free_bytes,total_bytes
+    end function
     integer(c_int) function device_state_snapshot_axis(handle,field,axis,host,bytes) &
         bind(C,name='astr_device_state_snapshot_axis')
       import c_int,c_ptr,c_double,c_size_t

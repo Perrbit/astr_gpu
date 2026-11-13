@@ -1,6 +1,6 @@
 module insitu_product_schedule
-  use astr_precision_io, only: read_source_reals
-  use iso_fortran_env, only: int64,real64
+  use astr_precision_io, only: read_source_reals,pack_logical32,unpack_logical32
+  use iso_fortran_env, only: int32,int64,real64
   use astr_precision, only: real_kind
   use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t,c_double
   use ieee_arithmetic, only: ieee_is_finite
@@ -878,6 +878,7 @@ contains
     character(8) :: magic
     logical :: initial,final,allow,entry_same(insitu_max_products),clock_same,compatible
     integer :: i,j,status,saved_disabled_count
+    integer(int32) :: wire_enabled
     character(64) :: saved_disabled(128)
     ok=.false.; same=.false.
     allow=.false.
@@ -909,7 +910,7 @@ contains
       enddo
       if(magic=='ASTRPF02'.or.magic=='ASTRPF04') then
         do i=1,configuration%product_count
-          write(unit,iostat=status) configuration%product_adaptive(i)%enabled
+          write(unit,iostat=status) pack_logical32(configuration%product_adaptive(i)%enabled)
           if(status/=0) return
           if(.not.configuration%product_adaptive(i)%enabled) cycle
           call adaptive_clock_file(unit,.true.,states(i)%adaptive,configuration%product_adaptive(i), &
@@ -969,8 +970,9 @@ contains
     entry_same=.true.
     if(magic=='ASTRPF02'.or.magic=='ASTRPF04') then
       do i=1,saved%product_count
-        read(unit,iostat=status) saved%product_adaptive(i)%enabled
+        read(unit,iostat=status) wire_enabled
         if(status/=0) return
+        saved%product_adaptive(i)%enabled=unpack_logical32(wire_enabled)
         j=findloc(configuration%product_ids,saved%product_ids(i),dim=1)
         if(saved%product_adaptive(i)%enabled) then
           if(j>0) restored(i)%adaptive=states(j)%adaptive

@@ -43,11 +43,11 @@ def snapshot(path):
     return data.reshape(shape, order='F')[hm:hm+im+1, hm:hm+jm+1, hm:hm+km+1]
 
 
-def logged_steps(directory, count=4):
+def logged_steps(directory, count=4, first_step=1):
     pattern = re.compile(r'ASTR_TIMESTEP complete_step=(\d+)\s+time_start=\s*(\S+)\s+time_end=\s*(\S+)'
                          r'\s+dt_used=\s*(\S+)\s+dt_next=\s*(\S+)')
     rows = [tuple(map(float, match.groups())) for match in pattern.finditer((directory/'run.log').read_text())]
-    if len(rows) != count or [row[0] for row in rows] != list(range(1, count+1)):
+    if len(rows) != count or [row[0] for row in rows] != list(range(first_step, first_step+count)):
         raise AssertionError(f'{count} complete timestep records required')
     return np.asarray(rows)
 
@@ -66,7 +66,8 @@ def prepare_case(directory, original, gpu, cpp, automatic, grid=16, steps=4, dt=
     (directory/'outdat/new').mkdir(parents=True)
     groups = convert_case((original/'input.tgv').read_text())
     groups['case_options']['use_gpu'] = gpu
-    groups['mesh'].update(ia=grid, ja=grid, ka=grid)
+    dimensions = (grid, grid, grid) if isinstance(grid, int) else grid
+    groups['mesh'].update(zip(('ia', 'ja', 'ka'), dimensions))
     groups['numerics'].update(convection_form='standard', viscous_form='standard', filter_scheme='explicit10')
     groups['precision_options'] = {'gpu_precision_mode': 'fp64'}
     (directory/'datin/input.case').write_text(namelist(groups))

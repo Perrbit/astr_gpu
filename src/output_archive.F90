@@ -1,7 +1,7 @@
 module output_archive
-  use iso_fortran_env, only: int64,iostat_end
+  use iso_fortran_env, only: int32,int64,iostat_end
   use astr_precision, only: real_kind,real_bytes,clock_kind
-  use astr_precision_io, only: read_source_reals,source_real_matches
+  use astr_precision_io, only: read_source_reals,source_real_matches,pack_logical32,unpack_logical32
   use iso_c_binding, only: c_int,c_char,c_null_char
   use mpi
   use commvar, only: ia,ja,ka,im,jm,km,numq,use_gpu,nondimen
@@ -20,6 +20,9 @@ module output_archive
   use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_state_require
   use checkpoint_bundle, only: seal_checkpoint_bundle,publish_checkpoint_bundle,write_checkpoint_resource_refs, &
     checkpoint_stream_at_end
+#ifdef ASTR_GPU_CPP
+  use fluid_runtime, only: cpp_export_host_primitives
+#endif
 #ifdef _CUDA
   use output_fields_gpu, only: begin_basic_output_gpu,pack_basic_output_gpu,end_basic_output_gpu
   use output_fields_gpu, only: begin_derived_output_gpu,pack_derived_output_gpu,end_derived_output_gpu, &
@@ -89,7 +92,7 @@ contains
     use bc, only: bctype,turbinf
     use parallel, only: mpisize
     type(output_options),intent(in) :: selected
-    logical :: ok,derived_case,air5_case
+    logical :: ok,derived_case,air5_case,derived_ranks_supported
     integer :: p
     character(256) :: message
     options=selected; products=[options%volume,options%slices]
@@ -108,6 +111,11 @@ contains
       (trim(turbinf)=='prof'.or.trim(turbinf)=='intp'))
     derived_case=derived_case.and.numq==5.and.num_species==0.and..not.lcomb.and.nondimen
     air5_case=.false.
+    derived_ranks_supported=mpisize<=2
+#ifdef ASTR_GPU_CPP
+    ! This backend publishes primitives to the rank-general host provider.
+    derived_ranks_supported=derived_ranks_supported.or.use_gpu
+#endif
 #ifdef ASTR_AIR5_CHEMISTRY
     air5_case=(trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli').and. &
       numq==11.and.num_species==5.and.num_modequ==1.and.lcomb.and..not.nondimen.and..not.lreadgrid.and. &
@@ -117,9 +125,9 @@ contains
     do p=1,2
       if(products(p)%enabled.and.(products(p)%velocity_gradient.or.products(p)%vorticity.or.products(p)%qcriterion)) &
         call check((derived_case.or.air5_case).and.ndims==3.and. &
-          .not.limmbou.and.all([ia,ja,ka]==16).and.mpisize<=2.and. &
+          .not.limmbou.and.all([ia,ja,ka]==16).and.derived_ranks_supported.and. &
           hm>=3.and.min(im,jm,km)>=max(hm,5).and.trim(difschm)=='643e'.and. &
-          diffterm,'derived fields require registered 16-cubed explicit TGV/channel/CURVE/AIR5 NP<=2')
+          diffterm,'derived fields require registered 16-cubed explicit cases and supported backend/rank/stencil')
       effective_initial(p)=products(p)%initial_frame
       if(products(p)%enabled) then
         call configure_schedule(schedules(p),trim(products(p)%mode),products(p)%interval_steps, &
@@ -144,6 +152,7 @@ contains
     integer(int64) :: indices(256,3),saved_last(2),steps(2),clock_step
     real(real_kind) :: times(2),clock_time
     logical :: initial(2),checkpoint_enabled,ok,same,same_flags(2),clock_same
+    integer(int32) :: wire_enabled,wire_initial(2),wire_flags(6)
     integer :: unit,err,closed,p
     character(8) :: magic
     magic='ASTROA02'
@@ -154,8 +163,8 @@ contains
         open(newunit=unit,file=path,status='new',access='stream',form='unformatted', &
           convert='little_endian',action='write',iostat=err)
         if(err==0) then
-          write(unit,iostat=err) magic,identity%step,identity%time,options%checkpoint%enabled, &
-            last_steps,origin_steps,origin_times,effective_initial
+          write(unit,iostat=err) magic,identity%step,identity%time,pack_logical32(options%checkpoint%enabled), &
+            last_steps,origin_steps,origin_times,pack_logical32(effective_initial)
           do p=1,2
             if(err/=0) exit
             call write_product(unit,products(p),err,magic=='ASTROA03')
@@ -187,22 +196,30 @@ contains
       call check(err==0,'missing schedule history')
       read(unit,iostat=err) magic,clock_step
       if(err==0) call read_source_reals(unit,clock_time,source_bytes,err)
-      if(err==0) read(unit,iostat=err) checkpoint_enabled,saved_last,steps
+      if(err==0) read(unit,iostat=err) wire_enabled,saved_last,steps
+      if(err==0) checkpoint_enabled=unpack_logical32(wire_enabled)
       if(err==0) call read_source_reals(unit,times,source_bytes,err)
-      if(err==0) read(unit,iostat=err) initial
+      if(err==0) read(unit,iostat=err) wire_initial
+      if(err==0) initial=unpack_logical32(wire_initial)
       call check(err==0.and.(magic=='ASTROA02'.or.magic=='ASTROA03').and. &
         clock_step==identity%step.and.clock_time==identity%time, &
         'schedule history clock/version')
       call check((checkpoint_enabled.eqv.options%checkpoint%enabled).or.options%restart_output=='override', &
         'checkpoint switch changed without override')
       do p=1,2
-        read(unit,iostat=err) saved(p)%enabled,saved(p)%mode,saved(p)%interval_steps
+        read(unit,iostat=err) wire_flags(1),saved(p)%mode,saved(p)%interval_steps
         if(err==0) call read_source_reals(unit,saved(p)%interval_time,source_bytes,err)
-        if(err==0) read(unit,iostat=err) saved(p)%initial_frame,saved(p)%final_frame,saved(p)%fields, &
-          saved(p)%velocity_gradient,saved(p)%vorticity,saved(p)%qcriterion
+        if(err==0) read(unit,iostat=err) wire_flags(2:3),saved(p)%fields,wire_flags(4:6)
         call check(err==0,'read product options')
+        saved(p)%enabled=unpack_logical32(wire_flags(1))
+        saved(p)%initial_frame=unpack_logical32(wire_flags(2))
+        saved(p)%final_frame=unpack_logical32(wire_flags(3))
+        saved(p)%velocity_gradient=unpack_logical32(wire_flags(4))
+        saved(p)%vorticity=unpack_logical32(wire_flags(5))
+        saved(p)%qcriterion=unpack_logical32(wire_flags(6))
         if(magic=='ASTROA03') then
-          read(unit,iostat=err) saved(p)%adaptive%enabled,saved(p)%adaptive%dense_steps
+          read(unit,iostat=err) wire_enabled,saved(p)%adaptive%dense_steps
+          if(err==0) saved(p)%adaptive%enabled=unpack_logical32(wire_enabled)
           if(err==0) call read_source_reals(unit,saved(p)%adaptive%dense_time,source_bytes,err)
           if(err==0) read(unit,iostat=err) saved(p)%adaptive%events,saved(p)%adaptive%windows
           call check(err==0,'read adaptive product options')
@@ -276,9 +293,10 @@ contains
     type(output_product_options),intent(in) :: product
     integer,intent(out) :: err
     logical,intent(in) :: adaptive
-    write(unit,iostat=err) product%enabled,product%mode,product%interval_steps,product%interval_time, &
-      product%initial_frame,product%final_frame,product%fields,product%velocity_gradient,product%vorticity,product%qcriterion
-    if(err==0.and.adaptive) write(unit,iostat=err) product%adaptive%enabled,product%adaptive%dense_steps, &
+    write(unit,iostat=err) pack_logical32(product%enabled),product%mode,product%interval_steps,product%interval_time, &
+      pack_logical32(product%initial_frame),pack_logical32(product%final_frame),product%fields, &
+      pack_logical32(product%velocity_gradient),pack_logical32(product%vorticity),pack_logical32(product%qcriterion)
+    if(err==0.and.adaptive) write(unit,iostat=err) pack_logical32(product%adaptive%enabled),product%adaptive%dense_steps, &
       product%adaptive%dense_time,product%adaptive%events,product%adaptive%windows
   end subroutine
 
@@ -537,6 +555,9 @@ contains
     call check(host_budget>0,'private derivative halo leaves no host packing budget')
     tile_buffer=min(options%buffer_bytes,host_budget)
     device_peak=0; download=0; host_peak=0
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) call cpp_export_host_primitives(download)
+#endif
 #ifdef _CUDA
     if(use_gpu) then
       resident=statistics_device_bytes()+compact_statistics_device_bytes()

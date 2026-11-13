@@ -8,6 +8,7 @@ program halo_probe
   integer :: ierr,rank,local_rank,status,axis,hm,debug,a,cart,nranks,iteration,side
   integer :: topology(3),coordinates(3),low(3),high(3)
   logical :: periodic(3)
+  integer(c_int) :: transport_mode
   character(40) :: value
   type(c_ptr) :: state
   type(device_view) :: before,after
@@ -24,6 +25,15 @@ program halo_probe
   call get_command_argument(1,value)
   read(value,*) axis
   if(axis<0.or.axis>2) call fail('axis must be 0, 1 or 2')
+  call get_command_argument(2,value)
+  select case(trim(value))
+  case('','pinned')
+    transport_mode=halo_pinned
+  case('device')
+    transport_mode=halo_device
+  case default
+    call fail('transport must be pinned or device')
+  end select
   topology=1;topology(axis+1)=nranks;periodic=.true.
   call MPI_Cart_create(MPI_COMM_WORLD,3,topology,periodic,.false.,cart,ierr)
   call check(ierr,'Cartesian communicator')
@@ -50,13 +60,21 @@ program halo_probe
     call check(device_state_create(int(local_rank,c_int),9_c_int,7_c_int,6_c_int,int(hm,c_int), &
       int(debug,c_int),state),'create state')
     call check(device_transport_prepare(state,int(cart,c_int),int(low,c_int),int(high,c_int), &
-      int(topology,c_int),5_c_int),'prepare fixed pinned transport')
+      int(topology,c_int),5_c_int,transport_mode,0_c_int),'prepare fixed halo transport')
     call check(device_state_view(state,device_q,before),'initial q view')
     call check(device_state_upload(state,device_q,initial,int(size(initial),c_size_t)*8_c_size_t),'upload')
     do iteration=1,2
       do a=0,2
-        call check(device_exchange_axis(state,device_q,int(a,c_int),int(merge(1,0,iteration==1),c_int)), &
-          'device halo exchange')
+        if(iteration==1) then
+          call check(device_exchange_begin(state,device_q,int(a,c_int),1_c_int),'begin halo exchange')
+          if(device_exchange_begin(state,device_q,int(a,c_int),1_c_int)==0) call fail('nested begin accepted')
+          if(device_exchange_end(state,device_q,int(a,c_int),0_c_int)==0) call fail('mismatched end accepted')
+          if(device_state_destroy(state)==0) call fail('in-flight transport destroyed')
+          call check(device_exchange_end(state,device_q,int(a,c_int),1_c_int),'end halo exchange')
+          if(device_exchange_end(state,device_q,int(a,c_int),1_c_int)==0) call fail('duplicate end accepted')
+        else
+          call check(device_exchange_axis(state,device_q,int(a,c_int),0_c_int),'halo-only exchange')
+        endif
         call reference_exchange(a+1,iteration==1)
         call check(device_state_download(state,device_q,actual,int(size(actual),c_size_t)*8_c_size_t),'download')
         if(any(transfer(actual,[0_c_int64_t],size(actual))/=transfer(expected,[0_c_int64_t],size(expected)))) &
@@ -67,7 +85,7 @@ program halo_probe
     if(.not.c_associated(before%data,after%data)) call fail('q buffer replaced during exchanges')
     call check(device_state_destroy(state),'destroy before MPI finalize')
     write(*,'(a,4(i0,1x),a)') 'HALO PASS rank/axis/hm/debug=',rank,axis,hm,debug, &
-      ' all phase bits exact; q pointer stable'
+      ' all phase bits exact; q pointer stable; begin/end lifecycle checked'
     deallocate(initial,expected,actual)
   enddo
   enddo

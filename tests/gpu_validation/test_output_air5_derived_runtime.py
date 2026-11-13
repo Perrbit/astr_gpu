@@ -147,6 +147,6 @@ def test_air5_unregistered_derived_axis_is_rejected(case_name, backend, tmp_path
     args.axis = "x" if case_name == "hbl" else "z"
     case, _ = launch(args, backend, 2, "rejected", 2, archive_groups=archive(),
         buffer_bytes=4096, interval=99,
-        reject="derived fields require registered 16-cubed explicit TGV/channel/CURVE/AIR5 NP<=2")
+        reject="derived fields require registered 16-cubed explicit cases and supported backend/rank/stencil")
     assert not list((case / "outdat/new").rglob("COMPLETE"))
     directory_budget(tmp_path)

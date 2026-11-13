@@ -425,7 +425,7 @@ def main():
                     run_case(derived_args, root, backend, ranks, "reject_derived", 12,
                              archive_groups=archive.replace("initial_frame=.true.", "qcriterion=.true., initial_frame=.true."),
                              buffer_bytes=4096, lfilter=False,
-                             reject="derived fields require registered 16-cubed explicit TGV/channel/CURVE/AIR5 NP<=2")
+                             reject="derived fields require registered 16-cubed explicit cases and supported backend/rank/stencil")
                     run_case(args, root, backend, ranks, "reject_buffer", 12, enabled=False,
                              archive_groups=groups(args.mode, volume=False, dt=dt), buffer_bytes=1,
                              reject="host budget cannot hold one basic node")

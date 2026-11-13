@@ -173,10 +173,17 @@ extern "C" int astr_device_state_synchronize(void *handle)
     return static_cast<int>(cudaStreamSynchronize(static_cast<State *>(handle)->stream));
 }
 
+extern "C" int astr_device_memory_info(void *handle,size_t *free_bytes,size_t *total_bytes)
+{
+    if (!handle || !free_bytes || !total_bytes) return ASTR_DEVICE_INVALID_ARGUMENT;
+    return static_cast<int>(cudaMemGetInfo(free_bytes,total_bytes));
+}
+
 extern "C" int astr_device_state_destroy(void **handle)
 {
     if (!handle || !*handle) return ASTR_DEVICE_INVALID_ARGUMENT;
     State *state = static_cast<State *>(*handle);
+    if (astr::transport_in_flight(state->transport)) return ASTR_DEVICE_INVALID_ARGUMENT;
     *handle = nullptr;
     return release(state);
 }

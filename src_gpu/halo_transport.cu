@@ -9,14 +9,24 @@
 namespace astr {
 struct HaloTransport {
     MPI_Comm communicator=MPI_COMM_NULL;
-    int lower[3]{},upper[3]{},sizes[3]{},max_components=0;
+    int lower[3]{},upper[3]{},sizes[3]{},max_components=0,mode=ASTR_HALO_PINNED;
+    bool active=false;
+    int field=0,axis=0,reconcile=0;
+    bool timing=false;
+    double metrics[6]{};
     double *send_device[2]{},*recv_device[2]{},*send_host[2]{},*recv_host[2]{};
     MPI_Request requests[4]={MPI_REQUEST_NULL,MPI_REQUEST_NULL,MPI_REQUEST_NULL,MPI_REQUEST_NULL};
 };
 
+bool transport_in_flight(const HaloTransport *transport)
+{
+    return transport && transport->active;
+}
+
 int release_transport(HaloTransport *transport)
 {
     if (!transport) return 0;
+    if (transport->active) return ASTR_DEVICE_INVALID_ARGUMENT;
     int status=0;
     for (int side=0;side<2;++side) {
         void *device[]={transport->send_device[side],transport->recv_device[side]};
@@ -90,9 +100,10 @@ void unpack(AstrDeviceView view,int axis,int upper,int width,int first,int n1,in
 }
 
 extern "C" int astr_device_transport_prepare(void *handle,int communicator,const int lower[3],
-    const int upper[3],const int sizes[3],int max_components)
+    const int upper[3],const int sizes[3],int max_components,int mode,int timing)
 {
-    if (!handle || !lower || !upper || !sizes || max_components<1) return ASTR_DEVICE_INVALID_ARGUMENT;
+    if (!handle || !lower || !upper || !sizes || max_components<1 ||
+        (mode!=ASTR_HALO_PINNED && mode!=ASTR_HALO_DEVICE)) return ASTR_DEVICE_INVALID_ARGUMENT;
     astr::State &s=*static_cast<astr::State *>(handle);
     if (s.transport || s.halo<1) return ASTR_DEVICE_INVALID_ARGUMENT;
     size_t capacity=0;
@@ -110,6 +121,8 @@ extern "C" int astr_device_transport_prepare(void *handle,int communicator,const
     if (!s.transport) return static_cast<int>(cudaErrorMemoryAllocation);
     astr::HaloTransport &t=*s.transport;
     t.max_components=max_components;
+    t.mode=mode;
+    t.timing=timing!=0;
     for (int axis=0;axis<3;++axis) { t.lower[axis]=lower[axis];t.upper[axis]=upper[axis];t.sizes[axis]=sizes[axis]; }
     if (capacity==0) return 0;
     int status=MPI_Comm_dup(MPI_Comm_f2c(static_cast<MPI_Fint>(communicator)),&t.communicator);
@@ -120,22 +133,30 @@ extern "C" int astr_device_transport_prepare(void *handle,int communicator,const
         if (err!=cudaSuccess) return static_cast<int>(err);
         err=cudaMalloc(&t.recv_device[side],capacity*sizeof(double));
         if (err!=cudaSuccess) return static_cast<int>(err);
-        err=cudaMallocHost(&t.send_host[side],capacity*sizeof(double));
-        if (err!=cudaSuccess) return static_cast<int>(err);
-        err=cudaMallocHost(&t.recv_host[side],capacity*sizeof(double));
-        if (err!=cudaSuccess) return static_cast<int>(err);
+        if (mode==ASTR_HALO_PINNED) {
+            err=cudaMallocHost(&t.send_host[side],capacity*sizeof(double));
+            if (err!=cudaSuccess) return static_cast<int>(err);
+            err=cudaMallocHost(&t.recv_host[side],capacity*sizeof(double));
+            if (err!=cudaSuccess) return static_cast<int>(err);
+        }
     }
     return 0;
 }
 
-extern "C" int astr_device_exchange_axis(void *handle,int field,int axis,int reconcile)
+extern "C" int astr_device_exchange_begin(void *handle,int field,int axis,int reconcile)
 {
     if (!handle || field<0 || field>=ASTR_DEVICE_FIELD_COUNT || axis<0 || axis>2)
         return ASTR_DEVICE_INVALID_ARGUMENT;
     astr::State &s=*static_cast<astr::State *>(handle);
     if (!s.transport) return ASTR_DEVICE_NOT_ALLOCATED;
     astr::HaloTransport &t=*s.transport;
-    if (t.sizes[axis]==1) return astr_device_periodic_axis(handle,field,axis,reconcile);
+    if (t.active || (reconcile!=0 && reconcile!=1)) return ASTR_DEVICE_INVALID_ARGUMENT;
+    if (t.sizes[axis]==1) {
+        const int status=astr_device_periodic_axis(handle,field,axis,reconcile);
+        if (status!=0) return status;
+        t.field=field;t.axis=axis;t.reconcile=reconcile;t.active=true;
+        return 0;
+    }
     const AstrDeviceView view=s.fields[field].view;
     if (!view.data) return ASTR_DEVICE_NOT_ALLOCATED;
     if (view.lower[axis]!=-s.halo || view.extent[3]*view.extent[4]>t.max_components)
@@ -143,31 +164,82 @@ extern "C" int astr_device_exchange_axis(void *handle,int field,int axis,int rec
     const int n1=s.upper[(axis+1)%3]+1,n2=s.upper[(axis+2)%3]+1;
     const int width=s.halo+(reconcile ? 1 : 0),first=reconcile ? 0 : 1;
     const size_t count=static_cast<size_t>(width)*n1*n2*view.extent[3]*view.extent[4],bytes=count*sizeof(double);
+    const double started=t.timing ? MPI_Wtime() : 0;
     pack<<<(count+threads-1)/threads,threads,0,s.stream>>>(view,axis,s.upper[axis],width,first,n1,n2,count,
         t.send_device[0],t.send_device[1]);
     int status=astr::finish_launch(s);
     if (status!=0) return status;
-    for (int side=0;side<2;++side) {
+    for (int side=0;t.mode==ASTR_HALO_PINNED && side<2;++side) {
         const cudaError_t err=cudaMemcpyAsync(t.send_host[side],t.send_device[side],bytes,cudaMemcpyDeviceToHost,s.stream);
         if (err!=cudaSuccess) return static_cast<int>(err);
     }
     cudaError_t err=cudaStreamSynchronize(s.stream);
     if (err!=cudaSuccess) return static_cast<int>(err);
-    status=MPI_Irecv(t.recv_host[0],static_cast<int>(count),MPI_DOUBLE,t.lower[axis],1,t.communicator,&t.requests[0]);
+    const double posted=t.timing ? MPI_Wtime() : 0;
+    if (t.timing) t.metrics[0]+=posted-started;
+    // This wait also completes the previous end's unpack before MPI may
+    // overwrite the fixed receive slots. No requests are posted before it.
+    t.field=field;t.axis=axis;t.reconcile=reconcile;t.active=true;
+    double **recv=t.mode==ASTR_HALO_DEVICE ? t.recv_device : t.recv_host;
+    double **send=t.mode==ASTR_HALO_DEVICE ? t.send_device : t.send_host;
+    status=MPI_Irecv(recv[0],static_cast<int>(count),MPI_DOUBLE,t.lower[axis],1,t.communicator,&t.requests[0]);
     if (status!=MPI_SUCCESS) return status;
-    status=MPI_Irecv(t.recv_host[1],static_cast<int>(count),MPI_DOUBLE,t.upper[axis],0,t.communicator,&t.requests[1]);
+    status=MPI_Irecv(recv[1],static_cast<int>(count),MPI_DOUBLE,t.upper[axis],0,t.communicator,&t.requests[1]);
     if (status!=MPI_SUCCESS) return status;
-    status=MPI_Isend(t.send_host[0],static_cast<int>(count),MPI_DOUBLE,t.lower[axis],0,t.communicator,&t.requests[2]);
+    status=MPI_Isend(send[0],static_cast<int>(count),MPI_DOUBLE,t.lower[axis],0,t.communicator,&t.requests[2]);
     if (status!=MPI_SUCCESS) return status;
-    status=MPI_Isend(t.send_host[1],static_cast<int>(count),MPI_DOUBLE,t.upper[axis],1,t.communicator,&t.requests[3]);
+    status=MPI_Isend(send[1],static_cast<int>(count),MPI_DOUBLE,t.upper[axis],1,t.communicator,&t.requests[3]);
     if (status!=MPI_SUCCESS) return status;
-    status=MPI_Waitall(4,t.requests,MPI_STATUSES_IGNORE);
+    if (t.timing) {
+        t.metrics[1]+=MPI_Wtime()-posted;
+        t.metrics[4]+=2.0*bytes;
+        if (t.mode==ASTR_HALO_PINNED) t.metrics[5]+=4.0*bytes;
+    }
+    return 0;
+}
+
+extern "C" int astr_device_exchange_end(void *handle,int field,int axis,int reconcile)
+{
+    if (!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
+    astr::State &s=*static_cast<astr::State *>(handle);
+    if (!s.transport) return ASTR_DEVICE_NOT_ALLOCATED;
+    astr::HaloTransport &t=*s.transport;
+    if (!t.active || field!=t.field || axis!=t.axis || reconcile!=t.reconcile)
+        return ASTR_DEVICE_INVALID_ARGUMENT;
+    if (t.sizes[axis]==1) { t.active=false;return 0; }
+    const AstrDeviceView view=s.fields[field].view;
+    const int n1=s.upper[(axis+1)%3]+1,n2=s.upper[(axis+2)%3]+1;
+    const int width=s.halo+(reconcile ? 1 : 0),first=reconcile ? 0 : 1;
+    const size_t count=static_cast<size_t>(width)*n1*n2*view.extent[3]*view.extent[4],bytes=count*sizeof(double);
+    const double started=t.timing ? MPI_Wtime() : 0;
+    int status=MPI_Waitall(4,t.requests,MPI_STATUSES_IGNORE);
     if (status!=MPI_SUCCESS) return status;
-    for (int side=0;side<2;++side) {
-        err=cudaMemcpyAsync(t.recv_device[side],t.recv_host[side],bytes,cudaMemcpyHostToDevice,s.stream);
+    const double received=t.timing ? MPI_Wtime() : 0;
+    if (t.timing) t.metrics[2]+=received-started;
+    for (int side=0;t.mode==ASTR_HALO_PINNED && side<2;++side) {
+        const cudaError_t err=cudaMemcpyAsync(t.recv_device[side],t.recv_host[side],bytes,cudaMemcpyHostToDevice,s.stream);
         if (err!=cudaSuccess) return static_cast<int>(err);
     }
     unpack<<<(count+threads-1)/threads,threads,0,s.stream>>>(view,axis,s.upper[axis],width,first,n1,n2,count,
         t.recv_device[0],t.recv_device[1],reconcile);
-    return astr::finish_launch(s);
+    status=astr::finish_launch(s);
+    if (t.timing) t.metrics[3]+=MPI_Wtime()-received;
+    if (status==0) t.active=false;
+    return status;
+}
+
+extern "C" int astr_device_exchange_axis(void *handle,int field,int axis,int reconcile)
+{
+    const int status=astr_device_exchange_begin(handle,field,axis,reconcile);
+    return status==0 ? astr_device_exchange_end(handle,field,axis,reconcile) : status;
+}
+
+extern "C" int astr_device_transport_metrics(void *handle,double values[6],int reset)
+{
+    if (!handle || !values) return ASTR_DEVICE_INVALID_ARGUMENT;
+    astr::HaloTransport *t=static_cast<astr::State *>(handle)->transport;
+    if (!t) return ASTR_DEVICE_NOT_ALLOCATED;
+    if (t->active) return ASTR_DEVICE_INVALID_ARGUMENT;
+    for (int n=0;n<6;++n) { values[n]=t->metrics[n];if (reset) t->metrics[n]=0; }
+    return 0;
 }

@@ -5,6 +5,7 @@ program rhs_probe
   use hdf5
   use device_state
   use device_halo
+  use halo_transport
   use fluid_explicit
   use fluid_step, only: fluid_advance_stage
   implicit none
@@ -72,6 +73,8 @@ program rhs_probe
       int(hm,c_int),int(debug,c_int),handle),'create')
     call check(fluid_prepare(handle,1_c_int),'prepare primitives and gradients')
     call check(fluid_rhs_prepare(handle,1_c_int),'prepare RHS')
+    call check(device_transport_prepare(handle,int(MPI_COMM_SELF,c_int),[0_c_int,0_c_int,0_c_int], &
+      [0_c_int,0_c_int,0_c_int],[1_c_int,1_c_int,1_c_int],6_c_int,halo_pinned,0_c_int),'prepare local transport')
     call local_halo_check()
     call upload(device_q,q)
     call check(device_state_upload(handle,device_rho,primitives(:,:,:,1),bytes(size(jac))),'rho upload')
@@ -141,7 +144,7 @@ program rhs_probe
         do rk=1,3
           call check(fluid_advance_stage(handle,rk,1.d-3,1.4d0*.1d0**2,1.d0/(1.4d0-1.d0), &
             1600.d0,.72d0,(1.4d0-1.d0)*.1d0**2,110.3d0/273.15d0,1.d0+110.3d0/273.15d0, &
-            .true.,.true.,device_periodic_axis),'coupled periodic RK stage')
+            .true.,.true.,device_exchange_axis,device_exchange_begin,device_exchange_end),'coupled periodic RK stage')
         enddo
         if(mod(step_index,2)==0) then
           call check(device_state_download(handle,device_q,scratch(:,:,:,1:5),bytes(size(q))),'trajectory download')

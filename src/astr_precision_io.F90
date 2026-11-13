@@ -1,13 +1,26 @@
 module astr_precision_io
   use iso_c_binding, only: c_float,c_double
+  use iso_fortran_env, only: int32
   use astr_precision, only: real_kind,real_bytes
   implicit none
   private
   public :: read_source_reals,source_real_matches
+  public :: pack_logical32,unpack_logical32
   interface read_source_reals
     module procedure read_source_scalar,read_source_vector,read_source_matrix
   end interface
 contains
+  elemental integer(int32) function pack_logical32(value) result(word)
+    logical,intent(in) :: value
+    word=merge(1_int32,0_int32,value)
+  end function
+
+  elemental logical function unpack_logical32(word) result(value)
+    integer(int32),intent(in) :: word
+    ! Existing NVHPC batches use -1 for true; never load that as GNU LOGICAL.
+    value=word/=0_int32
+  end function
+
   elemental logical function source_real_matches(saved,configured,source_bytes) result(matches)
     real(real_kind),intent(in) :: saved,configured
     integer,optional,intent(in) :: source_bytes

@@ -120,11 +120,24 @@ def check_halos(fields, layout, axis, reconcile, label, exact=True):
 
 def analyze(directory, frozen):
     layout = layouts(directory)
+    log = (directory/'run.log').read_text()
+    modes = re.findall(r'^ASTR_GPU_CPP filter_workspace=(scalar|full)$', log, re.MULTILINE)
+    if len(modes) != 1:
+        raise AssertionError('missing solver filter storage identity')
+    scalar = modes[0] == 'scalar'
+    packets = ([(0, 0, 0)]+[(13, 1, 0)]*5+[(0, 2, 0)]+PACKETS[3:]) if scalar else PACKETS
+    components = COMPONENTS | {13: 1 if scalar else 5}
+    footprint = re.findall(r'^ASTR_GPU_CPP filter_workspace_bytes=(\d+)$', log, re.MULTILINE)
+    if footprint:
+        expected = int(np.prod(np.array(layout[0]['upper'])+2*layout[0]['halo'][0]+1))*8*components[13]
+        if len(footprint) != 1 or int(footprint[0]) != expected:
+            raise AssertionError('allocated filter workspace shape/bytes')
     reference = frozen/'evidence/standard_tgv_explicit10'
     terminal = {backend: checkpoint(reference/f'{backend}_np1_keep_x/outdat/new/checkpoints/step000000000004/state.h5')
                 for backend in ('cpu', 'gpu')}
     compare(terminal['cpu'], terminal['gpu'])
-    report = {'topology': layout[0]['topology'], 'terminal': {}, 'stages': {}, 'halo_phase_checks': 0}
+    report = {'topology': layout[0]['topology'], 'terminal': {}, 'stages': {}, 'halo_phase_checks': 0,
+              'filter_workspace': modes[0], 'filter_workspace_bytes_rank0': int(footprint[0]) if footprint else None}
     for rank, meta in layout.items():
         header, q = raw_field(directory/f'outdat/rhs.cpp_final.step00000004.rk01.rank{rank:08d}.bin')
         if header != (*meta['upper'], *meta['halo'], 5):
@@ -143,7 +156,7 @@ def analyze(directory, frozen):
     traced = list((directory/'outdat').glob('rhs.cpp_halo.*.bin'))
     if not traced:
         return report
-    if len(traced) != len(PACKETS)*3*len(layout):
+    if len(traced) != len(packets)*3*len(layout):
         raise AssertionError('incomplete exchange phase observations')
     for stage in (1, 2, 3):
         stage_references = {}
@@ -177,12 +190,12 @@ def analyze(directory, frozen):
         for axis in range(3):
             check_halos(qfields, layout, axis, True, f'prepared/rk{stage}')
             check_halos(primitives, layout, axis, False, f'primitive/rk{stage}', exact=False)
-        for sequence, (field, axis, reconcile) in enumerate(PACKETS, 1):
+        for sequence, (field, axis, reconcile) in enumerate(packets, 1):
             fields = {}
             for rank, meta in layout.items():
                 filename = f'rhs.cpp_halo.step00000000.rk{stage:02d}.exchange{sequence:02d}.rank{rank:08d}.bin'
                 header, fields[rank] = raw_field(directory/'outdat'/filename, packet=True)
-                if header != (*meta['upper'], *meta['halo'], COMPONENTS[field], field, axis, reconcile, sequence):
+                if header != (*meta['upper'], *meta['halo'], components[field], field, axis, reconcile, sequence):
                     raise AssertionError('field/axis/reconciliation identity mismatch')
                 coordinates = np.indices(fields[rank].shape[:3])-meta['halo'][0]
                 keep = np.ones(coordinates.shape[1:], bool)
@@ -192,7 +205,7 @@ def analyze(directory, frozen):
                 if np.any(fields[rank][~keep].view(np.uint64) != 0):
                     raise AssertionError('observation padding is not positive zero')
             check_halos(fields, layout, axis, bool(reconcile), f'field{field}/rk{stage}/exchange{sequence}')
-            if sequence == 9:
+            if sequence == len(packets)-6:
                 for rank, values in fields.items():
                     bits_equal(axis_region(values, layout[rank], axis), axis_region(qfields[rank], layout[rank], axis),
                                'observation versus independent full-q download')
@@ -210,6 +223,8 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--sanitizer', choices=['memcheck', 'initcheck'])
     parser.add_argument('--include-quad', action='store_true')
+    parser.add_argument('--workspace', choices=['full', 'scalar'], default='full')
+    parser.add_argument('--transport', choices=['pinned', 'device'], default='pinned')
     options = parser.parse_args()
     if options.analyze:
         result = analyze(options.analyze, options.reference)
@@ -223,12 +238,15 @@ def main():
     frozen = options.reference.resolve()
     source = frozen/'evidence/standard_tgv_explicit10/cpu_np1_keep_x/datin'
     environment = os.environ | dict(OMPI_MCA_pml='ob1', OMPI_MCA_btl='self,vader,tcp', OMPI_MCA_osc='pt2pt',
-        OMPI_MCA_coll='^cuda,hcoll,ucc', OMPI_MCA_opal_cuda_support='0', ASTR_GPU_FILTER_WORKSPACE='full',
-        ASTR_GPU_HALO_TRANSPORT='pinned', ASTR_CFL_PROFILE_Y='1', ASTR_VALIDATION_RHS_PREFIX='outdat/rhs')
+        OMPI_MCA_coll='^cuda,hcoll,ucc', OMPI_MCA_opal_cuda_support='0', ASTR_GPU_FILTER_WORKSPACE=options.workspace,
+        ASTR_GPU_HALO_TRANSPORT=options.transport, ASTR_CFL_PROFILE_Y='1', ASTR_VALIDATION_RHS_PREFIX='outdat/rhs')
+    if options.transport == 'device':
+        environment.update(OMPI_MCA_pml='ucx', OMPI_MCA_opal_cuda_support='1')
     report = {}
     matrix = validation_cases(options.include_quad)
     if options.sanitizer:
-        matrix = [('np2_x_trace', 2, (2, 1, 1), True, 'dependency')]
+        selected = 'np2_y_trace' if options.workspace == 'scalar' else 'np2_x_trace'
+        matrix = [case for case in matrix if case[0] == selected]
     for name, ranks, topology, trace, sync in matrix:
         directory = options.output/name
         prepare_case(directory, source, True, True, False)
@@ -241,8 +259,11 @@ def main():
                            *(['--leak-check', 'full'] if options.sanitizer == 'memcheck' else []), *application]
         command = [str(options.mpiexec), '--bind-to', 'none', '-n', str(ranks), *application]
         with (directory/'run.log').open('w') as log:
-            subprocess.run(command, cwd=directory, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+            subprocess.run(command, cwd=directory, env=env, stdin=subprocess.DEVNULL,
+                           stdout=log, stderr=subprocess.STDOUT, check=True)
         report[name] = analyze(directory, frozen)
+        if report[name]['filter_workspace_bytes_rank0'] is None:
+            raise AssertionError('current runtime did not report its allocated filter workspace')
         if not trace:
             target = options.output/('np2_x_plain' if sync == 'explicit' else name.replace('_plain', '_trace'))
             for rank, meta in layouts(directory).items():
