@@ -128,6 +128,15 @@ contains
     control_changed=.false.
     phase_started=insitu_clock()
     call poll_catalog_watch(identity%step,real(identity%time,real64),[ia,ja,ka],numq,MPI_COMM_WORLD,changed,update_message)
+#ifdef ASTR_GPU_CPP
+    block
+      use commvar, only: use_gpu
+      if(use_gpu.and.runtime_catalog_count()>0) then
+        if(rank==0) write(*,'(a)') 'C++ dynamic product field providers are not implemented'
+        call MPI_Abort(MPI_COMM_WORLD,1,err)
+      endif
+    end block
+#endif
     call report_insitu_timing('index_slice_catalog',phase_started,identity%step)
     dirty=changed.or.len(update_message)>0
     control_changed=changed

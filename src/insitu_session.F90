@@ -813,6 +813,9 @@ contains
       call require_sample(ok,trim(message))
       formal=.true.
       enabled=options%enabled
+#ifdef ASTR_GPU_CPP
+      call require_sample(.not.(enabled.and.use_gpu),'C++ device in-situ field providers are not implemented')
+#endif
       configured=.true.
       statistics_configured=.true.
       oracle_io=.false.
@@ -1720,7 +1723,7 @@ contains
     open(newunit=unit,file=trim(filename),status='new',access='stream',form='unformatted', &
          action='write',convert='little_endian',iostat=status)
     call require_sample(status==0,'cannot create statistics output')
-    write(unit,iostat=status) 'ASTRST01',int([1,step,mpirank,im+1,jm+1,km+1,ig0,jg0,kg0],int32), &
+    write(unit,iostat=status) 'ASTRST01',int([integer(int64) :: 1,step,mpirank,im+1,jm+1,km+1,ig0,jg0,kg0],int32), &
       t,statistics_window,volume,rms_local,rms_regional,output
     close(unit,iostat=close_status)
     call require_sample(status==0.and.close_status==0,'cannot write statistics output')
@@ -1729,7 +1732,7 @@ contains
       open(newunit=unit,file=trim(filename),status='new',access='stream',form='unformatted', &
            action='write',convert='little_endian',iostat=status)
       call require_sample(status==0,'cannot create device statistics output')
-      write(unit,iostat=status) 'ASTRST01',int([1,step,mpirank,im,jm,km,ig0,jg0,kg0],int32), &
+      write(unit,iostat=status) 'ASTRST01',int([integer(int64) :: 1,step,mpirank,im,jm,km,ig0,jg0,kg0],int32), &
         t,statistics_window,volume,rms_local,rms_regional,gpu_output
       close(unit,iostat=close_status)
       call require_sample(status==0.and.close_status==0,'cannot write device statistics output')
@@ -2312,7 +2315,8 @@ contains
     open(newunit=unit,file=trim(filename),status='new',access='stream',form='unformatted', &
       action='write',convert='little_endian',iostat=status)
     call require_sample(status==0,'cannot create final statistics output')
-    write(unit,iostat=status) 'ASTRST01',int([1,statistics_step,mpirank,im+1,jm+1,km+1,ig0,jg0,kg0],int32), &
+    write(unit,iostat=status) 'ASTRST01',int([integer(int64) :: &
+      1,statistics_step,mpirank,im+1,jm+1,km+1,ig0,jg0,kg0],int32), &
       final_statistics_meta,final_statistics
     close(unit,iostat=closed)
     call require_sample(status==0.and.closed==0,'cannot write final statistics output')
@@ -2496,7 +2500,7 @@ contains
         convert='little_endian',action='write',iostat=status)
       call require_sample(status==0,'cannot create wall sample')
       write(unit,iostat=status) 'ASTRIW01', &
-        int([1,step,mpirank,shape(owned),ig0,jg0,kg0],int32),t,dt,coordinates,fields, &
+        int([integer(int64) :: 1,step,mpirank,shape(owned),ig0,jg0,kg0],int32),t,dt,coordinates,fields, &
         merge(1_int32,0_int32,owned)
       close(unit,iostat=closed)
       call require_sample(status==0.and.closed==0,'cannot write wall sample')
@@ -2525,7 +2529,7 @@ contains
       open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted', &
         convert='little_endian',action='write',iostat=status)
       call require_sample(status==0,'cannot create AIR5 wall sample')
-      write(unit,iostat=status) 'ASTRAW01',int([1,step,mpirank,shape(owned),ig0,jg0,kg0],int32), &
+      write(unit,iostat=status) 'ASTRAW01',int([integer(int64) :: 1,step,mpirank,shape(owned),ig0,jg0,kg0],int32), &
         t,dt,coordinates,fields,merge(1_int32,0_int32,owned)
       close(unit,iostat=closed)
       call require_sample(status==0.and.closed==0,'cannot write AIR5 wall sample')
@@ -2670,7 +2674,7 @@ contains
     allocate(fields(0:im,0:jm,0:km,11),stat=status)
     call require_sample(status==0,'cannot allocate sample buffer')
     call capture_sample(fields)
-    header=int([1,step,mpirank,im+1,jm+1,km+1,ig0,jg0,kg0],int32)
+    header=int([integer(int64) :: 1,step,mpirank,im+1,jm+1,km+1,ig0,jg0,kg0],int32)
     if(oracle_io) then
     write(filename,'(A,".step",I8.8,".rank",I8.8,".bin")') trim(prefix),step,mpirank
     open(newunit=unit,file=trim(filename),status='new',access='stream', &

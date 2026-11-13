@@ -618,7 +618,7 @@ contains
     open(newunit=unit,file=trim(filename),status='new',access='stream',form='unformatted', &
       action='write',convert='little_endian',iostat=status)
     call require(status==0,'cannot create wall scalar output')
-    write(unit,iostat=status) 'ASTRWS01',int([merge(2,1,real_bytes==4),last_step,mpirank,shape(owned), &
+    write(unit,iostat=status) 'ASTRWS01',int([integer(int64) :: merge(2,1,real_bytes==4),last_step,mpirank,shape(owned), &
       ig0,jg0,kg0,nfields,profile],int32), &
       [previous_time,window_saved,covered_duration],samples,xyz,moments,int(merge(1,0,owned),int32)
     close(unit,iostat=closed)

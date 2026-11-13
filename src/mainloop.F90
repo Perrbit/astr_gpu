@@ -67,6 +67,9 @@ module mainloop
 #ifdef _CUDA
     use cfl_gpu, only: collect_cfl_gpu,collect_timestep_rates_gpu
 #endif
+#ifdef ASTR_GPU_CPP
+    use fluid_runtime, only: collect_cfl_cpp,collect_timestep_rates_cpp
+#endif
     use ibmethod, only: ibforce
     use userdefine,only: udf_eom_set
     use parallel, only : bcast
@@ -184,6 +187,11 @@ module mainloop
         !
         nxtchkpt=nstep+feqchkpt
         !
+#ifdef ASTR_GPU_CPP
+        if(use_gpu) then
+          call cflcal(completed_step_dt,collect_cfl_cpp)
+        else
+#endif
 #ifdef _CUDA
         if(use_gpu) then
           call cflcal(completed_step_dt,collect_cfl_gpu)
@@ -191,6 +199,9 @@ module mainloop
 #endif
           call cflcal(completed_step_dt)
 #ifdef _CUDA
+        endif
+#endif
+#ifdef ASTR_GPU_CPP
         endif
 #endif
         !
@@ -352,6 +363,11 @@ module mainloop
     !
   contains
     subroutine select_next_dt()
+#ifdef ASTR_GPU_CPP
+      if(use_gpu) then
+        call select_run_timestep(collect_timestep_rates_cpp,MPI_COMM_WORLD,deltat,next_dt,control_ok,control_message)
+      else
+#endif
 #ifdef _CUDA
       if(use_gpu) then
         call select_run_timestep(collect_timestep_rates_gpu,MPI_COMM_WORLD,deltat,next_dt,control_ok,control_message)
@@ -359,6 +375,9 @@ module mainloop
 #endif
         call select_run_timestep(collect_timestep_rates_cpu,MPI_COMM_WORLD,deltat,next_dt,control_ok,control_message)
 #ifdef _CUDA
+      endif
+#endif
+#ifdef ASTR_GPU_CPP
       endif
 #endif
       if(.not.control_ok) then
@@ -569,6 +588,9 @@ module mainloop
   !| 04-Nov-2024: add all explicit rk time integrator into one routine |
   !+-------------------------------------------------------------------+
   subroutine time_integration_rk(timerept)
+#ifdef ASTR_GPU_CPP
+    use fluid_runtime, only: cpp_time_integration
+#endif
     !
     use commvar,  only : im,jm,km,numq,deltat,lfilter,feqchkpt,hm,     &
                          lavg,feqavg,nstep,limmbou,turbmode,feqslice,  &
@@ -658,6 +680,13 @@ module mainloop
     time_beg=ptime()
     cpu_rk_timing=benchmark_cpu_rk_timing_enabled()
     cpu_statistics_seconds=0.e0_clock_kind
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) then
+      call cpp_time_integration(time_start)
+      rkfirst_pending=.false.
+      return
+    endif
+#endif
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
       (convection_form=='keep'.or.viscous_form=='me6_opti'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
@@ -710,7 +739,7 @@ module mainloop
       call gpu_end_complete_step_timing()
       return
     endif
-#else
+#elif !defined(ASTR_GPU_CPP)
     if(use_gpu) then
       stop 'Input requested use_gpu=t, but this binary was not built with ASTR_WITH_CUDA=ON'
     endif
@@ -1287,6 +1316,10 @@ module mainloop
   !| 27-Nov-2018: Created by J. Fang @ Warrington                      |
   !+-------------------------------------------------------------------+
   subroutine crashcheck
+#ifdef ASTR_GPU_CPP
+    use commvar, only: use_gpu
+    use fluid_runtime, only: cpp_check_state
+#endif
     !
     use commvar,  only: hm
     use commarray,only: q,rho,tmp,prs,x,nodestat
@@ -1303,6 +1336,12 @@ module mainloop
     integer :: i,j,k,l,fh,ii,jj,kk
     logical :: ltocrash
     !
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) then
+      call cpp_check_state()
+      return
+    endif
+#endif
     ltocrash=.false.
 #ifdef _CUDA
     if(use_gpu.and.lcracon) then

@@ -487,6 +487,14 @@ contains
     character(16) :: validation_mode
     integer :: validation_status
 #endif
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) then
+      call check(.not.options%checkpoint%enabled.and..not.options%volume%enabled.and. &
+        .not.options%slices%enabled.and.len_trim(options%restore_directory)==0, &
+        'C++ device checkpoint/field publishers and restoration are not implemented (MB4)')
+      call check(.not.options%adaptive%enabled,'C++ adaptive-output field collector is not connected')
+    endif
+#endif
     call check(options%host_budget_bytes>0,'new output requires an explicit host buffer budget')
     if(options%volume%enabled.or.options%slices%enabled) call check(ndims==3.and. &
       ((numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb).or.air5_output_case()), &
@@ -690,6 +698,12 @@ contains
     character(*),intent(out) :: message
     logical :: requested_mean
     ok=.true.;message=''
+#ifdef ASTR_GPU_CPP
+    if(use_gpu.and.(candidate%crashfix.or.candidate%statistics%enabled)) then
+      ok=.false.;message='C++ crashfix and mean-field statistics are not connected'
+      return
+    endif
+#endif
     if(candidate%crashfix) then
       ok=numq==5.and.num_species==0.and..not.lcomb
       if(.not.ok) then

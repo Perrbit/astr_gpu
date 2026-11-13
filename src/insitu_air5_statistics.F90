@@ -386,7 +386,8 @@ contains
     open(newunit=unit,file=trim(filename),status='new',access='stream',form='unformatted',action='write', &
       convert='little_endian',iostat=status)
     call require(status==0,'cannot create volume statistics export')
-    write(unit,iostat=status) 'ASTRAS01',int([1,last_step,mpirank,extent,ig0,jg0,kg0,merge(1,0,reduction_saved)],int32), &
+    write(unit,iostat=status) 'ASTRAS01',int([integer(int64) :: &
+      1,last_step,mpirank,extent,ig0,jg0,kg0,merge(1,0,reduction_saved)],int32), &
       [previous_time,window_saved,covered_duration,volume_saved],samples,regional_values, &
       coordinates,weights,moments
     close(unit,iostat=closed)

@@ -44,6 +44,9 @@ program astr
                            gpu_after_refcal,gpu_after_alloc, &
                            gpu_after_flowinit,gpu_before_finalize
 #endif
+#ifdef ASTR_GPU_CPP
+  use fluid_runtime, only: cpp_after_flowinit,cpp_before_finalize
+#endif
 
   implicit none
 
@@ -152,12 +155,18 @@ program astr
 #ifdef _CUDA
     if(use_gpu) call gpu_after_flowinit()
 #endif
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) call cpp_after_flowinit()
+#endif
 
     call report_insitu_timing('solver_initialization',initialization_started,-1_int64)
     call steploop
     endif
 #ifdef _CUDA
     if(use_gpu) call gpu_before_finalize()
+#endif
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) call cpp_before_finalize()
 #endif
 
     call report_insitu_timing('solver_total_after_mpi',solver_started,-1_int64)
