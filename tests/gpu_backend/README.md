@@ -107,8 +107,8 @@ runtime confirmation in job 127808864: the bit checks passed without the
 `fluid_explicit` provides the temperature-based five-variable conversions, D6
 gradients with the full nine-entry metric projection, three directional CFL
 maxima, standard central convection, Sutherland nodal viscous flux/divergence,
-explicit tenth-order filtering and RK3 save/update. The baseline filter uses
-an optional full-five-component ping-pong buffer, not a scalar workspace.
+explicit tenth-order filtering and RK3 save/update. The filter supports a
+single-component 3-D workspace (default) or full-five-component ping-pong.
 All device kernels state their 512-thread launch bound; CUDA C++ contraction
 is disabled with `--fmad=false`. The shared reductions do not assume warp32.
 
@@ -118,7 +118,7 @@ halo-only refresh are separate operations; transverse indices are physical.
 never consumes undefined double/triple-outside corners. `fluid_step.F90`
 composes the original filtered RK stages through an explicit exchange callback,
 so no host field copy is needed inside a stage. The ordinary runtime now supplies
-the distributed pinned-host callback described below.
+the distributed pinned/device callbacks described below.
 
 `astr_backend_fluid` checks a modified-Fourier-symbol manufactured gradient,
 the original Fortran `cfl_spectrum` function and frozen conversion states.
@@ -168,10 +168,15 @@ explicit final-q snapshot when ASTR_VALIDATION_RHS_STEP selects the terminal
 step. This is a test readback, not a production checkpoint implementation.
 
 The implemented flow path is FP64, Cartesian periodic five-variable TGV,
-standard 643e convection/nodal viscosity, explicit10/full workspace and RK3.
+standard 643e convection/nodal viscosity, explicit10 and RK3.
+ASTR_GPU_FILTER_WORKSPACE selects scalar (default, one 3-D work field) or full
+(five work components). Scalar/full keep the same per-component x/y/z formula
+and terminal physical bits in the native eight-case matrix. The allocated
+workspace is reported, and scalar uses exactly one fifth of the full bytes.
 ASTR_GPU_SYNC_MODE supports dependency and explicit. CPU use_gpu=f still takes
-the original Fortran path. C++ crashfix, mean fields, production field/restart
-publishers and in-situ providers are not connected; no stale CPU proxy is used.
+the original Fortran path. C++ crashfix, mean fields and device in-situ providers
+are not connected. The initial MB4 output/restart bridge is described below;
+it explicitly publishes the device state, not a stale CPU proxy.
 
 run_cpp_tgv_gate.py runs the ordinary executable and compares fields, scalar
 outputs and timestep/CFL records with independent frozen CPU/CUDA Fortran
@@ -183,14 +188,22 @@ Checkpoints are disabled for the new GPU main; reference runs write only their
 final checkpoint. A --sanitizer option instruments the C++ run, not the frozen
 reference. All integration is performed by ASTR, not Python.
 
-## Pinned Halo Component
+## Halo Component And Split Exchange
 
-halo_transport creates fixed device/pinned send/receive slots once, a private
+halo_transport creates fixed send/receive slots once, a private
 duplicated MPI communicator when distributed axes exist, and fixed tags 0/1.
 Main-thread MPI owns requests; no communication thread is created. Local axes
 use explicit local periodic operations. The caller selects endpoint averaging
 or halo-only refresh; halo-only packets contain exactly hm layers, and only
-reconciliation packets add endpoints. Requests complete before slots are reused.
+reconciliation packets add endpoints. ASTR_GPU_HALO_TRANSPORT=pinned (default)
+uses four pinned and four device slots; device uses only the four device slots
+and passes their actual pointers to GPU-aware MPI. There is no automatic fallback.
+begin posts real nonblocking requests without Waitall; end drives progress on
+the caller thread and queues the unpack. The next begin completes preceding
+unpack work before MPI can overwrite reused receive slots. In-flight destroy,
+nested begin and mismatched/duplicate end are tested. Stress-x exchange can run
+while the independent convection kernel executes; other exchanges retain their
+existing ordering. This is not a claim of complete communication hiding.
 
 astr_backend_halo and run_halo_components.py test NP=1 plus NP=2 x/y/z, hm=3/5
 and both sync modes. The independent Fortran reference uses array sections and
@@ -199,8 +212,15 @@ bit is compared after each averaging/refresh axis. q device addresses stay
 stable. All 28 configuration checks and two-rank memcheck pass locally.
 The ordinary runtime now uses this transport with the actual Fortran neighbors
 and topology. run_cpp_multi_tgv_gate.py checks the real main at NP=1 and NP=2
-x/y/z, including each RK stage's q/primitive coherence and all 15 exchanges per
+x/y/z, including each RK stage's q/primitive coherence and 15 full/19 scalar exchanges per
 stage (filter, reconciliation, final halo refresh and viscous-flux exchange).
+--workspace scalar|full selects storage; --transport pinned|device selects MPI
+buffers in both the main driver and the halo component driver. Native device
+tests use UCX PML and CUDA awareness, with an explicitly supplied UCX module
+directory and UCX_MEMTYPE_CACHE=n on this installation. Without that setting,
+the static-CUDA application's device buffers were misclassified into CMA and
+failed with process_vm_readv Bad address. The failed records are retained; this
+configuration is not silently applied by ASTR and is not evidence for DCU MPI.
 Solver-owned origin/layout records locate each field within the independent
 frozen global reference. All hm layers and reconciled endpoints are checked
 bitwise. Observation copies have a separate six-component Fortran oracle,
@@ -238,3 +258,144 @@ scalars and timestep/CFL logs passed the frozen-reference comparison, with
 max field error 7.721471032007265e-15. See compare_cpp_main_results.py and
 the migration progress document for paths and per-variable errors. The full
 26-second batch duration includes initialization and I/O, not pure RK timing.
+
+## MB4 Checkpoints And Numerical Archives (In Progress)
+
+The ordinary C++ main now publishes q and, for exact checkpoints, the stored
+primitive caches through the existing HDF5 protocol. Restoration uploads the
+restored conservative/cached state and geometry; exact restoration does not
+replace caches with reconstructed values. Lean checkpoint writes skip primitive
+readback, preserving the existing physical-q-only role and resource contract.
+All transfers occur at explicit output/restore events, not every RK stage.
+
+Completed-step volume and JSONL instantaneous numerical-slice archives consume
+an explicit host publication of primitives. The host mirror is invalidated at
+RK entry and reused by products at the same complete state; download counters
+include these transfers. Derivatives/packing use the existing private host
+archive routines. This does not complete device in-situ/rendering providers,
+mean fields or adaptive dense-output monitoring.
+The retired &slices input is not re-enabled: numerical planes use product_catalog.
+
+run_cpp_restart_gate.py takes --binary, --reference, --mpiexec, --output and
+--ranks 1|2; --sync dependency|explicit and --mode exact|nonexact|all select the
+representative path, while --memcheck instruments actual MPI solver processes.
+--workspace default checks the actual baseline default and its control identity.
+It checks 4 continuous steps against restoration from the same trajectory's
+step-2 checkpoint, all exact dataset words, lean payloads, frozen-reference
+physical fields and output-on/off physical-q isolation.
+--automatic-reference points at the existing cpu_automatic/old_gpu_automatic
+reference pair from the frozen binaries and requires --mode exact. It checks
+restored dt history and complete-step records without comparing different
+physical times to the fixed-dt reference. The NP=2 x automatic test passed;
+non-exact automatic restart starts a new controller history and needs its own
+reference rather than a forced exact-trajectory assertion.
+
+run_cpp_archive_gate.py takes the same four paths and --ranks 1|2|4 (NP=4 uses
+2x2x1). It generates
+frozen CPU/CUDA Fortran references, then compares two complete-step volumes
+and 27 JSONL slice frames including derived quantities. --analyze-only reuses
+the generated artifacts without advancing flow again. Both local NP=1 and
+NP=2 x passed, but these bounded tests do not close the actual DCU restart
+matrix. Native four-way CPU/old-GPU/
+new-C++ non-exact transfers and NP=1/2 repartition have since passed.
+run_cpp_restart_gate.py --restore-source selects an external step-2 batch; --backend selects which
+ordinary frozen/new ASTR reads it. --keep 1|2 checks generated-batch retention.
+--automatic --mode nonexact compares the new controller history against
+independent frozen CPU/GPU restorations from the same batch, rather than a
+continuous trajectory ending at another physical time. --transport device
+also exercises exact restoration with actual device-buffer exchanges.
+--no-test-observations runs restoration without test snapshots and is used
+with the ordinary BUILD_TESTING=OFF binary. It does not claim the omitted
+output-on/off snapshot comparison.
+
+astr_backend_compare is a CPU-only C++17/HDF5 test utility for compute images
+without NumPy/h5py. `field REFERENCE_H5 RUN_DIRECTORY` checks all rank layouts
+and five physical components of the bounded step-4 TGV snapshots at scaled
+error <=2e-10. `exact STATE_A STATE_B` compares every root numeric dataset's
+shape/type/words in the current checkpoint protocol. It never advances a flow
+or runs as a production checkpoint check. Local positive cases match the Python
+analysis; a perturbed physical field and a one-ULP checkpoint change are both
+rejected. All MPI benchmark invocations use /dev/null stdin so a launcher cannot
+consume a surrounding case manifest.
+
+## Private ROCm MPI And Performance Work
+
+build_rocm_mpi.sh builds pinned UCX1.18.1/OpenMPI4.1.5 versions below an explicit
+work root, with GNU12 and the supplied DTK/ROCt paths. It requires HAVE_ROCM and
+HAVE_HIP before compilation and records library/configuration evidence. Public
+SDK installations are not modified. This login-node build is not a GPU-aware
+communication test; running or querying DCU Slurm jobs needs separate approval.
+
+run_cpp_performance.py disables large output and test field observations,
+retains per-step scalar statistics, and measures five five-step windows after
+five warmup steps. It takes the maximum accumulated rank time per window, then
+reports median/best seconds per step and strong-scaling metrics. --old-binary
+compares the independent frozen CUDA Fortran binary on the same machine;
+the common pinned baseline requires --sync explicit because the old pinned
+implementation does not admit dependency sync. C++ dependency/device results
+are separate configurations, not interchangeable old/new code speedups.
+ASTR_GPU_RK_TIMING=1 produces completed-RK timings excluding scalar-statistics
+work; ASTR_CPP_HALO_TIMING adds host send-ready/post/Waitall/unpack-enqueue
+durations, sent bytes and application staging bytes. Host intervals are not
+nonoverlapping device-time components, and zero application staging bytes do
+not prove the MPI library avoids its own host staging.
+
+prepare_cpp_mb45_batch.py prepares inputs only; --wire-followup reuses completed
+component evidence and retains 14 representative runs plus 10 timing runs.
+--archive-followup instead prepares only four 16-cubed, four-step runs:
+device NP=2 x and pinned NP=4 xy, each with archive output on/off. It does not
+repeat completed communication components, restart cases or performance windows.
+run_cpp_mb45_rocm.slurm runs the manifests with stdin closed and checks actual
+frame counts for io_archive using Bash, not merely the solver exit code. Submission
+and even scheduler queries still require separate, scoped user approval.
+analyze_cpp_mb45_results.py reads downloaded outputs without running a solver;
+archive datasets and product states also require run_cpp_archive_gate.py --analyze-only
+on the analysis machine; compute nodes need no Python interpreter.
+
+DCU jobs 127898190 and 127905611 provide actual pinned/device NP=1/2/4 data.
+The latter completed checkpoints and five-window timings, but all nine numerical
+slice products were disabled. GNU CPU-only, max_steps=0 reproduced successful
+allocation followed by a false agreement flag. index_slice_provider now returns
+the collective flag from a logical function instead of aliasing an input/output
+actual. Nine initial slices match the frozen NVHPC CPU to scaled error 6.67e-16;
+native NP=2 volumes/27 slices and output isolation pass. Actual DCU slice output
+passed NP=2 in job127915636, including all 27 frames and output isolation. That
+job stopped afterward because the old test script required python3 on compute
+nodes; the Bash frame-count check removes that dependency. Job127917357 then
+exposed inherited NP<=2 derived-volume admission before any RK step. Only the
+C++ GPU host-publication path now drops that rank-count restriction, retaining
+case/grid/operator/local-stencil checks and the old CPU/CUDA Fortran restrictions.
+The revised candidate builds and native NP=2 archive comparisons pass. After
+separate approval, job127919260 completed NP=4 output: two volumes and 27 slice
+frames match frozen CPU/CUDA Fortran, all nine products remain active, and
+terminal physical-q words equal the saved same-topology output-off run.
+MB4 is closed within the first-stage periodic FP64 TGV scope. The final reports
+are archive_127915636_np2/report.json and archive_127919260_np4/report.json below
+results/multi_backend_mb45_20261113; prior failed evidence is retained.
+
+checkpoint_logical_probe checks supported metadata flags: fixed-width int32
+0/1 writes and integer-to-logical decoding (including existing NVHPC -1 true).
+No floating-point state, record width or retired format changes. Actual exact
+restoration checks all 15 datasets; a real checkpoint-switch change remains an
+expected rejection. Private UCX may log a NULL pointer-info diagnostic around
+startup/shutdown or empty HDF5 selections. Representative measured RK windows
+contain none; no external-library patch or log suppression is applied.
+
+## 32-GiB DCU Scaling Campaign
+
+prepare_cpp_scaling32.py prepares ten configurations with three independent
+runs each: 384-cubed strong scaling, two pinned comparisons, and fixed-local-load
+weak scaling. Every run uses five warmup steps and ten measured steps. The
+rectangular-grid preparation and the 5+10 accounting were checked using a small
+native NP=2 run with no field/checkpoint output. Analyze downloaded results using
+--output CAMPAIGN --analyze-only; the report preserves the three raw samples,
+median/best/maximum and same-backend strong/weak scaling efficiencies.
+
+run_cpp_scaling32_rocm.slurm uses Bash only on compute nodes. Device/HDF5,
+four-rank halo and small frozen-reference checks precede timing. No GPU runtime
+was exercised on a login node. The initial 8-CPU, whole-node-memory request was
+rejected at submission by kshdnormal02's memory-per-CPU policy; no job was created.
+An authorized policy query found 32 CPUs/node and 3569 MiB/CPU. The user then
+approved 32 CPUs and an explicit 110 GiB request; the resource directives have
+been updated accordingly, with at most four MPI ranks and OMP_NUM_THREADS=1.
+Submission state is recorded separately; see documents/ASTR_DCU32_TGV_SCALING_PLAN.md.

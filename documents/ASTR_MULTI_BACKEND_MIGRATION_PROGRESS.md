@@ -1,9 +1,10 @@
 # ASTR 多后端迁移进度
 
 更新日期：2026-11-13。主计划：`ASTR_MULTI_BACKEND_MIGRATION_PLAN.md`。
-本轮 goal：完成 MB0--MB3，不包含完整输出/恢复、KEEP/ME6、紧致格式、
-复杂物理边界、AIR5 或原位渲染。不能据本轮完成宣称完整 ASTR 已适配 DCU。
-2026-11-13：MB0--MB3的工程与短窗数值门槛已完成，DCU多卡证据见第7.2节。
+截至MB5b的首期goal已完成，实施基线为ff7a320及本轮工作区改动，
+包含正式输出/恢复、性能基线及设备缓冲MPI；不包含KEEP/ME6、紧致格式、
+复杂物理边界、AIR5或原位渲染。不能据此宣称完整ASTR已适配DCU。
+2026-11-13：MB0--MB5b在上述周期TGV范围内完成。最终证据索引见第9.7节。
 
 ## 1. 当前状态
 
@@ -15,6 +16,9 @@
 | MB1 工程与状态 | 普通astr已在本地及DCU接通 | 根构建明确none/cuda/gpufusion；旧CUDA Fortran独立；use_gpu=f的同二进制CPU路径逐值一致；关闭测试/探针仍能构建运行 |
 | MB2 单rank TGV | 本地及DCU普通主程序通过128³/20步代表检查 | 固定/自动步长、TGV标量与CFL通过；本地另核对同步两模式及内存工具，不扩大为所有算例支持 |
 | MB3 多rank TGV | 本地NP=1/2及DCU NP=1/2/4通过 | NP=2 x/y/z、DCU NP=4 2×2×1；本地315/DCU495个交换相位；场、缓存、节点协调和观测/同步隔离通过 |
+| MB4 输出与续算 | 已完成首期闭环 | 本地及DCU精确/非精确恢复；DCU NP=2/4三维场、27切片及输出隔离通过；见9.7 |
+| MB5a 性能基线 | 已完成限定配置基线 | 本地新旧及DCU 128³五窗口；新C++本地单卡慢于旧实现，DCU四卡device效率79.86%；显存口径见9.4--9.5，不作跨硬件代码加速比较 |
+| MB5b 设备缓冲MPI | 已完成首期代表矩阵 | 本地NVIDIA及DCU NP=1/2/4、pinned/device和begin/end实际通过；不扩大到多节点/RDMA |
 
 ## 2. 冻结参考
 
@@ -376,7 +380,7 @@ MPI及原归一化继续在Fortran执行。完整CFL诊断保留方向最大值�
 
 证据在results/multi_backend_mb2_20261112/native/下的main_fixed_final/、
 main_automatic/、main_memcheck/、main_128_20/及diagnostics_integrated/。
-当前C++普通主程序未实现正式场、检查点、恢复、均值场、crashfix及原位
+该128³批次时C++普通主程序未实现正式场、检查点、恢复、均值场、crashfix及原位
 产品提供者；请求实际消费这些未接字段时明确报告，不借用过期CPU数组。
 静态几何仍可由原CPU初始化提供者输出，不因关闭检查点而禁用无关选项。
 
@@ -546,12 +550,319 @@ run_cpp_multi_tgv_gate.py中的analyze/layouts/physical/bits_equal。
    主计划独立推进，不能把本次组件通过等同于工具全部可用。
 2. 本地及DCU的pinned-host普通主程序门槛已完成；MB0--MB3本轮收口，不再
    为文档变更重复运行短测，也不据此扩展到未实现格式、边界或物理模型。
-3. 后续按主计划推进MB4的正式输出与恢复接口；当前C++后端这些消费者明确
-   未接入，不从陈旧CPU数组写场或伪装续算成功。具体Slurm作业仍分别授权。
+3. 当前已按主计划启动MB4，新增接口与尚未完成的矩阵见第9节；不从陈旧CPU
+   数组写场或伪装续算成功。具体Slurm作业仍分别授权。
 
 已知KEEP/ME6边界与几何问题继续按原记录处理，不纳入本轮修复或移植。
-MB4输出/恢复、MB5a性能及MB5b设备直接通信仍是后续独立任务。
+MB4输出/恢复、MB5a性能及MB5b设备直接通信属于当前新goal，尚未完成。
 用户追加：当前goal完成后，按既有A800显式格式的完整RK口径单独安排
 1/2/4卡性能与扩展测试；关闭正式场/检查点I/O，保留标量统计，预热及
 多轮计时。同硬件比较新旧实现，DCU/A800硬件结果分开说明；平台提交前
 另审阅具体参数。本轮数值验收的20步总耗时不直接作为性能结论。
+
+## 9. MB4--MB5b 实施进度
+
+### 9.1 本地检查点及数值存档
+
+复用现有checkpoint_state_io、output_archive及JSONL数值切片协议。
+fluid_runtime新增显式发布/导入接口，只在实际输出或恢复事件传输字段；
+普通RK入口使主机发布缓存失效，同一完整步的多个产品复用一次物性回读。
+精确恢复上传保存的q和六个原始量分量，不以重新计算值覆盖原缓存；非精确
+恢复使用原CPU侧重建合同再上传。非精确写出跳过物性缓存回读，文件保持
+role=11的仅物理节点q，不带缓存、重复节点/halo附属值或geometry.h5资源。
+当前q的事件回读仍为整个本地数组；尚未实现面向精简输出的专用设备打包。
+
+三维场和JSONL瞬时数值切片使用明确的主机存档提供者：事件发布原始量后，
+复用原主机只读导数/打包/HDF5代码；这不是新设备后处理或渲染管线的完成。
+平均场、渲染及自动密集输出信号仍有后续接线事项；单分量滤波已接通。
+保留现行不再接受&slices的输入合同，未新增旧格式兼容。
+
+| 实际检查 | 首轮结果 |
+|---|---|
+| 16³、dt=1e-3、4完整步、NP=1及NP=2 x | 连续4步对比从同一连续轨迹step2恢复至step4 |
+| 精确恢复 | state.h5全部15个数据集逐位一致，包含q、缓存、halo/重复节点和身份信息 |
+| 非精确恢复 | 与连续轨迹差为舍入量级；相对冻结CPU/旧GPU最大缩放场差约1.27e-15 |
+| 检查点输出开/关 | 终态物理q逐位一致；explicit与dependency均完成代表检查 |
+| NP=2 x自动步长精确恢复 | 15个HDF5数据集逐位一致；恢复后两步的step/time/dt序列与连续轨迹一致，连续序列也与既有冻结CPU/旧GPU自动步长参考一致 |
+| NP=1/2三维场及数值切片 | 每组2个三维场和27个切片，含基本量、速度导数/Q/涡量及切片密度梯度；先互校冻结CPU/GPU，再比较新实现，最大缩放差≤4.91e-15 |
+| 多产品与输出隔离 | 同一步共享物性发布；出档开/关终态物理q逐位一致 |
+| NP=2 dependency精确续算memcheck | 无输出、连续输出及恢复三个运行，每rank均0 errors、0 bytes leaked |
+
+代码：src_gpu/fluid_runtime.F90、src/output_runtime.F90、src/output_archive.F90、
+src/index_slice_archive.F90及index_slice_provider.F90。
+脚本：tests/gpu_backend/run_cpp_restart_gate.py、run_cpp_archive_gate.py。
+证据：results/multi_backend_mb4_20261113/native/下checkpoint_np1、
+checkpoint_np2_x、checkpoint_np2_dependency、checkpoint_np2_memcheck及
+checkpoint_np2_auto、checkpoint_default_storage、catalog_archives_np1/np2_x。
+单分量滤波现为约定默认，仍可显式选择full。scalar按分量完成x/y，再合并一次
+q的z向交换，最后逐分量完成z及回写；两模式保持各分量x/y/z运算顺序。
+本地8组scalar/full终态物理q逐位一致，实际工作区字节数为full的1/5；
+scalar矩阵399个rank交换相位、full315个，最大终态缩放场差均约1.27e-15。
+scalar NP=2 y的memcheck及initcheck无错误/泄漏。默认scalar的control.bin
+身份位为0，显式full为1；不再以错误身份绕过控制合同。
+
+补充代表证据：默认scalar NP=2精确15数据集逐位续算；冻结CPU或旧GPU
+NP=1检查点到新C++，以及新C++ NP=2精简检查点到冻结CPU/旧GPU NP=1，
+四向非精确恢复通过。自动步长非精确恢复按当前输入重建控制历史，用独立旧
+CPU/GPU从同一检查点恢复作对照，步长序列一致、最大场差约1.12e-15；
+此处不把不同物理时刻的连续轨迹当作参考。keep=1/2按实际新生成批次核对，
+恢复到新目录时不要求复制源目录的历史检查点。新非阻塞device路径的精确
+恢复也通过15数据集逐位比较及输出开关隔离。
+
+补充目录：scalar_tgv、full_tgv、filter_storage_comparison.json、scalar_memcheck、
+scalar_initcheck、scalar_checkpoint_default、scalar_cross_*、scalar_catalog_archives_np2、
+nonexact_auto_keep1_reference；设备传输续算见
+results/multi_backend_mb5b_20261113/native/device_restart_checked。
+archive脚本的--analyze-only可复用已有场文件，
+按产品/时刻匹配随机发布段目录，不为修正读文件定位而重复CFD推进。
+
+补核对TGV恢复采样：续算只生成step=2/3标量，step/time与参考相同，
+精确续算及自动非精确参考的五列输出均一致。关闭BUILD_TESTING/探针的普通
+C++构建也完成NP=2 dependency精确/非精确恢复，不要求不存在的测试快照。
+同一新二进制use_gpu=f的CPU精确/非精确恢复通过，未改变运行时后端选择。
+对应目录：runtime_off_dependency_restart、current_cpu_restart。
+
+本期TGV未启用平均统计，不将空窗口检查冒充平均统计框架完成。
+DCU后续证据及MB4的剩余切片问题见9.5--9.6；本地检查不单独放行DCU。
+
+### 9.2 公共MPI依赖预检
+
+只读检查明确设置OPAL_PREFIX到所选Open MPI4.1.5后，组件版本与根库一致。
+其构建命令指定UCX路径/opt/hpc/software/mpi/hpcx/v2.11.0/ucx_without_rocm；
+mca_pml_ucx.so的ldd也解析到该路径。ucx_info -v报告UCX1.13.0，配置明确
+--without-cuda --without-rocm；故不能用它证明DCU设备缓冲通信可用。
+已查看的SGMPI v2.11.0目录也只有ucx_without_rocm，未据此断言平台所有MPI
+都不支持ROCm，亦未向不支持的路径直接传设备地址碰运气。
+
+用户已批准仅在~/weiph内构建私有ROCm-aware UCX/Open MPI，必要时重编匹配
+HDF5；不改公共安装/SDK/驱动，Slurm运行仍另批。固定UCX1.18.1及OpenMPI4.1.5，
+沿用GNU12。第一次预检因DTK外层HSA头链接指向登录节点不存在的/opt/hyhal而
+未启用ROCm，已停止该构建，保留记录。改用SDK实际随包的.hyhal/include/hsa、
+hip/include与现有ROCt共享库后，HAVE_ROCM/HAVE_HIP均为1，libuct_rocm、
+libucm_rocm及perftest模块已安装；OpenMPI及匹配的并行Fortran HDF5 1.14.6
+构建安装均已完成。登录节点构建与后续实际DCU通信证据分别记录。
+脚本：tests/gpu_backend/build_rocm_mpi.sh。远端证据：
+~/weiph/private_rocm_mpi_20261113/build_dtk_payload.log。
+匹配HDF5构建日志为同目录build_hdf5.log。使用匹配wrapper避免HDF5探测继续
+注入公共MPI路径；未改动公共安装。
+计算镜像系统Python3.6没有NumPy/h5py，已增加仅供测试的C++/HDF5读取比较工具
+astr_backend_compare，先在本地核对真实多rank字段及15数据集精确状态，并以
+单点扰动/单ULP反例确认失败可检出；不为此安装新的Python环境或扩展推进器。
+
+### 9.3 非阻塞交换与本地设备缓冲
+
+halo_transport现提供begin/end：begin完成打包与发送就绪后发布Irecv/Isend，
+不执行Waitall；end由调用线程执行Waitall，再将接收内容解包到同一设备流。
+下一次begin在发布新接收前等待前次解包，避免固定recv槽被覆盖。正在交换时
+不允许嵌套begin、错配end或销毁状态；拒绝销毁时保留句柄，便于正常end。
+没有应用通信线程或MPI_THREAD_MULTIPLE要求。
+
+ASTR_GPU_HALO_TRANSPORT=pinned仍为默认，四个固定设备槽加四个固定pinned槽；
+device只分配设备槽，将实际设备指针交给MPI，不做应用层halo D2H/H2D。
+不自动切换后端。梯度/黏性通量先计算，发起stress-x交换后排入独立对流核，
+在end中推进MPI；对流RHS及后续黏性散度的累加顺序不变。当前只有该交换
+安排了计算重叠，不宣称所有方向/阶段已完全隐藏通信。
+
+本地两模式均通过28组hm=3/5、NP=1/2 x/y/z、同步及生命周期检查，所有交换
+位与独立Fortran包一致。普通主程序scalar/full与pinned/device四组各8组通过，
+包含399/315个rank交换相位、冻结参考、缓存、观测及同步隔离；pinned scalar
+NP=2 y的memcheck为0 errors/0 bytes leaked。计时启用的同一scalar矩阵也通过。
+证据：results/multi_backend_mb5b_20261113/native/下pinned_halo_fixed、
+device_halo_memtype_direct、pinned_tgv_scalar、device_tgv_scalar、pinned_tgv_full、device_tgv_full、
+pinned_memcheck及timed_pinned_tgv。
+
+本地HPC-X2.25.1/UCX1.20的CUDA模块存在，但默认内存类型缓存将设备地址错误
+送入CMA，process_vm_readv报Bad address。显式设置UCX_MEMTYPE_CACHE=n及实际
+UCX模块目录后通过；失败证据保留在device_halo_fixed、device_halo_uniform_ucx。
+这是本地启动配置，不写入求解器自动回退，不推及DCU。日志显示cuda_ipc lane
+可选，不单凭lane名称宣称每条消息零主机中转或RDMA。
+相关依据：[NVIDIA HPC-X UCX文档](https://networking-docs.nvidia.com/hpcxum/2.50/unified-communication-x-framework-library)。
+
+### 9.4 计时口径
+
+ASTR_GPU_RK_TIMING=1在C++后端记录每rank完整RK耗时及首stage准备时间，
+完整RK首尾确认设备完成，扣除TGV标量计算/写出时间；不包含完整步后的文件事件。
+ASTR_CPP_HALO_TIMING记录send-ready等待、MPI发布、Waitall、接收/解包提交的
+主机时长及发送/应用层拷贝字节数。主机分项含GPU依赖等待，不能相加称为
+独立GPU计算时间；device的应用层halo拷贝字节为0不表示MPI内部绝无中转。
+tests/gpu_backend/run_cpp_performance.py保留原始日志，预热5步后计5个5步窗口，
+每窗口取各rank累计时间最大值再除步数。正式场、检查点及测试快照均关闭，
+标量统计每步一致。冻结旧CUDA Fortran的pinned路径要求explicit同步，因此
+新旧同模式基线使用explicit；新C++ dependency另列，不混称同配置代码加速。
+
+本地RTX4000 Ada 19,195 MiB/卡、驱动595.99.02的128³结果，dt=2e-4、共30步：
+
+| 后端/同步/传输 | NP=1秒/步 | NP=2 x | NP=2 y | NP=2 z |
+|---|---:|---:|---:|---:|
+| 冻结CUDA Fortran / explicit / pinned | 0.064953 | 0.089661 | 0.082978 | 0.081906 |
+| 新C++ / explicit / pinned | 0.102259 | 0.097163 | 0.097081 | 0.096684 |
+| 新C++ / dependency / pinned | 0.100442 | 0.092425 | 0.096679 | 0.095184 |
+| 新C++ / dependency / device | 0.100585 | 0.061003 | 0.063265 | 0.062114 |
+
+各项为五个窗口的中位秒/步，不是取单步最小值。新C++的device相对pinned
+dependency约快1.52--1.53倍，强扩展效率x/y/z分别约82.44%/79.49%/80.97%。
+NP=1没有MPI跨rank传输，不把其device选项视作通信加速。相同explicit+pinned
+条件下，新C++单卡比旧CUDA Fortran慢约57.4%；没有达到旧后端单卡水平。
+这些是本地中等网格记录，不外推到DCU/A800或大规模生产。
+这里pinned选择Open MPI OB1，device选择CUDA-aware UCX；1.52--1.53倍是这两套
+明确配置的整体比较，不单独归因于某一次D2H/H2D的删除。
+
+另采集两套8步NP=1、scalar、explicit+pinned的Nsight Systems，目的为归因，
+不将采样耗时混入上述计时。两者各72次对流/72次黏性散度调用：新对流核
+累计268.206 ms、旧115.854 ms；新黏性散度205.973 ms、旧109.188 ms。
+两类核占新实现设备核累计时间约56.4%，是已测到的主要回退位置。通用视图
+索引和运算复用的具体优化需后续核级分析，未将其猜测当作已确认原因。
+CUPTI可见动态分配峰值：新1,044,555,372字节、旧1,241,941,504字节；此为CUDA API
+动态设备分配，不含完整驱动/上下文或系统显存峰值。另记录旧后端78,599字节
+设备静态符号。动态事件分配/释放总量闭合，不将静态符号的生命周期当作泄漏。
+
+原始证据：results/multi_backend_mb5a_20261113/native/下
+pinned_128_explicit、pinned_128_dependency、device_128_dependency及profiles/；
+profiles保留两套nsys-rep、SQLite、CSV和attribution.json，分析脚本为
+tests/gpu_backend/summarize_cpp_profiles.py。首次pinned_128目录保留旧实现
+拒绝dependency+pinned的记录，不纳入同配置比较。DCU记录见下节。
+
+### 9.5 DCU 两次已批准任务
+
+私有栈：DTK26.04/GNU12、ROCm-aware UCX1.18.1/OpenMPI4.1.5、
+匹配的并行Fortran HDF5 1.14.6。pinned使用OB1，device使用UCX并直接传入
+实际设备缓冲；显式设置UCX_MODULE_DIR及UCX_MEMTYPE_CACHE=n。
+device没有应用层halo主机中转，不据此断言MPI内部无中转或已经使用RDMA。
+
+| 任务 | 节点/结果 | 证据与问题 |
+|---|---|---|
+| 127898190 | b14r3n13，FAILED 1:0，68秒 | 21组主程序场/缓存/halo检查、1344个rank交换相位通过，最大终态缩放差1.12e-15；跨编译器恢复被LOGICAL编码差异拒绝，未进入计时 |
+| 127905611 | b13r4n01，COMPLETED 0:0，100秒 | 14组短运行与10组计时均完成；固定/自动精确续算15数据集逐位相同，跨CPU/旧GPU非精确恢复通过；两帧三维场通过，9个切片产品却被停用，因此不是完整输出通过 |
+
+检查点问题是控制元数据而非守恒量：NVHPC的LOGICAL真值为-1，GNU为1。
+经用户批准，当前受支持控制记录改为固定32位0/1写出，整数读取后规范化，
+也能读取既有NVHPC的-1真值；宽度、数值状态及精确续算合同不变。
+checkpoint_logical_probe在两种编译器上检查0/1/-1和字段宽度；实际恢复及
+“真正改变检查点开关仍应拒绝”的反例均已检查。未恢复废弃输出格式。
+
+下载的DCU非精确step2检查点已由本地独立冻结CPU及CUDA Fortran程序恢复，
+各自续算到step4，场与时间/采样身份检查通过；与前述冻结参考到DCU的恢复
+合并，形成跨平台双向非精确证据。目录为本地MB4/native/dcu_to_frozen_cpu及
+dcu_to_frozen_gpu，未在登录节点运行GPU。
+
+128³、dt=2e-4、scalar滤波、dependency同步、每步相同标量统计；预热5步，
+随后5个5步窗口。下表是最大rank累计RK时间换算的五窗口中位秒/步，
+不包含初始化、三维场、切片、检查点或测试快照写出。
+
+| 传输配置 | NP=1 | NP=2 x | NP=2 y | NP=2 z | NP=4 2×2×1 |
+|---|---:|---:|---:|---:|---:|
+| pinned / OB1 | 0.149037 | 0.103091 | 0.116100 | 0.109997 | 0.072267 |
+| device / ROCm-aware UCX | 0.149068 | 0.080428 | 0.082460 | 0.085049 | 0.046664 |
+
+device的NP=2 x/y/z强扩展效率为92.67%/90.39%/87.64%，NP=4为79.86%；
+pinned的NP=4为51.56%。同四卡两配置比较约1.55倍，不单独归因于去除拷贝。
+这是本次128³单节点基线，不代表生产规模最优性能。
+
+UCX在部分启动/结束及HDF5空选择处打印对NULL地址的pointer-info错误；
+任务和数值比较可完成。已检查代表NP=2/4的预热后窗口内无此信息，未修改
+外部库或抑制日志。此项不等同实际设备halo指针失败，仍作为依赖诊断保留。
+设备显存记录为初始化/结束的物理GPU free/total，不冒称进程峰值。
+
+证据：results/multi_backend_mb45_20261113/dcu_job127898190/及
+dcu_job127905611/，后者comparison.json含14组短测、10组计时及原始窗口。
+三维场单独比较见archive_127905611/volume_comparison.json。
+输入由prepare_cpp_mb45_batch.py生成，执行脚本run_cpp_mb45_rocm.slurm；
+分析脚本analyze_cpp_mb45_results.py不执行计算或调度操作。
+
+### 9.6 GNU 切片及四 rank 准入：过程记录
+
+第二个任务的9个切片被记为resource-disabled。登录节点用CPU-only普通astr、
+16³、max_steps=0复现：分配stat=0，本地成功标志为真，只有3703×4个FP64值，
+但传入/回写同一标志的汇总调用返回失败；不是显存或主机内存不足。
+将该内部汇总接口改为逻辑函数返回值，去除同一实参输入/输出别名，不改MPI
+MAX判据、分配大小或诊断公式。同一零步输入恢复9个初始切片，与冻结NVHPC
+CPU参考最大缩放差6.67e-16。此结果定位到接口用法，未声称复现独立编译器缺陷。
+临时诊断及未能复现问题的独立小探针已移除。
+
+本地最终接口通过NP=2的2三维场/27切片、冻结CPU/GPU比较及输出开关终态
+逐位隔离。批处理测试现明确检查9个产品active和0/2/4三时刻的27个文件，
+不再以求解器退出码0代替产品完成；未添加生产I/O重读或CRC。
+证据：results/multi_backend_mb45_20261113/gnu_zero_slice_function/comparison.json及本地
+results/multi_backend_mb4_20261113/native/gnu_flag_archive_recheck/。
+
+新候选astr_rocm_slice_function已在登录节点完成根构建，依赖无缺失；实际
+最终二进制use_gpu=f、max_steps=0输出9个切片，未推进RK或使用登录节点GPU。
+二进制SHA256为c26b1c9a439115664771405b417c5067771c89f0b188e2a92a8834380f804617。
+首次配置误用了h5pfc而缺少HL探测，改回此前已验证的h5hlfc后完成；未修改
+HDF5库或强行填入缺失依赖。对应build.log/build_hl.log均保留。
+
+剩余：另行申请一次仅针对正式输出的DCU短任务：16³、4步，NP=2 x的device及NP=4 2×2×1的pinned，各做出档/不出档
+两次；合计4个运行，每个出档运行核对2个三维场及27个切片，再检查终态
+输出隔离。prepare_cpp_mb45_batch.py --archive-followup只准备该矩阵，不提交。
+此前21组通信/数值、14组续算和10组计时证据保留，不重复全部矩阵。
+第三次作业经明确授权提交为127915636，b16r1n02，40秒，FAILED 127:0。
+两组无输出和NP=2 device出档均已运行；脚本随后因计算节点找不到python3
+而中止，NP=4 pinned出档未运行。此为测试脚本依赖错误，不是求解器崩溃。
+下载后用run_cpp_archive_gate.py --analyze-only核对NP=2：9产品active、
+2个三维场/27切片、冻结CPU/GPU字段及派生量比较、终态物理q输出隔离均通过。
+证据：dcu_job127915636/及archive_127915636_np2/report.json，均在本节所用
+results/multi_backend_mb45_20261113/下。原GNU切片问题已有实际DCU通过证据。
+
+计算节点检查已改用Bash数组统计预期帧数；产品状态和数值仍在下载后由Python
+结构化读取。用原失败目录确认可拒绝缺失切片，用完整本地目录确认接受；
+不新增解释器、不自动回退或重试，也不改生产I/O。此前错误脚本及日志保留。
+剩余NP=4单运行输入已准备为dcu_slice_np4_prepared，继续使用已验证的同一个
+二进制，无需重新编译。须另批新任务（1节点、4DCU/4rank、每rank2核、10分钟），
+只补这一个16³/4步出档运行；其无输出对照复用127915636已完成的NP=4结果。
+未取得该次授权前不提交，goal暂不标记完成。
+
+该单项随后获批并提交为127917357：b14r2n05、28秒、FAILED 1:0。
+尚未初始化流场时，configure_archives的历史NP<=2派生场准入拒绝了NP=4；
+不是数值失稳、设备通信失败或本次Bash检查失败。日志在dcu_job127917357/。
+此前没有在提交前检查到这项共享输出准入，因而该次作业未提供四卡出档证据。
+
+已检查output_fields的主机派生量提供者：按实际Fortran邻居交换私有速度halo，
+没有双rank计算假设；局部节点/模板宽度约束独立存在。现仅在ASTR_GPU_CPP
+且use_gpu=t时不使用历史rank数量上限，其余case、16³、显式格式和局部模板
+条件不变；旧CPU/旧CUDA Fortran的NP<=2条件不变。未新增算例名单或修改公式。
+本地普通C++根构建通过，NP=2的2场/27切片与冻结参考及输出隔离再次通过
+（native/np4_admission_np2_recheck）。三个旧拒绝测试仅同步错误消息文字。
+单独请求output_fields_probe目标曾报告目标不存在；普通astr已经成功构建，
+未将此未运行的探针声称为四rank验证。
+
+修订候选已在登录节点完成增量构建及依赖预检，SHA256为
+65d424cf71629e93a0ea49c4a2d4707bf0eda3270b1af4fccb2ed097a946d802；
+原c26b1c9a二进制另存为
+astr_rocm_np4_derived_candidate/astr_before_rank_admission；已有结果不覆盖。
+下一项仍仅是同样的NP=4出档短测，输入为dcu_np4_derived_prepared；
+再次提交须取得新的单任务授权，未自动重提。
+
+### 9.7 首期交付收口
+
+上述候选再次获得单任务授权后，127919260在b15r2n12正常完成，15秒、
+COMPLETED 0:0。运行仅为16³、NP=4（2×2×1）、pinned、4步出档检查，
+不是性能记录。其2个三维场和27个切片与独立冻结CPU/旧GPU比较通过，
+9个产品均active；对照127915636已完成的同拓扑pinned无输出轨迹，终态
+物理q逐位相同。各rank的初始/step2/step4产品共享一次原始量发布。
+报告：results/multi_backend_mb45_20261113/archive_127919260_np4/report.json；
+原始输入/日志/场：同根dcu_job127919260/。NP=2设备通信出档报告在
+archive_127915636_np2/report.json，最大缩放差4.30e-15。
+
+| 目标要求 | 已取得的实际证据 |
+|---|---|
+| 同一C++设备源、Fortran流程、运行时CPU/GPU选择 | 根CMake的cuda/gpufusion构建及普通astr；MB0--3的本地/DTK组件和主程序证据，参考0d0f367独立冻结 |
+| 五变量周期TGV常驻推进 | 本地NP=1/2、DCU NP=1/2/4；固定/自动步长，643e/643e、显式10阶滤波、RK3、逐场/缓存/halo与标量对照 |
+| scalar默认和full可选 | 本地8组两工作区终态逐位相同，scalar设备工作区为full的1/5；DCU代表full及scalar交换检查通过 |
+| 正式输出及恢复 | 本地正式场/切片，精确15数据集逐位恢复、非精确及保留1/2份；DCU固定/自动精确恢复及双向跨编译器/实现非精确恢复；DCU NP=2/4出档闭环 |
+| 只在明确事件发布整场 | 正常RK无整场主机镜像；出档同一步共享原始量回读，输出隔离逐位通过；精简检查点仍按既有合同重建 |
+| 真正设备缓冲MPI与非阻塞生命周期 | 本地两模式28组组件及四组主程序矩阵；DCU21组/1344个rank相位、NP=4观测隔离；begin发布请求不Waitall，end推进MPI并解包，固定槽重用前等待消费完成 |
+| 对照性能与通信/显存记录 | 本地explicit+pinned新旧同模式，另列dependency；DCU两传输×五拓扑，各5预热+5个5步窗口；完整RK、通信分项、物理GPU空闲/总量，本地另有Nsight动态分配峰值 |
+
+证据位置见9.1--9.5，未因出档接口修订重新跑全部矩阵。相对计时版本，
+最后修订仅影响切片成功标志及派生场准入，计时输入已关闭这些产品；
+设备算子、halo、RK及统计时序未变，因此复用原始计时，不把本轮15秒作性能。
+全部源码改动仍在feature/gpu_dev工作区，未执行Git写操作；平台旧任务与
+失败证据均保留，没有自动重试或更换通信后端。
+
+能力与剩余工作：本期仅FP64笛卡尔周期五变量TGV；新C++后端不是全部ASTR。
+本地新C++单卡相同模式下仍比冻结CUDA Fortran慢57.4%，热点为对流和黏性
+散度核；生产默认不因本次交付自动替换。DCU显存记录不是进程峰值，MPI内部
+是否中转、P2P/IPC或RDMA亦未由零应用拷贝直接证明。深度性能工具缺项与
+依赖的NULL pointer-info诊断保留为独立事项，不谎称已采集完整硬件指标。
+平均场/统计产品、自动密集输出信号、紧致/PCR、KEEP/ME6、复杂边界/CURVE、
+AIR5、低精度及设备原位渲染继续属于后续接线/MB6--MB9，不纳入本期完成声明。
