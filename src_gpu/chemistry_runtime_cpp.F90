@@ -1,5 +1,6 @@
 module chemistry_runtime_cpp
   use iso_c_binding, only: c_ptr,c_int,c_double,c_size_t
+  use iso_fortran_env, only: int64
   use mpi
   use astr_precision, only: real_bytes
   use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,numq,num_species,num_modequ, &
@@ -23,12 +24,16 @@ module chemistry_runtime_cpp
   use chemistry_device_boundary
   use chemistry_device_transport
   use chemistry_device_step
+  use chemistry_mean_statistics_cpp, only: accumulate_air5_mean_statistics_cpp,set_air5_mean_sampling_cpp
+  use chemistry_conservation_cpp, only: sample_air5_conservation_cpp
   implicit none
   private
   public :: initialize_air5_cpp,advance_air5_cpp,check_air5_cpp_state,transfer_air5_aux_cpp
+  public :: sample_air5_mean_cpp
   type(air5_rk_options),save :: options
   integer(c_int),save :: first(3,1),last(3,1),physical_low(3),physical_high(3)
-  logical,save :: reacts,open_x,hbl,normal,reports_only,packed,activity
+  integer(c_int),save :: recovered_core(3,2)
+  logical,save :: reacts,open_x,hbl,normal,reports_only,packed,activity,reuse_primitives
   real(c_double),save :: outlet_pressure,wall_temperature
 contains
   subroutine initialize_air5_cpp(handle,transport_mode)
@@ -57,8 +62,7 @@ contains
     if(hbl)call require(.not.air5_dynamic_top(),'AIR5 C++ characteristic top pending coupled validation')
     call require(.not.air5_symmetric_species_convection(),'AIR5 C++ symmetric projection pending NR1')
     call require(.not.(lfilter.and.air5_conservative_filter),'AIR5 C++ conservative filtering pending NR2')
-    call require(env_choice('ASTR_AIR5_PRIMITIVE_REUSE',[character(9)::'off','chemistry'])==0, &
-      'AIR5 C++ chemistry primitive reuse is not yet connected')
+    reuse_primitives=env_choice('ASTR_AIR5_PRIMITIVE_REUSE',[character(9)::'off','chemistry'])==1
 
     lower=[mpileft,mpidown,mpiback];upper=[mpiright,mpiup,mpifront]
     physical_low=merge(1,0,lower==MPI_PROC_NULL.and.periodic==0)
@@ -68,6 +72,10 @@ contains
     where(physical_high==1) options%ntypes=2
     where(physical_low==1.and.physical_high==1) options%ntypes=4
     first(:,1)=[is,js,ks];last(:,1)=[ie,je,ke]
+    recovered_core(:,1)=max(first(:,1),1_c_int)
+    recovered_core(:,2)=min(last(:,1),options%upper-1_c_int)
+    if(reuse_primitives.and.reacts)call require(all(recovered_core(:,2)>=recovered_core(:,1)), &
+      'AIR5 chemistry reuse requires a nonempty recovered interior')
     options%halo=hm;options%comm=MPI_COMM_WORLD;options%preserve=0
     options%convection_mode=air5_conv_full_state
     if(air5_convection_species_budget())options%convection_mode=air5_conv_species_budget
@@ -140,7 +148,8 @@ contains
     call transfer_air5_aux_cpp(handle,.false.)
     call check(air5_prepare_spatial_state(handle,options%upper,options%halo,options%preserve, &
       options%compensated,options%comm,state_boundary),'AIR5 initial spatial state')
-    if(lio)write(*,'(a,l1,a,l1)')'ASTR_GPU_CPP AIR5 resident RK3; Strang=',reacts,' compensation=',air5_compensated
+    if(lio)write(*,'(a,l1,a,l1,a,l1)')'ASTR_GPU_CPP AIR5 resident RK3; Strang=',reacts, &
+      ' compensation=',air5_compensated,' primitive_reuse=',reuse_primitives
   end subroutine
 
   subroutine transfer_air5_aux_cpp(handle,writing)
@@ -165,6 +174,11 @@ contains
     endif
   end subroutine
 
+  subroutine sample_air5_mean_cpp()
+    call set_air5_mean_sampling_cpp(.true.)
+    call accumulate_air5_mean_statistics_cpp(reshape([physical_low,physical_high],[3,2]))
+  end subroutine
+
   subroutine advance_air5_cpp(handle)
     type(c_ptr),intent(in) :: handle
     type(air5_rk_diagnostics) :: diagnostics
@@ -178,11 +192,13 @@ contains
       call chemistry_half(handle,1)
       call snapshot(handle,'post_chemistry',1)
     endif
+    call sample_air5_conservation_cpp(handle,int(nstep,int64),0)
     do rkstep=1,3
       call check(air5_rk_transport_stage(handle,rkstep,.true.,options,first,last,diagnostics, &
         state_boundary,no_boundary_rhs),'AIR5 transport stage')
       call snapshot(handle,'post_update',rkstep)
     enddo
+    call sample_air5_conservation_cpp(handle,int(nstep,int64)+1,1)
     if(reacts)then
       call snapshot(handle,'post_transport',1)
       call chemistry_half(handle,2)
@@ -205,14 +221,10 @@ contains
       write(*,'(a,6(es25.17,1x))') 'AIR5_CHEMISTRY_FAILURE carry=',local%failure_carry
     endif
     call check(status,'AIR5 chemistry half-step')
-    if(half==1.or.options%compensated)then
-      call check(air5_prepare_spatial_state(handle,options%upper,options%halo,options%preserve, &
-        options%compensated,options%comm,state_boundary),'AIR5 post-chemistry spatial state')
+    if(reuse_primitives)then
+      call refresh_after_chemistry(handle,half,recovered_core)
     else
-      if(hbl)call check(state_boundary(handle),'AIR5 post-chemistry HBL boundary')
-      call check(air5_device_primitives(handle,[0_c_int,0_c_int,0_c_int],options%upper,options%preserve), &
-        'AIR5 post-chemistry physical primitives')
-      call check_air5_cpp_state(handle)
+      call refresh_after_chemistry(handle,half)
     endif
     if(lio.and.report_step())then
       write(*,'(a,i0,a,5(es12.4,1x),a,4(i0,1x))') 'AIR5_CHEMISTRY half=',half, &
@@ -221,6 +233,24 @@ contains
       if(activity)write(*,'(a,i0,a,i0,a,i0)') 'AIR5_ACTIVITY half=',half,' skipped_calls=',global%skipped, &
         ' total_calls=',global%total
     endif
+  end subroutine
+
+  subroutine refresh_after_chemistry(handle,half,recovered)
+    type(c_ptr),intent(in) :: handle
+    integer,intent(in) :: half
+    integer(c_int),optional,intent(in) :: recovered(3,2)
+    if(half==1.or.options%compensated)then
+      call check(air5_prepare_spatial_state(handle,options%upper,options%halo,options%preserve, &
+        options%compensated,options%comm,state_boundary,recovered),'AIR5 post-chemistry spatial state')
+    else
+      if(hbl)call check(state_boundary(handle),'AIR5 post-chemistry HBL boundary')
+      call check(air5_refresh_physical_primitives(handle,options%upper,options%preserve,options%comm,recovered), &
+        'AIR5 post-chemistry physical primitives')
+    endif
+    if(present(recovered).and.report_step())write(*,'(a,i0,a,i0,a,i0,a,i0,a,i0)') &
+      'ASTR_AIR5_PRIMITIVE_SHELL rank=',mpirank,' step=',nstep,' half=',half, &
+      ' recovered_nodes=',product(int(recovered(:,2)-recovered(:,1)+1,int64)), &
+      ' physical_nodes=',product(int(options%upper+1,int64))
   end subroutine
 
   integer(c_int) function state_boundary(handle) result(status)

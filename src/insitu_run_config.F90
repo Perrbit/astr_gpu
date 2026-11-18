@@ -590,8 +590,10 @@ contains
       if((products=='channel_walls'.or.products=='air5_walls').and.rendering_pipeline=='compatible'.and..not.catalog) return
       message='resident wall separation reduction is not yet admitted'
       if(products=='channel_walls'.and.wall_separation) return
+#ifndef ASTR_GPU_CPP
       message='resident AIR5 volume statistics are not yet admitted'
       if(products=='air5_walls'.and.air5_volume_statistics) return
+#endif
     else
       message='postprocess_transport is only valid with processing_backend=device'
       if(postprocess_transport/='') return

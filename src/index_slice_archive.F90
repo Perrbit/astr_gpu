@@ -1121,6 +1121,15 @@ contains
     provider=state%definition%statistics_source
     if(state%definition%source=='instantaneous') then
       description='phase=completed_step; weight=not_applicable'
+    elseif(count>0.and.numq==11) then
+      provider='solver-samples'
+      write(description,'(a,2(es24.16,1x),a,i0,a,es24.16,a)') 'sample_time_range=',window,'; samples=',count, &
+        '; covered_duration=',measure,'; phase=completed_step'
+      if(state%definition%source=='favre') then
+        description=trim(description)//'; weight=density_time_integral'
+      else
+        description=trim(description)//'; weight=time_integral'
+      endif
     elseif(count>0) then
       provider='solver-samples'
       write(description,'(a,2(es24.16,1x),a,i0,a)') 'sample_time_range=',window,'; samples=',count, &

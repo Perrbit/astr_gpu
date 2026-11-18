@@ -10,6 +10,7 @@ using astr::at;
 struct Moments {
     astr::State *parent=nullptr;
     int owned[3]{};
+    int groups=1;
     size_t nodes=0;
     Real *state=nullptr;
     Real *weights=nullptr,*spatial=nullptr;
@@ -21,7 +22,8 @@ struct Moments {
 };
 int64_t bytes(const Moments &p)
 {
-    return 30*p.nodes*sizeof(Real)+sizeof(int)+(p.weights?p.nodes*sizeof(Real):0)+(p.spatial?6*sizeof(Real):0);
+    return 30*p.groups*p.nodes*sizeof(Real)+sizeof(int)+(p.weights?p.nodes*sizeof(Real):0)+
+        (p.spatial?(p.groups==4?7:6)*sizeof(Real):0);
 }
 int release(Moments *p)
 {
@@ -46,14 +48,33 @@ __device__ void result(const Real s[30],Real r[41])
         for(int a=0;a<3;++a) {r[a+8]=sqrt(r[14+4*a]);r[a+11]=sqrt(r[23+4*a]);}
     }
 }
-__global__ __launch_bounds__(512) void push(AstrDeviceView q,Real *state,int nx,int ny,size_t nodes,
+struct Air5Samples {AstrDeviceView rho,vel,t,tv,species;};
+template<bool air5>
+__global__ __launch_bounds__(512) void push(AstrDeviceView q,Air5Samples samples,Real *state,int nx,int ny,size_t nodes,
     Real w0,Real w1,bool previous,int *invalid)
 {
     const size_t n=static_cast<size_t>(blockIdx.x)*blockDim.x+threadIdx.x;
     if(n>=nodes) return;
     const int i=n%nx,j=(n/nx)%ny,k=n/(static_cast<size_t>(nx)*ny);
-    const Real current_rho=at(q,i,j,k);
+    Real current_rho=1,current[3];
+    if(air5) {
+        const int g=blockIdx.y;
+        state+=30*g*nodes;
+        if(g==0) {
+            current_rho=at(samples.rho,i,j,k);
+            for(int a=0;a<3;++a)current[a]=at(samples.vel,i,j,k,a+1);
+        } else if(g==1) {
+            current[0]=at(samples.t,i,j,k);current[1]=at(samples.tv,i,j,k);current[2]=at(samples.species,i,j,k);
+        } else if(g==2) {
+            for(int a=0;a<3;++a)current[a]=at(samples.species,i,j,k,a+2);
+        } else {
+            current[0]=at(samples.species,i,j,k,5);current[1]=0;current[2]=0;
+        }
+    } else {
+        current_rho=at(q,i,j,k);
+    }
     if(!(isfinite(current_rho) && current_rho>0)) {atomicExch(invalid,1);return;}
+    if(!air5)for(int a=0;a<3;++a)current[a]=at(q,i,j,k,a+2)/current_rho;
     Real s[30]{};
     if(previous) for(int a=0;a<30;++a) s[a]=state[n+nodes*a];
     for(int e=0;e<2;++e) {
@@ -61,7 +82,7 @@ __global__ __launch_bounds__(512) void push(AstrDeviceView q,Real *state,int nx,
         if(w==0) continue;
         const Real rho=e==0?s[0]:current_rho;
         Real u[3];
-        for(int a=0;a<3;++a) u[a]=e==0?s[a+1]:at(q,i,j,k,a+2)/rho;
+        for(int a=0;a<3;++a) u[a]=e==0?s[a+1]:current[a];
         for(int f=0;f<2;++f) {
             const int total_slot=4+f,mean_slot=6+3*f,central_slot=12+9*f;
             if(f==1) w=w*rho;
@@ -82,11 +103,13 @@ __global__ __launch_bounds__(512) void push(AstrDeviceView q,Real *state,int nx,
         }
     }
     s[0]=current_rho;
-    for(int a=0;a<3;++a) s[a+1]=at(q,i,j,k,a+2)/current_rho;
+    for(int a=0;a<3;++a) s[a+1]=current[a];
     for(int a=0;a<30;++a) if(!isfinite(s[a])) {atomicExch(invalid,1);return;}
     for(int a=0;a<3;++a) if(s[12+4*a]<0 || s[21+4*a]<0) {atomicExch(invalid,1);return;}
-    Real r[41];result(s,r);
-    for(int a=0;a<41;++a) if(!isfinite(r[a])) {atomicExch(invalid,1);return;}
+    if(!air5) {
+        Real r[41];result(s,r);
+        for(int a=0;a<41;++a) if(!isfinite(r[a])) {atomicExch(invalid,1);return;}
+    }
     for(int a=0;a<30;++a) state[n+nodes*a]=s[a];
 }
 __global__ __launch_bounds__(512) void output(const Real *state,Real *values,size_t nodes)
@@ -98,13 +121,14 @@ __global__ __launch_bounds__(512) void output(const Real *state,Real *values,siz
     result(s,r);
     for(int a=0;a<41;++a) values[n+nodes*a]=r[a];
 }
+template<bool include_measure>
 __global__ void spatial(const Real *state,const Real *weights,Real *values,size_t nodes)
 {
     __shared__ Real scratch[256];
-    const int lane=threadIdx.x,component=blockIdx.x;
+    const int lane=threadIdx.x,component=static_cast<int>(blockIdx.x)-(include_measure?1:0);
     Real value=0;
     for(size_t n=lane;n<nodes;n+=256) {
-        Real entry=state[n+nodes*(component+1)];
+        Real entry=component<0?Real(1):state[n+nodes*(component+1)];
         if(component>=3) entry=state[n+4*nodes]>0?state[n+nodes*(12+4*(component-3))]/state[n+4*nodes]:Real(0.);
         value+=entry*weights[n];
     }
@@ -113,28 +137,33 @@ __global__ void spatial(const Real *state,const Real *weights,Real *values,size_
         if(lane<stride) scratch[lane]+=scratch[lane+stride];
         __syncthreads();
     }
-    if(lane==0) values[component]=scratch[0];
+    if(lane==0) values[blockIdx.x]=scratch[0];
 }
-}
-
-extern "C" int astr_insitu_moments_create(void *parent,const int owned[3],const Real window[2],void **moments)
+int create(void *parent,const int owned[3],const Real window[2],int groups,void **moments)
 {
     if(!parent || !owned || !window || !moments || !std::isfinite(window[0]) ||
         !std::isfinite(window[1]) || window[1]<=window[0]) return ASTR_DEVICE_INVALID_ARGUMENT;
     *moments=nullptr;
     auto &s=*static_cast<astr::State *>(parent);
+    if(groups==4 && (!s.air5_ready || sizeof(Real)!=sizeof(double)))return ASTR_DEVICE_INVALID_ARGUMENT;
     for(int a=0;a<3;++a) if(owned[a]<1 || owned[a]>s.upper[a]+1) return ASTR_DEVICE_INVALID_ARGUMENT;
     auto *p=new(std::nothrow) Moments;
     if(!p) return static_cast<int>(cudaErrorMemoryAllocation);
-    p->parent=&s;p->nodes=1;
+    p->parent=&s;p->nodes=1;p->groups=groups;
     for(int a=0;a<3;++a) {p->owned[a]=owned[a];p->nodes*=owned[a];}
     p->window[0]=window[0];p->window[1]=window[1];
-    int status=static_cast<int>(cudaMalloc(reinterpret_cast<void **>(&p->state),30*p->nodes*sizeof(Real)));
+    int status=static_cast<int>(cudaMalloc(reinterpret_cast<void **>(&p->state),30*groups*p->nodes*sizeof(Real)));
     if(status==0) status=static_cast<int>(cudaMalloc(reinterpret_cast<void **>(&p->invalid),sizeof(int)));
     if(status!=0) {release(p);return status;}
     p->borrowed=true;++s.moment_plans;p->peak=bytes(*p);*moments=p;
     return 0;
 }
+}
+extern "C" int astr_insitu_moments_create(void *parent,const int owned[3],const Real window[2],void **moments)
+{return create(parent,owned,window,1,moments);}
+extern "C" int astr_insitu_moments_create_air5(void *parent,const int owned[3],const Real window[2],void **moments)
+{return create(parent,owned,window,4,moments);}
+
 extern "C" int astr_insitu_moments_push(void *moments,Real time,const Real weights[2])
 {
     if(!moments || !weights) return ASTR_DEVICE_INVALID_ARGUMENT;
@@ -144,8 +173,15 @@ extern "C" int astr_insitu_moments_push(void *moments,Real time,const Real weigh
         (!p.previous && (weights[0]!=0 || weights[1]!=0))) return ASTR_DEVICE_INVALID_ARGUMENT;
     int status=static_cast<int>(cudaMemsetAsync(p.invalid,0,sizeof(int),s.stream));
     if(status!=0) return status;
-    push<<<(p.nodes+511)/512,512,0,s.stream>>>(s.fields[ASTR_DEVICE_Q].view,p.state,p.owned[0],p.owned[1],
-        p.nodes,weights[0],weights[1],p.previous,p.invalid);
+    if(p.groups==4) {
+        const Air5Samples sample{s.fields[ASTR_DEVICE_RHO].view,s.fields[ASTR_DEVICE_VELOCITY].view,
+            s.fields[ASTR_DEVICE_TEMPERATURE].view,s.fields[ASTR_DEVICE_AIR5_TV].view,s.fields[ASTR_DEVICE_AIR5_SPECIES].view};
+        push<true><<<dim3((p.nodes+511)/512,4),512,0,s.stream>>>(AstrDeviceView{},sample,p.state,p.owned[0],p.owned[1],
+            p.nodes,weights[0],weights[1],p.previous,p.invalid);
+    } else {
+        push<false><<<(p.nodes+511)/512,512,0,s.stream>>>(s.fields[ASTR_DEVICE_Q].view,Air5Samples{},p.state,
+            p.owned[0],p.owned[1],p.nodes,weights[0],weights[1],p.previous,p.invalid);
+    }
     status=astr::finish_launch(s);
     int bad=0;
     if(status==0) status=static_cast<int>(cudaMemcpyAsync(&bad,p.invalid,sizeof(int),cudaMemcpyDeviceToHost,s.stream));
@@ -160,7 +196,7 @@ extern "C" int astr_insitu_moments_view(void *moments,AstrDeviceView *view)
 {
     if(!moments || !view) return ASTR_DEVICE_INVALID_ARGUMENT;
     auto &p=*static_cast<Moments *>(moments);
-    if(!p.previous) return ASTR_DEVICE_NOT_ALLOCATED;
+    if(!p.previous || p.groups!=1) return ASTR_DEVICE_NOT_ALLOCATED;
     *view=AstrDeviceView{};view->data=p.state;view->rank=2;view->element_bytes=sizeof(Real);
     int64_t stride=1;
     for(int a=0;a<5;++a) {
@@ -173,27 +209,33 @@ extern "C" int astr_insitu_moments_pack(void *moments,Real *host,size_t count)
 {
     if(!moments || !host) return ASTR_DEVICE_INVALID_ARGUMENT;
     auto &p=*static_cast<Moments *>(moments);
-    if(!p.previous || count!=34*p.nodes*sizeof(Real)) return ASTR_DEVICE_INVALID_ARGUMENT;
-    std::fill(host,host+p.nodes,p.window[0]);std::fill(host+p.nodes,host+2*p.nodes,p.window[1]);
-    std::fill(host+2*p.nodes,host+3*p.nodes,p.time);std::fill(host+33*p.nodes,host+34*p.nodes,Real(1.));
-    int status=static_cast<int>(cudaMemcpyAsync(host+3*p.nodes,p.state,30*p.nodes*sizeof(Real),
-        cudaMemcpyDeviceToHost,p.parent->stream));
+    const auto N=p.nodes;
+    if(!p.previous || count!=34*p.groups*N*sizeof(Real)) return ASTR_DEVICE_INVALID_ARGUMENT;
+    int status=0;
+    for(int g=0;g<p.groups && status==0;++g) {
+        Real *group=host+34*g*N;
+        std::fill(group,group+N,p.window[0]);std::fill(group+N,group+2*N,p.window[1]);
+        std::fill(group+2*N,group+3*N,p.time);std::fill(group+33*N,group+34*N,Real(1.));
+        status=static_cast<int>(cudaMemcpyAsync(group+3*N,p.state+30*g*N,30*N*sizeof(Real),
+            cudaMemcpyDeviceToHost,p.parent->stream));
+    }
     if(status==0) status=static_cast<int>(cudaStreamSynchronize(p.parent->stream));
-    if(status==0) p.observation+=30*p.nodes*sizeof(Real);
+    if(status==0) p.observation+=30*p.groups*N*sizeof(Real);
     return status;
 }
 extern "C" int astr_insitu_moments_restore(void *moments,const Real *host,size_t count,Real time)
 {
     if(!moments || !host) return ASTR_DEVICE_INVALID_ARGUMENT;
     auto &p=*static_cast<Moments *>(moments);
-    if(count!=34*p.nodes*sizeof(Real) || !std::isfinite(time)) return ASTR_DEVICE_INVALID_ARGUMENT;
+    if(count!=34*p.groups*p.nodes*sizeof(Real) || !std::isfinite(time)) return ASTR_DEVICE_INVALID_ARGUMENT;
     const auto N=p.nodes;const Real previous=host[2*N];
     if(!std::isfinite(previous) || previous>time) return ASTR_DEVICE_INVALID_ARGUMENT;
-    for(size_t n=0;n<N;++n) {
-        for(int a=0;a<34;++a) if(!std::isfinite(host[n+N*a])) return ASTR_DEVICE_NONPHYSICAL;
-        if(host[n]!=p.window[0] || host[n+N]!=p.window[1] || host[n+2*N]!=previous || host[n+33*N]!=Real(1.))
+    for(int g=0;g<p.groups;++g) for(size_t n=0;n<N;++n) {
+        const Real *group=host+34*g*N+n;
+        for(int a=0;a<34;++a) if(!std::isfinite(group[N*a])) return ASTR_DEVICE_NONPHYSICAL;
+        if(group[0]!=p.window[0] || group[N]!=p.window[1] || group[2*N]!=previous || group[33*N]!=Real(1.))
             return ASTR_DEVICE_INVALID_ARGUMENT;
-        const Real *s=host+n+3*N;
+        const Real *s=group+3*N;
         if(s[0]<=0 || s[4*N]<0 || s[5*N]<0 || ((s[4*N]==0)!=(s[5*N]==0))) return ASTR_DEVICE_NONPHYSICAL;
         for(int base:{12,21}) for(int b=0;b<3;++b) {
             if(s[N*(base+4*b)]<0) return ASTR_DEVICE_NONPHYSICAL;
@@ -201,17 +243,19 @@ extern "C" int astr_insitu_moments_restore(void *moments,const Real *host,size_t
         }
         if(s[4*N]==0) for(int a=6;a<30;++a) if(s[N*a]!=0) return ASTR_DEVICE_NONPHYSICAL;
     }
-    int status=static_cast<int>(cudaMemcpyAsync(p.state,host+3*N,30*N*sizeof(Real),
-        cudaMemcpyHostToDevice,p.parent->stream));
+    int status=0;
+    for(int g=0;g<p.groups && status==0;++g)
+        status=static_cast<int>(cudaMemcpyAsync(p.state+30*g*N,host+(34*g+3)*N,30*N*sizeof(Real),
+            cudaMemcpyHostToDevice,p.parent->stream));
     if(status==0) status=static_cast<int>(cudaStreamSynchronize(p.parent->stream));
-    if(status==0) {p.time=previous;p.duration=host[7*N];p.previous=true;p.upload+=30*N*sizeof(Real);}
+    if(status==0) {p.time=previous;p.duration=host[7*N];p.previous=true;p.upload+=30*p.groups*N*sizeof(Real);}
     return status;
 }
 extern "C" int astr_insitu_moments_output(void *moments,Real *host,size_t count)
 {
     if(!moments || !host) return ASTR_DEVICE_INVALID_ARGUMENT;
     auto &p=*static_cast<Moments *>(moments);auto &s=*p.parent;
-    if(!p.previous || count!=41*p.nodes*sizeof(Real)) return ASTR_DEVICE_INVALID_ARGUMENT;
+    if(!p.previous || p.groups!=1 || count!=41*p.nodes*sizeof(Real)) return ASTR_DEVICE_INVALID_ARGUMENT;
     Real *values=nullptr;
     int status=static_cast<int>(cudaMalloc(reinterpret_cast<void **>(&values),count));
     if(status!=0) return status;
@@ -244,7 +288,8 @@ extern "C" int astr_insitu_moments_weights(void *moments,const Real *weights,siz
     if(!std::isfinite(volume) || volume<=0) return ASTR_DEVICE_INVALID_ARGUMENT;
     int status=0;
     if(!p.weights) status=static_cast<int>(cudaMalloc(reinterpret_cast<void **>(&p.weights),count));
-    if(status==0 && !p.spatial) status=static_cast<int>(cudaMalloc(reinterpret_cast<void **>(&p.spatial),6*sizeof(Real)));
+    if(status==0 && !p.spatial) status=static_cast<int>(
+        cudaMalloc(reinterpret_cast<void **>(&p.spatial),(p.groups==4?7:6)*sizeof(Real)));
     if(status!=0) return status;
     p.peak=std::max(p.peak,bytes(p));
     status=static_cast<int>(cudaMemcpyAsync(p.weights,weights,count,cudaMemcpyHostToDevice,p.parent->stream));
@@ -257,13 +302,17 @@ extern "C" int astr_insitu_moments_spatial(void *moments,Real local[7])
     if(!moments || !local) return ASTR_DEVICE_INVALID_ARGUMENT;
     auto &p=*static_cast<Moments *>(moments);auto &s=*p.parent;
     if(!p.previous || !p.weights || !p.spatial) return ASTR_DEVICE_NOT_ALLOCATED;
-    spatial<<<6,256,0,s.stream>>>(p.state,p.weights,p.spatial,p.nodes);
+    const bool volume_on_device=p.groups==4;
+    if(volume_on_device)spatial<true><<<7,256,0,s.stream>>>(p.state,p.weights,p.spatial,p.nodes);
+    else spatial<false><<<6,256,0,s.stream>>>(p.state,p.weights,p.spatial,p.nodes);
     int status=astr::finish_launch(s);
     local[0]=p.volume;
-    if(status==0) status=static_cast<int>(cudaMemcpyAsync(local+1,p.spatial,6*sizeof(Real),cudaMemcpyDeviceToHost,s.stream));
+    const size_t transfer_bytes=(volume_on_device?7:6)*sizeof(Real);
+    if(status==0) status=static_cast<int>(cudaMemcpyAsync(local+(volume_on_device?0:1),p.spatial,
+        transfer_bytes,cudaMemcpyDeviceToHost,s.stream));
     if(status==0) status=static_cast<int>(cudaStreamSynchronize(s.stream));
     if(status==0) {
-        p.scalar+=6*sizeof(Real);
+        p.scalar+=transfer_bytes;
         for(int a=0;a<7;++a) if(!std::isfinite(local[a])) return ASTR_DEVICE_NONPHYSICAL;
     }
     return status;

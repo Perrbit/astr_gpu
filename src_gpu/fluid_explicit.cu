@@ -2,6 +2,8 @@
 #include "device_state_internal.cuh"
 #include "chemistry_transport.h"
 #include "fluid_explicit.h"
+#include "chemistry_statistics.h"
+#include "halo_transport.h"
 #include "high_wall_math.cuh"
 #include "sbp63_math.cuh"
 
@@ -160,7 +162,7 @@ __device__ Real derivative6_basic(const AstrDeviceView &field,int i,int j,int k,
     return step*((Real(2)/Real(3))*(v[3]-v[1])-(Real(1)/Real(12))*(v[4]-v[0]));
 }
 
-template<bool physical>
+template<bool physical,bool thermal=true>
 __global__ __launch_bounds__(threads)
 void gradient_kernel(AstrDeviceView vel, AstrDeviceView tmp, AstrDeviceView metric,
                      AstrDeviceView dvel, AstrDeviceView dtmp, int nx, int ny, size_t count,PhysicalEnds ends)
@@ -177,12 +179,14 @@ void gradient_kernel(AstrDeviceView vel, AstrDeviceView tmp, AstrDeviceView metr
                 astr::store_value(dvel,i,j,k,dx*at(metric,i,j,k,1,b)
                     + dy*at(metric,i,j,k,2,b) + dz*at(metric,i,j,k,3,b),a,b);
         }
-        const Real dx = physical ? derivative6_basic(tmp,i,j,k,1,0,ends) : derivative6(tmp,i,j,k,1,0);
-        const Real dy = physical ? derivative6_basic(tmp,i,j,k,1,1,ends) : derivative6(tmp,i,j,k,1,1);
-        const Real dz = physical ? derivative6_basic(tmp,i,j,k,1,2,ends) : derivative6(tmp,i,j,k,1,2);
-        for (int b = 1; b <= 3; ++b)
-            astr::store_value(dtmp,i,j,k,dx*at(metric,i,j,k,1,b)
-                + dy*at(metric,i,j,k,2,b) + dz*at(metric,i,j,k,3,b),b);
+        if(thermal) {
+            const Real dx = physical ? derivative6_basic(tmp,i,j,k,1,0,ends) : derivative6(tmp,i,j,k,1,0);
+            const Real dy = physical ? derivative6_basic(tmp,i,j,k,1,1,ends) : derivative6(tmp,i,j,k,1,1);
+            const Real dz = physical ? derivative6_basic(tmp,i,j,k,1,2,ends) : derivative6(tmp,i,j,k,1,2);
+            for (int b = 1; b <= 3; ++b)
+                astr::store_value(dtmp,i,j,k,dx*at(metric,i,j,k,1,b)
+                    + dy*at(metric,i,j,k,2,b) + dz*at(metric,i,j,k,3,b),b);
+        }
     }
     return;
 }
@@ -1395,22 +1399,55 @@ extern "C" int astr_device_fluid_gradient(void *handle)
     return astr::finish_launch(s);
 }
 
-extern "C" int astr_device_fluid_gradient_basic_boundary(void *handle,const int low[3],const int high[3])
+static int basic_gradient(const State &s,const int low[3],const int high[3],PhysicalEnds &ends)
 {
-    if(!handle || !low || !high) return ASTR_DEVICE_INVALID_ARGUMENT;
-    State &s=*static_cast<State *>(handle);
+    if(!low || !high) return ASTR_DEVICE_INVALID_ARGUMENT;
     if(!s.gradients_ready) return ASTR_DEVICE_NOT_ALLOCATED;
     if(s.halo<3) return ASTR_DEVICE_INVALID_ARGUMENT;
-    PhysicalEnds ends{};
     for(int a=0;a<3;++a) {
         if(low[a]<0 || low[a]>1 || high[a]<0 || high[a]>1) return ASTR_DEVICE_INVALID_ARGUMENT;
         if((low[a] || high[a]) && s.upper[a]<4) return ASTR_DEVICE_INVALID_ARGUMENT;
         ends.low[a]=low[a];ends.high[a]=high[a];ends.upper[a]=s.upper[a];
     }
+    return 0;
+}
+
+extern "C" int astr_device_fluid_gradient_basic_boundary(void *handle,const int low[3],const int high[3])
+{
+    if(!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
+    State &s=*static_cast<State *>(handle);
+    PhysicalEnds ends{};
+    const int status=basic_gradient(s,low,high,ends);
+    if(status) return status;
     const size_t count=physical_count(s);
     gradient_kernel<true><<<(count+threads-1)/threads,threads,0,s.stream>>>(
         s.fields[4].view,s.fields[6].view,s.fields[7].view,s.fields[8].view,s.fields[9].view,
         s.upper[0]+1,s.upper[1]+1,count,ends);
+    return astr::finish_launch(s);
+}
+
+extern "C" int astr_device_air5_mean_refresh_velocity(void *handle,const int low[3],const int high[3])
+{
+    if(!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
+    State &s=*static_cast<State *>(handle);
+    PhysicalEnds ends{};
+    int status=basic_gradient(s,low,high,ends);
+    if(status) return status;
+    const auto &velocity=s.fields[ASTR_DEVICE_VELOCITY];
+    const auto &scratch=s.fields[ASTR_DEVICE_AIR5_MEAN_VELOCITY];
+    if(!scratch.view.data) return ASTR_DEVICE_NOT_ALLOCATED;
+    // Refresh diagnostic halos without modifying the checkpointed primitive cache.
+    status=static_cast<int>(cudaMemcpyAsync(scratch.view.data,velocity.view.data,velocity.bytes,
+        cudaMemcpyDeviceToDevice,s.stream));
+    if(status) return status;
+    for(int axis=0;axis<3;++axis) {
+        status=astr_device_exchange_axis(handle,ASTR_DEVICE_AIR5_MEAN_VELOCITY,axis,0);
+        if(status) return status;
+    }
+    const size_t count=physical_count(s);
+    gradient_kernel<true,false><<<(count+threads-1)/threads,threads,0,s.stream>>>(
+        scratch.view,AstrDeviceView{},s.fields[ASTR_DEVICE_METRIC].view,s.fields[ASTR_DEVICE_DVELOCITY].view,
+        AstrDeviceView{},s.upper[0]+1,s.upper[1]+1,count,ends);
     return astr::finish_launch(s);
 }
 

@@ -4,6 +4,7 @@ module insitu_moments_cpp
   implicit none
   private
   public :: moments_create,moments_push,moments_view,moments_pack,moments_restore,moments_output
+  public :: moments_create_air5
   public :: moments_info,moments_metrics,moments_destroy
   public :: moments_weights,moments_spatial
   public :: selected_create,selected_push,selected_scatter,selected_view,selected_download,selected_upload
@@ -78,6 +79,13 @@ module insitu_moments_cpp
     end function
     integer(c_int) function moments_create(parent,owned,window,plan) bind(C,name='astr_insitu_moments_create')
       import c_int,c_ptr,c_device_real_kind
+      type(c_ptr),value :: parent
+      integer(c_int),intent(in) :: owned(3)
+      real(c_device_real_kind),intent(in) :: window(2)
+      type(c_ptr),intent(out) :: plan
+    end function
+    integer(c_int) function moments_create_air5(parent,owned,window,plan) bind(C,name='astr_insitu_moments_create_air5')
+      import c_ptr,c_int,c_device_real_kind
       type(c_ptr),value :: parent
       integer(c_int),intent(in) :: owned(3)
       real(c_device_real_kind),intent(in) :: window(2)

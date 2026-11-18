@@ -9,7 +9,7 @@ module insitu_wall_statistics
   use ieee_arithmetic, only: ieee_is_finite
 #ifdef ASTR_GPU_CPP
   use insitu_wall_runtime_cpp, only: prepare_wall_statistics_cpp,capture_and_push_wall_statistics_cpp, &
-    pack_wall_statistics_cpp,restore_wall_statistics_cpp,release_wall_statistics_cpp
+    pack_wall_statistics_cpp,restore_wall_statistics_cpp,release_wall_statistics_cpp,air5_wall_span_cpp
 #endif
   implicit none
   private
@@ -159,17 +159,19 @@ contains
     do e=1,2
       covered_duration=covered_duration+weights(e)
     enddo
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
+    if(use_gpu.and.resident.and.separate) then
+      call prepare_air5_separation(span_weights,span_length,reference_u,span_comm)
+      allocate(span_profile(0:im,3),local_span(0:ia,3),stat=status)
+      call require(status==0,'cannot allocate resident separation profile')
+    endif
+#endif
 #ifdef _CUDA
     if(use_gpu) then
       if(resident) then
         if(separate) then
-          call prepare_air5_separation(span_weights,span_length,reference_u,span_comm)
-          allocate(span_profile(0:im,3),local_span(0:ia,3),stat=status)
-          call require(status==0,'cannot allocate resident separation profile')
           call capture_and_push_wall_statistics_gpu(profile,device_transport,weights,samples>0, &
             host_limit,device_limit,reserve,span_weights,span_profile)
-          local_span=0.e0_real_kind; local_span(ig0:ig0+im,:)=span_profile
-          call publish_air5_separation(step,time,local_span,span_length,reference_u,span_comm,separation_prefix)
         else
           call capture_and_push_wall_statistics_gpu(profile,device_transport,weights,samples>0, &
             host_limit,device_limit,reserve)
@@ -180,12 +182,12 @@ contains
     else
 #elif defined(ASTR_GPU_CPP)
     if(use_gpu) then
-      call require(.not.separate,'AIR5 separation is outside the nonreacting C++ wall accumulator')
       if(present(device_transport)) then
         call capture_and_push_wall_statistics_cpp(device_transport,weights,samples>0,host_limit,device_limit,reserve)
       else
         call capture_and_push_wall_statistics_cpp('',weights,samples>0,host_limit,device_limit,reserve)
       endif
+      if(separate) call air5_wall_span_cpp(span_weights,span_profile)
     else
 #else
     call require(.not.use_gpu,'wall scalar device statistics require CUDA')
@@ -220,6 +222,10 @@ contains
       enddo
       call require(all_ok,'invalid wall scalar accumulation')
 #if defined(_CUDA) || defined(ASTR_GPU_CPP)
+    endif
+    if(use_gpu.and.resident.and.separate) then
+      local_span=0.e0_real_kind; local_span(ig0:ig0+im,:)=span_profile
+      call publish_air5_separation(step,time,local_span,span_length,reference_u,span_comm,separation_prefix)
     endif
 #endif
     previous_time=time; last_step=step; samples=samples+1

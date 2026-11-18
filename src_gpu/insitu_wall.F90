@@ -4,6 +4,7 @@ module insitu_wall_cpp
   implicit none
   private
   public :: wall_create,wall_capture,wall_view,wall_line,wall_download,wall_metrics,wall_destroy
+  public :: wall_air5_span
   public :: wall_statistics_push,wall_statistics_pack,wall_statistics_restore,wall_statistics_mean
   public :: sbli_wall_create,sbli_wall_capture,sbli_wall_metrics,sbli_wall_destroy
   public :: profile_wall_create,profile_wall_capture,profile_wall_metrics,profile_wall_destroy
@@ -62,6 +63,13 @@ module insitu_wall_cpp
       type(c_ptr),value :: wall
       real(c_device_real_kind),intent(out) :: host(*)
       integer(c_size_t),value :: bytes
+    end function
+    integer(c_int) function wall_air5_span(wall,weights,owned_x,profile) bind(C,name='astr_insitu_wall_air5_span')
+      import c_ptr,c_int,c_device_real_kind
+      type(c_ptr),value :: wall
+      real(c_device_real_kind),intent(in) :: weights(*)
+      integer(c_int),value :: owned_x
+      real(c_device_real_kind),intent(out) :: profile(*)
     end function
     integer(c_int) function wall_metrics(wall,values) bind(C,name='astr_insitu_wall_metrics')
       import c_ptr,c_int,c_int64_t

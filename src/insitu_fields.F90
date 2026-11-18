@@ -148,6 +148,9 @@ contains
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_monitor, only: decode_air5_monitor_state
     use chemistry_transport, only: air5_transport_properties
+#ifdef ASTR_GPU_CPP
+    use insitu_wall_runtime_cpp, only: capture_wall_packet_cpp
+#endif
 #endif
 #ifdef _CUDA
     use insitu_sample_gpu, only: download_wall_state_gpu
@@ -171,6 +174,12 @@ contains
       .not.nondimen.and.lcomb.and..not.lreadgrid.and.all(bctype==[11,50,41,51,1,1]).and. &
       trim(difschm)=='643e'.and.max(ia,ja,ka)<=32.and.mpisize<=2.and.jm>=2, &
       'AIR5 wall candidate requires dimensional Cartesian HBL <=32 NP=1/2 and two interior layers')
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) then
+      call capture_wall_packet_cpp('pinned',host_budget,device_budget,reserve,coordinates,fields,owned,download_bytes,success)
+      return
+    endif
+#endif
     nw=merge(1,0,jg0==0)
     nodes=int(im+1,int64)*(km+1)*nw
     bytes=nodes*(54*real_bytes+storage_size(.false.)/8)+int(max(im+1,km+1),int64)*nw*33*real_bytes*4

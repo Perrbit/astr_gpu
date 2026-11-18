@@ -1,6 +1,7 @@
 #include "device_state_internal.cuh"
 #include "chemistry_statistics.h"
 #include "chemistry_properties_math.cuh"
+#include <climits>
 #include <new>
 
 namespace astr {
@@ -24,6 +25,37 @@ int release_air5_monitor(Air5MonitorPlan *plan)
 namespace {
 __device__ inline double &at(const AstrDeviceView &v,int i,int j,int k,int c=1,int d=1)
 {return static_cast<double *>(v.data)[astr::offset(v,i,j,k,c,d)];}
+
+constexpr int conservation_components=11;
+constexpr int conservation_max_tiles=4096;
+
+__global__ void integrate_cell_tiles(AstrDeviceView q,AstrDeviceView jac,int im,int jm,int cells,int parts,double *work)
+{
+    const int component=threadIdx.x+1,tile=blockIdx.x;
+    if(component>conservation_components)return;
+    const int chunk=(cells+parts-1)/parts;
+    const int first=tile*chunk,last=min((tile+1)*chunk,cells);
+    double tile_total=0.;
+    for(int id=first;id<last;++id) {
+        const int i=id%im,j=(id/im)%jm,k=id/(im*jm);
+        double cell_total=0.;
+        for(int dk=0;dk<2;++dk)
+            for(int dj=0;dj<2;++dj)
+                for(int di=0;di<2;++di)
+                    cell_total+=at(q,i+di,j+dj,k+dk,component)*at(jac,i+di,j+dj,k+dk);
+        tile_total+=0.125*cell_total;
+    }
+    work[tile*conservation_components+component-1]=tile_total;
+}
+
+__global__ void sum_cell_tiles(int parts,double *work)
+{
+    const int component=threadIdx.x;
+    if(component>=conservation_components)return;
+    double total=0.;
+    for(int tile=0;tile<parts;++tile)total+=work[tile*conservation_components+component];
+    work[parts*conservation_components+component]=total;
+}
 
 __global__ void monitor_kernel(AstrDeviceView q,astr::Air5MonitorPlan plan)
 {
@@ -121,6 +153,40 @@ extern "C" int astr_device_air5_monitor_collect(void *handle,double *packed,size
     return status?status:static_cast<int>(cudaStreamSynchronize(s.stream));
 }
 
+extern "C" int astr_device_air5_conservation_prepare(void *handle,int64_t budget,int64_t *bytes)
+{
+    if(!handle || !bytes || budget<0)return ASTR_DEVICE_INVALID_ARGUMENT;
+    auto &s=*static_cast<astr::State *>(handle);
+    if(!s.air5_ready || !s.fields[ASTR_DEVICE_JACOBIAN].view.data)return ASTR_DEVICE_NOT_ALLOCATED;
+    const int64_t cells=static_cast<int64_t>(s.upper[0])*s.upper[1]*s.upper[2];
+    if(cells<1 || cells>INT_MAX-(conservation_max_tiles-1) || s.air5_conservation_work)
+        return ASTR_DEVICE_INVALID_ARGUMENT;
+    const int parts=min(conservation_max_tiles,static_cast<int>((cells+63)/64));
+    *bytes=static_cast<int64_t>(parts+1)*conservation_components*sizeof(double);
+    if(*bytes>budget)return ASTR_DEVICE_INVALID_ARGUMENT;
+    return static_cast<int>(cudaMalloc(&s.air5_conservation_work,static_cast<size_t>(*bytes)));
+}
+
+extern "C" int astr_device_air5_conservation_collect(void *handle,double totals[11])
+{
+    if(!handle || !totals)return ASTR_DEVICE_INVALID_ARGUMENT;
+    auto &s=*static_cast<astr::State *>(handle);
+    if(!s.air5_conservation_work)return ASTR_DEVICE_NOT_ALLOCATED;
+    const int cells=s.upper[0]*s.upper[1]*s.upper[2];
+    const int parts=min(conservation_max_tiles,static_cast<int>((static_cast<int64_t>(cells)+63)/64));
+    auto *work=s.air5_conservation_work;
+    integrate_cell_tiles<<<parts,32,0,s.stream>>>(s.fields[ASTR_DEVICE_Q].view,
+        s.fields[ASTR_DEVICE_JACOBIAN].view,s.upper[0],s.upper[1],cells,parts,work);
+    int status=astr::finish_launch(s);
+    if(status)return status;
+    sum_cell_tiles<<<1,32,0,s.stream>>>(parts,work);
+    status=astr::finish_launch(s);
+    if(status)return status;
+    status=static_cast<int>(cudaMemcpyAsync(totals,work+parts*conservation_components,
+        sizeof(double)*conservation_components,cudaMemcpyDeviceToHost,s.stream));
+    return status ? status : static_cast<int>(cudaStreamSynchronize(s.stream));
+}
+
 extern "C" int astr_device_air5_mean_prepare(void *handle)
 {
     if(!handle || sizeof(astr::numerical_real)!=sizeof(double))return ASTR_DEVICE_INVALID_ARGUMENT;
@@ -129,6 +195,8 @@ extern "C" int astr_device_air5_mean_prepare(void *handle)
     int status=astr::allocate_field(s.fields[ASTR_DEVICE_AIR5_MEAN_SUM],s.upper,0,4,44);
     if(status)return status;
     status=astr::allocate_field(s.fields[ASTR_DEVICE_AIR5_MEAN_ENDPOINT],s.upper,0,4,14);
+    if(status)return status;
+    status=astr::allocate_field(s.fields[ASTR_DEVICE_AIR5_MEAN_VELOCITY],s.upper,s.halo,4,3);
     if(status)return status;
     status=static_cast<int>(cudaMalloc(&s.air5_mean_failure,sizeof(int)));if(status)return status;
     return astr_device_air5_mean_reset(handle);
@@ -165,7 +233,7 @@ extern "C" int astr_device_air5_mean_release(void *handle)
     if(!handle)return ASTR_DEVICE_INVALID_ARGUMENT;
     astr::State &s=*static_cast<astr::State *>(handle);
     int status=static_cast<int>(cudaStreamSynchronize(s.stream));if(status)return status;
-    const int fields[]={ASTR_DEVICE_AIR5_MEAN_SUM,ASTR_DEVICE_AIR5_MEAN_ENDPOINT};
+    const int fields[]={ASTR_DEVICE_AIR5_MEAN_SUM,ASTR_DEVICE_AIR5_MEAN_ENDPOINT,ASTR_DEVICE_AIR5_MEAN_VELOCITY};
     for(int field:fields)if(s.fields[field].view.data) {
         status=static_cast<int>(cudaFree(s.fields[field].view.data));if(status)return status;
         s.fields[field]={};

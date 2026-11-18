@@ -26,7 +26,7 @@ module device_state
   integer(c_int),parameter,public :: device_air5_top_normal_high=36
   integer(c_int),parameter,public :: device_air5_mean_sum=37,device_air5_mean_endpoint=38
   integer(c_int),parameter,public :: device_air5_diffusion_ratio=39,device_air5_diffusion_energy_ratio=40
-  integer(c_int),parameter,public :: device_air5_convection_fluid_ratio=41,device_field_count=42
+  integer(c_int),parameter,public :: device_air5_convection_fluid_ratio=41,device_air5_mean_velocity=42,device_field_count=43
   integer(c_int),parameter,public :: device_invalid_argument=-1,device_not_allocated=-2, &
     device_nonphysical=-3,device_invalid_spectrum=-4
   type,bind(C),public :: device_view

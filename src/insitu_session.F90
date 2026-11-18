@@ -2586,6 +2586,7 @@ contains
     real(real_kind),allocatable :: coordinates(:,:,:,:),fields(:,:,:,:)
     logical,allocatable :: owned(:,:,:)
     character(1200) :: path
+    integer(int32) :: header(9)
     integer :: unit,status,closed
     integer(int64) :: download_bytes
     call require_sample(step>=0.and.all(ieee_is_finite([t,dt])).and. &
@@ -2598,8 +2599,10 @@ contains
       open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted', &
         convert='little_endian',action='write',iostat=status)
       call require_sample(status==0,'cannot create AIR5 wall sample')
-      write(unit,iostat=status) 'ASTRAW01',int([integer(int64) :: 1,step,mpirank,shape(owned),ig0,jg0,kg0],int32), &
-        t,dt,coordinates,fields,merge(1_int32,0_int32,owned)
+      header(1:3)=[1_int32,int(step,int32),int(mpirank,int32)]
+      header(4:6)=int(shape(owned),int32)
+      header(7:9)=int([ig0,jg0,kg0],int32)
+      write(unit,iostat=status) 'ASTRAW01',header,t,dt,coordinates,fields,merge(1_int32,0_int32,owned)
       close(unit,iostat=closed)
       call require_sample(status==0.and.closed==0,'cannot write AIR5 wall sample')
     endif

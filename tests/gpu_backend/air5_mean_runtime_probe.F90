@@ -69,7 +69,12 @@ program air5_mean_runtime_probe
   ig0=im*coord(1);jg0=jm*coord(2);kg0=km*coord(3)
   nstep=0;time=0;lavg=.true.
   call start()
+#ifdef ASTR_MEAN_RUNTIME_REFERENCE
   if(mean_bytes()/=int(im+1,int64)*(jm+1)*(km+1)*464+4)error stop 'active statistics bytes'
+#else
+  if(mean_bytes()/=int(im+1,int64)*(jm+1)*(km+1)*464+int(im+7,int64)*(jm+7)*(km+7)*24+4) &
+    error stop 'active statistics and scratch bytes'
+#endif
   identity=checkpoint_state_identity(0_int64,0.d0,0.d0,1d-8)
   call complete_file(trim(outputs)//'/empty.h5',.true.,identity,huge(0_int64)/4096)
   call complete_file(trim(outputs)//'/empty.h5',.false.,identity,huge(0_int64)/4096)

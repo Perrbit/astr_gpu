@@ -58,6 +58,7 @@ def main():
     parser.add_argument("--steps", type=int, default=2)
     parser.add_argument("--topology", type=int, nargs=3, default=(1, 1, 1))
     parser.add_argument("--transport", choices=("pinned", "device"), default="pinned")
+    parser.add_argument("--primitive-reuse", action="store_true")
     args = parser.parse_args()
     out = args.output.resolve()
     out.mkdir()
@@ -72,16 +73,40 @@ def main():
     if args.transport == "device":
         env |= dict(OMPI_MCA_pml="ucx", OMPI_MCA_opal_cuda_support="1")
     commands = {}
-    for name, exe in (("old", args.reference), ("new", args.candidate)):
+    cases = [("old", args.reference), ("new", args.candidate)]
+    if args.primitive_reuse:
+        cases.append(("full_refresh", args.candidate))
+    for name, exe in cases:
         work = out / name
         prepare(work, args.input.resolve(), args.steps)
         cmd = [args.mpiexec.resolve(), "--bind-to", "none", "-np", ranks, exe.resolve(), "run", "datin/input.case"]
         commands[name] = list(map(str, cmd))
         transport = "device-aware" if name == "old" and args.transport == "device" else args.transport
-        command(cmd, work, "run.log", env | dict(ASTR_GPU_HALO_TRANSPORT=transport))
+        reuse = "chemistry" if args.primitive_reuse and name != "full_refresh" else "off"
+        command(cmd, work, "run.log", env | dict(ASTR_GPU_HALO_TRANSPORT=transport, ASTR_AIR5_PRIMITIVE_REUSE=reuse))
         assert "The job is done!" in (work / "run.log").read_text(errors="replace"), work
     assert "AIR5 resident RK3; Strang=T" in (out / "new/run.log").read_text(errors="replace")
     report = reference_check(out / "old", out / "new", ranks, args.steps)
+    if args.primitive_reuse:
+        lines = (out / "new/run.log").read_text()
+        refreshed = re.findall(r"ASTR_AIR5_PRIMITIVE_SHELL rank=(\d+) step=(\d+) half=(\d+) "
+                               r"recovered_nodes=(\d+) physical_nodes=(\d+)", lines)
+        assert {int(row[0]) for row in refreshed} == set(range(ranks))
+        assert {int(row[2]) for row in refreshed} == {1, 2}
+        assert all(0 < int(row[3]) < int(row[4]) for row in refreshed)
+        assert "ASTR_AIR5_PRIMITIVE_SHELL" not in (out / "full_refresh/run.log").read_text()
+        comparisons = 0
+        for label, phases in PHASES.items():
+            for stage in phases:
+                for step in range(args.steps):
+                    for rank in range(ranks):
+                        name = f"air5.{label}.step{step:08d}.rk{stage:02d}.rank{rank:08d}.bin"
+                        actual = comparison_values(read_q_snapshot(out/"new/validation"/name), True)
+                        baseline = comparison_values(read_q_snapshot(out/"full_refresh/validation"/name), True)
+                        assert actual.tobytes() == baseline.tobytes(), name
+                        comparisons += 1
+        report.update(reuse_phase_comparisons=comparisons, reuse_phase_words_exact=True,
+                      shell_nodes=[[int(value) for value in row] for row in refreshed])
     (out / "report.json").write_text(json.dumps(report | dict(commands=commands), indent=2) + "\n")
     print(out / "report.json")
 

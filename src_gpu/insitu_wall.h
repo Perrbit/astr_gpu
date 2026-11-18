@@ -24,6 +24,7 @@ int astr_insitu_wall_view(void *wall,int geometry,AstrDeviceView *view);
 int astr_insitu_wall_line(void *wall,int k,int side,astr_numerical_real *host,size_t bytes);
 /* Explicit component-test/host-consumer observation, never implicit capture. */
 int astr_insitu_wall_download(void *wall,astr_numerical_real *host,size_t bytes);
+int astr_insitu_wall_air5_span(void *wall,const astr_numerical_real *weights,int owned_x,astr_numerical_real *host);
 /* device current/peak, pinned, sent, staging D2H/H2D, scalar D2H,
  * explicit observation D2H, captures; setup geometry H2D is reported separately. */
 int astr_insitu_wall_metrics(void *wall,int64_t values[10]);

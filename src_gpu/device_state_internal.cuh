@@ -63,6 +63,7 @@ struct State {
     AstrAir5DiffusionReport *air5_diffusion_report = nullptr;
     AstrAir5ConvectionReport *air5_convection_report = nullptr;
     int *air5_mean_failure = nullptr;
+    double *air5_conservation_work = nullptr;
     bool gradients_ready = false;
     bool rhs_ready = false;
     bool viscous_ready = false;

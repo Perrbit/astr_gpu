@@ -31,7 +31,7 @@ bool covered(int i,int j,int k)
 int main(int argc,char **argv)
 {
     if(argc!=2)return 2;FILE *f=std::fopen(argv[1],"rb");require(f,"input open");double base[11];
-    require(std::fread(base,8,11,f)==11,"base data");require(std::fclose(f)==0,"input close");int failure_checks=0;
+    require(std::fread(base,8,11,f)==11,"base data");require(std::fclose(f)==0,"input close");int failure_checks=0,shell_checks=0;
     for(int debug=0;debug<2;++debug)for(int preserve=0;preserve<2;++preserve) {
         void *handle=nullptr;check(astr_device_state_create(0,upper[0],upper[1],upper[2],halo,debug,&handle));check(astr_device_air5_prepare(handle));
         const AstrAir5ChemistryOptions options{1,1,0,1,preserve,32,0,1e-9,1e-13,0.};check(astr_device_air5_chemistry_prepare(handle,&options));
@@ -74,6 +74,27 @@ int main(int argc,char **argv)
         initialize();for(int r=0;r<5;++r) {check(astr_device_air5_primitives(handle,first+3*r,last+3*r,preserve));check(astr_device_air5_check(handle,&status));require(status==0,"single-region reference status");}
         snapshots(observed);
         for(int field=0;field<6;++field)require(std::memcmp(batch[field].data(),observed[field].data(),batch[field].size()*8)==0,"batch versus sequential cache words");
+        const int shell_low[][3]={{1,1,1},{2,1,3},{2,4,5}},shell_high[][3]={{7,6,5},{6,4,4},{2,4,5}};
+        for(int scenario=0;scenario<3;++scenario)for(int invalid_shell=0;invalid_shell<2;++invalid_shell) {
+            const int *lo=shell_low[scenario],*hi=shell_high[scenario];
+            input=initial;
+            input[at(q,lo[0],lo[1],lo[2])]=-1.;
+            if(invalid_shell)input[at(q,upper[0],0,0)]=-1.;
+            initialize();check(astr_device_air5_primitives_shell(handle,lo,hi,preserve));
+            check(astr_device_air5_check(handle,&status));require(status==(invalid_shell?2:0),"shell conversion status");
+            snapshots(observed);
+            for(int field=0;field<6;++field)for(int k=-halo;k<=upper[2]+halo;++k)
+            for(int j=-halo;j<=upper[1]+halo;++j)for(int i=-halo;i<=upper[0]+halo;++i)
+            for(int c=0;c<views[field].extent[3];++c) {
+                const size_t index=at(views[field],i,j,k,c);
+                const bool physical=i>=0 && i<=upper[0] && j>=0 && j<=upper[1] && k>=0 && k<=upper[2];
+                const bool recovered=i>=lo[0] && i<=hi[0] && j>=lo[1] && j<=hi[1] && k>=lo[2] && k<=hi[2];
+                const bool failed=invalid_shell && i==upper[0] && j==0 && k==0;
+                const double expected=physical && !recovered && !failed?batch[field][index]:poison[field][index];
+                require(same(expected,observed[field][index]),"primitive shell coverage or failure write");
+            }
+            ++shell_checks;
+        }
         for(int scenario=0;scenario<4;++scenario) {
             input=initial;
             if(scenario==0)input[at(q,0,0,0)]=-1.;
@@ -98,5 +119,6 @@ int main(int argc,char **argv)
         check(astr_device_air5_check(handle,&status));require(status==0,"new phase did not clear prior failure");snapshots(observed);
         check(astr_device_state_destroy(&handle));
     }
-    std::printf("AIR5_PRIMITIVES_REGIONS_PASS contexts=4 regions=5 failure_checks=%d sequential_words=exact q_carry_history=unchanged\n",failure_checks);return 0;
+    std::printf("AIR5_PRIMITIVES_REGIONS_PASS contexts=4 regions=5 failure_checks=%d sequential_words=exact q_carry_history=unchanged\n",failure_checks);
+    std::printf("AIR5_PRIMITIVE_SHELL_PASS cases=%d asymmetric_and_singleton=checked\n",shell_checks);return 0;
 }

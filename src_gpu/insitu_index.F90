@@ -7,6 +7,7 @@ module insitu_index_api
   public :: index_exchange_prepare,index_exchange,index_exchange_end,index_usage,index_view,index_end
   public :: index_source
   public :: index_statistics
+  public :: index_air5_mean
   public :: index_selected
   type,bind(C) :: index_region
     integer(c_int) :: first(3),extent(3),lower(3),shape(3),origin(3),intervals(3),periodic(3)
@@ -28,6 +29,12 @@ module insitu_index_api
       type(c_ptr),value :: parent
       type(device_view),intent(in) :: state
       integer(c_int),intent(in) :: owned(3)
+      integer(c_int),value :: source
+    end function
+    integer(c_int) function index_air5_mean(parent,duration,source) bind(C,name='astr_insitu_index_air5_mean')
+      import c_ptr,c_int,c_double
+      type(c_ptr),value :: parent
+      real(c_double),value :: duration
       integer(c_int),value :: source
     end function
     integer(c_int) function index_begin(parent,nodes,outputs,nraw,raw,nfields,fields,weights,geometry,xyz,bytes) &

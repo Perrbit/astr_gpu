@@ -6,7 +6,8 @@ module chemistry_device_step
   use halo_transport, only: device_exchange_axis
   use fluid_explicit, only: fluid_gradient_basic_boundary
   use shock_sensor_cpp, only: shock_raw_cpp,shock_expand_cpp
-  use chemistry_device_properties, only: air5_device_primitives,air5_device_primitives_regions,air5_device_check
+  use chemistry_device_properties, only: air5_device_primitives,air5_device_primitives_regions, &
+    air5_device_primitives_shell,air5_device_check
   use chemistry_device_transport, only: air5_filter_apply,air5_legacy_filter_apply,air5_compensation_axis
   use chemistry_device_transport, only: air5_gradients,air5_diffusive_flux,air5_flux_exchange, &
     air5_diffusion_begin,air5_diffusion_budget,air5_diffusion_rhs,air5_diffusion_report,air5_diffusion_read_report
@@ -15,7 +16,7 @@ module chemistry_device_step
     air5_conv_full_state,air5_conv_species_budget,air5_conv_consistent_species
   implicit none
   private
-  public :: air5_prepare_spatial_state,air5_prepare_rk_stage
+  public :: air5_prepare_spatial_state,air5_prepare_rk_stage,air5_refresh_physical_primitives
   public :: air5_add_viscous_rhs,air5_limit_viscous_rhs
   public :: air5_prepare_shock_mask,air5_assemble_raw_convection,air5_limit_convection_rhs
   public :: air5_rk_transport_stage
@@ -182,18 +183,30 @@ contains
     status=collect_status(handle,comm)
   end function
 
-  integer(c_int) function air5_prepare_spatial_state(handle,last,halo,preserve,compensated,comm,boundary) result(status)
+  integer(c_int) function air5_refresh_physical_primitives(handle,last,preserve,comm,recovered) result(status)
+    type(c_ptr),intent(in) :: handle
+    integer(c_int),intent(in) :: last(3),preserve,comm
+    integer(c_int),optional,intent(in) :: recovered(3,2)
+    if(present(recovered))then
+      call check_api(air5_device_primitives_shell(handle,recovered(:,1),recovered(:,2),preserve),comm,'primitive shell')
+    else
+      call check_api(air5_device_primitives(handle,[0_c_int,0_c_int,0_c_int],last,preserve),comm,'interior primitives')
+    endif
+    status=collect_status(handle,comm)
+  end function
+
+  integer(c_int) function air5_prepare_spatial_state(handle,last,halo,preserve,compensated,comm,boundary,recovered) result(status)
     type(c_ptr),intent(in) :: handle
     integer(c_int),intent(in) :: last(3),halo,preserve,comm
     logical,intent(in) :: compensated
     procedure(boundary_step) :: boundary
+    integer(c_int),optional,intent(in) :: recovered(3,2)
     integer(c_int) :: axis,lo(3,6),hi(3,6)
     integer(c_int),parameter :: origin(3)=0_c_int
 
     status=boundary(handle)
     if(status/=0_c_int)return
-    call check_api(air5_device_primitives(handle,origin,last,preserve),comm,'interior primitives')
-    status=collect_status(handle,comm)
+    status=air5_refresh_physical_primitives(handle,last,preserve,comm,recovered)
     if(status/=0_c_int)return
 
     do axis=1_c_int,3_c_int

@@ -7,6 +7,9 @@ module insitu_air5_statistics
   use insitu_velocity_statistics
   use insitu_time_integral, only: clipped_trapezoid
   use insitu_spatial_statistics, only: spatial_mean
+#ifdef ASTR_GPU_CPP
+  use insitu_statistics_cpp, only: push_air5_volume_cpp,pack_air5_volume_cpp,restore_air5_volume_cpp,release_air5_volume_cpp
+#endif
   implicit none
   private
   public :: accumulate_air5_statistics,air5_statistics_file,finish_air5_statistics,air5_statistics_host_bytes
@@ -184,6 +187,10 @@ contains
     if(use_gpu) then
       call push_air5_statistics_gpu(extent,weights,time_weights,samples>0,volume,mean,variance)
     else
+#elif defined(ASTR_GPU_CPP)
+    if(use_gpu) then
+      call push_air5_volume_cpp(weights,window,time,time_weights,volume,mean,variance)
+    else
 #else
     call require(.not.use_gpu,'volume device statistics require CUDA')
 #endif
@@ -213,7 +220,7 @@ contains
         call require(ok,'invalid CPU physical volume reduction')
         mean=reduced(1:3); variance=reduced(4:6)
       end block
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     endif
 #endif
     if(reduction_saved) then
@@ -240,6 +247,8 @@ contains
     if(writing.and.use_gpu) then
 #ifdef _CUDA
       call pack_air5_statistics_gpu(values,window_saved,clock)
+#elif defined(ASTR_GPU_CPP)
+      call pack_air5_volume_cpp(values)
 #endif
       return
     endif
@@ -267,6 +276,8 @@ contains
     call require(all_ok,'invalid volume packed statistics state')
 #ifdef _CUDA
     if(.not.writing.and.use_gpu) call restore_air5_statistics_gpu(values,weights)
+#elif defined(ASTR_GPU_CPP)
+    if(.not.writing.and.use_gpu) call restore_air5_volume_cpp(values,weights,window_saved,clock)
 #endif
   end subroutine
 
@@ -344,6 +355,7 @@ contains
     type(velocity_statistics) :: candidate
     type(velocity_statistics_result) :: result
     character(1200) :: filename
+    integer(int32) :: header(10)
     integer :: i,j,k,g,a,base,field,unit,status,closed
     logical :: ok,all_ok
     if(samples==0) return
@@ -386,10 +398,11 @@ contains
     open(newunit=unit,file=trim(filename),status='new',access='stream',form='unformatted',action='write', &
       convert='little_endian',iostat=status)
     call require(status==0,'cannot create volume statistics export')
-    write(unit,iostat=status) 'ASTRAS01',int([integer(int64) :: &
-      1,last_step,mpirank,extent,ig0,jg0,kg0,merge(1,0,reduction_saved)],int32), &
-      [previous_time,window_saved,covered_duration,volume_saved],samples,regional_values, &
-      coordinates,weights,moments
+    header(1:3)=[1_int32,int(last_step,int32),int(mpirank,int32)]
+    header(4:6)=int(extent,int32)
+    header(7:10)=int([ig0,jg0,kg0,merge(1,0,reduction_saved)],int32)
+    write(unit,iostat=status) 'ASTRAS01',header,[previous_time,window_saved,covered_duration,volume_saved], &
+      samples,regional_values,coordinates,weights,moments
     close(unit,iostat=closed)
     call require(status==0.and.closed==0,'cannot write volume statistics export')
     if(reduction_saved) call write_regional_summary(prefix,moments)
@@ -397,6 +410,8 @@ contains
     deallocate(weights)
 #ifdef _CUDA
     call release_air5_statistics_gpu()
+#elif defined(ASTR_GPU_CPP)
+    call release_air5_volume_cpp()
 #endif
     samples=0; last_step=-1; extent=0; covered_duration=0.e0_real_kind
   end subroutine

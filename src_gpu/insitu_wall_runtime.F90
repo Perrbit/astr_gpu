@@ -5,10 +5,10 @@ module insitu_wall_runtime_cpp
   use astr_precision, only: real_kind,real_bytes
   use astr_precision_mpi, only: mpi_real_type
   use ieee_arithmetic, only: ieee_is_finite
-  use commvar, only: im,jm,km,hm,ja,numq,ndims,use_gpu,lreadgrid,conschm, &
+  use commvar, only: im,jm,km,hm,ia,ja,ka,numq,ndims,use_gpu,lreadgrid,conschm, &
     const2,const5,const6,reynolds,prandtl,tempconst,tempconst1,lihomo,ljhomo,lkhomo
   use commarray, only: x
-  use parallel, only: jg0,mpirank,mpisize,isize,jsize,ksize, &
+  use parallel, only: ig0,jg0,mpirank,mpisize,isize,jsize,ksize, &
     mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
   use boundary_high_order, only: high_order_wall_enabled
   use insitu_geometry, only: wall_frame
@@ -19,6 +19,7 @@ module insitu_wall_runtime_cpp
   private
   public :: catalog_wall_cpp_supported,begin_catalog_wall_cpp,end_catalog_wall_cpp,catalog_wall_line_cpp
   public :: prepare_wall_statistics_cpp,capture_and_push_wall_statistics_cpp
+  public :: air5_wall_span_cpp
   public :: pack_wall_statistics_cpp,restore_wall_statistics_cpp,release_wall_statistics_cpp
   public :: sbli_insitu_cpp_supported,catalog_sbli_wall_cpp_supported,capture_catalog_sbli_wall_cpp
   public :: capture_wall_packet_cpp
@@ -137,10 +138,24 @@ contains
     call MPI_Abort(MPI_COMM_WORLD,1,err)
   end subroutine
   logical function catalog_wall_cpp_supported() result(ok)
-    ok=use_gpu.and.c_associated(cpp_device_context()).and.numq==5.and.ndims==3.and.hm>=3.and.trim(conschm)=='643e'
-    if(lreadgrid) ok=ok.and.min(im,km)>=3.and.lihomo.and.lkhomo
-    if(high_order_wall_enabled) ok=ok.and.jm>=7
+    use commvar, only: flowtype,num_species,num_modequ,lcomb,nondimen,difschm
+    use bc, only: bctype
+    ok=use_gpu.and.c_associated(cpp_device_context()).and.ndims==3.and.hm>=3.and.trim(conschm)=='643e'
+    if(numq==11) then
+      ok=ok.and.real_bytes==8.and.flowtype=='air5hbl'.and.lcomb.and.num_species==5.and.num_modequ==1.and. &
+        .not.nondimen.and..not.lreadgrid.and.all([ia,ja,ka]==16).and.mpisize<=2.and.jm>=2.and. &
+        all(bctype==[11,50,41,51,1,1]).and.difschm=='643e'
+    else
+      ok=ok.and.numq==5
+      if(lreadgrid) ok=ok.and.min(im,km)>=3.and.lihomo.and.lkhomo
+      if(high_order_wall_enabled) ok=ok.and.jm>=7
+    endif
   end function
+  subroutine wall_layout(nw,first_y)
+    integer,intent(out) :: nw,first_y
+    nw=merge(1,0,jg0==0);first_y=merge(0,jm,jg0==0)
+    if(numq==5.and.jg0+jm==ja) nw=nw+1
+  end subroutine
   subroutine prepare_handle(handle,mode,statistics,host_budget,device_budget,reserve,ok)
     type(c_ptr),intent(out) :: handle
     character(*),intent(in) :: mode
@@ -153,24 +168,22 @@ contains
     integer(c_int) :: low(3),high(3),sizes(3),periodic(3),transport,status
     integer(c_size_t) :: free,total
     integer(int64) :: nodes,capacity,host_bytes,device_bytes,allocation_bytes,usage(10)
-    integer :: nw,first_y,layers,i,j,k,w,s,side,allocerr
+    integer :: nw,first_y,layers,i,j,k,w,s,side,allocerr,state_fields,nfields,groups
     logical :: frame_ok,valid,curved
     handle=c_null_ptr;transport=-1
     if(mode=='pinned') transport=0
     if(mode=='device-aware') transport=1
     curved=lreadgrid.and..not.high_order_wall_enabled
     ok=agreed(catalog_wall_cpp_supported().and.transport>=0);if(.not.ok) return
-    nw=0;first_y=jm
-    if(jg0==0) then
-      nw=nw+1;first_y=0
-    endif
-    if(jg0+jm==ja) nw=nw+1
-    layers=3;if(high_order_wall_enabled) layers=8
+    call wall_layout(nw,first_y)
+    layers=3;if(high_order_wall_enabled.and.numq==5) layers=8
+    state_fields=layers*merge(11,5,numq==11)
+    nfields=merge(18,4,numq==11);groups=merge(6,1,numq==11)
     nodes=int(im+1,int64)*(km+1)*nw
-    capacity=int(max(5*layers,12),int64)*nw*max(im+1,km+1)
+    capacity=int(max(state_fields,12),int64)*nw*max(im+1,km+1)
     host_bytes=9*nodes*real_bytes
     if(transport==0.and.mpisize>1) host_bytes=host_bytes+2*capacity*real_bytes
-    device_bytes=((5*layers+13+merge(30,0,statistics))*nodes+6_int64*(im+1)+2*capacity)*real_bytes+4
+    device_bytes=((state_fields+9+nfields+merge(30*groups,0,statistics))*nodes+6_int64*(im+1)+2*capacity)*real_bytes+4
     if(curved) device_bytes=device_bytes+4_int64*(im+7)*(km+7)*nw*real_bytes
     allocation_bytes=device_bytes
     if(.not.statistics.and.c_associated(history)) then
@@ -223,28 +236,47 @@ contains
     call prepare_handle(history,selected,.true.,host_budget,device_budget,reserve,ok)
     call require_status(merge(0,1,ok),'prepare device wall history')
   end subroutine
-  subroutine capture_wall_packet_cpp(mode,host_budget,device_budget,reserve,coordinates,fields,owned,download)
+  subroutine capture_wall_packet_cpp(mode,host_budget,device_budget,reserve,coordinates,fields,owned,download,success)
     character(*),intent(in) :: mode
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     real(real_kind),allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
     logical,allocatable,intent(out) :: owned(:,:,:)
     integer(int64),intent(out) :: download
+    logical,optional,intent(out) :: success
     type(c_ptr) :: sample
     integer(int64) :: usage(10)
-    integer :: nw,first_y,w,j,i,k,status
+    integer :: nw,first_y,w,j,i,k,status,nfields
+    integer(int64) :: nodes,bytes
     logical :: ok
+    download=0
+    call wall_layout(nw,first_y)
+    nfields=merge(18,4,numq==11)
     call prepare_handle(sample,mode,.false.,host_budget,device_budget,reserve,ok)
-    call require_status(merge(0,1,ok),'prepare wall sample packet')
-    nw=0;first_y=jm
-    if(jg0==0) then
-      nw=nw+1;first_y=0
+    if(present(success)) then
+      success=ok
+      if(.not.ok)return
     endif
-    if(jg0+jm==ja) nw=nw+1
-    allocate(coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4),owned(0:im,0:km,nw),stat=status)
-    call require_status(status,'allocate wall sample packet')
-    call require_status(wall_capture(sample),'capture wall sample packet')
-    if(size(fields)>0) call require_status( &
-      wall_download(sample,fields,int(size(fields,kind=int64)*real_bytes,c_size_t)),'download wall sample packet')
+    call require_status(merge(0,1,ok),'prepare wall sample packet')
+    call require_status(wall_metrics(sample,usage),'wall sample packet workspace')
+    nodes=int(im+1,int64)*(km+1)*nw
+    bytes=nodes*((3+nfields)*real_bytes+storage_size(.false.)/8)+usage(3)
+    status=1
+    if(bytes<=host_budget) allocate(coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,nfields), &
+      owned(0:im,0:km,nw),stat=status)
+    if(agreed(status==0)) then
+      status=wall_capture(sample)
+      if(status==0.and.nodes>0) status=wall_download(sample,fields,int(nodes*nfields*real_bytes,c_size_t))
+    else
+      status=1
+    endif
+    ok=agreed(status==0)
+    if(.not.ok) then
+      call require_status(wall_destroy(sample),'release failed wall sample packet')
+      if(present(success)) then
+        success=.false.;return
+      endif
+      call require_status(1,'assemble wall sample packet')
+    endif
     do w=1,nw
       j=first_y;if(w==2) j=jm
       do k=0,km
@@ -254,6 +286,7 @@ contains
       enddo
     enddo
     owned=.false.;owned(0:im-1,0:km-1,:)=.true.
+    if(numq==11.and.ig0+im==ia) owned(im,0:km-1,:)=.true.
     call require_status(wall_metrics(sample,usage),'wall sample packet transfer receipt')
     download=usage(8)
     call require_status(wall_destroy(sample),'release wall sample packet')
@@ -269,9 +302,22 @@ contains
     call require_status(wall_capture(history),'device wall statistics sample')
     call require_status(wall_statistics_push(history,weights,merge(1_c_int,0_c_int,previous)),'push device wall statistics')
     call require_status(wall_metrics(history,after),'after wall statistics')
-    write(*,'(a,i0,4(a,i0))') 'ASTR_INSITU_CPP_WALL_STATS rank=',mpirank, &
+    write(*,'(a,i0,5(a,i0))') 'ASTR_INSITU_CPP_WALL_STATS rank=',mpirank, &
       ' staging_d2h_bytes=',after(5)-before(5),' staging_h2d_bytes=',after(6)-before(6), &
-      ' status_d2h_bytes=',after(7)-before(7),' field_download_bytes=',after(8)-before(8)
+      ' status_d2h_bytes=',after(7)-before(7),' field_download_bytes=',after(8)-before(8), &
+      ' face_exchange_bytes=',after(4)-before(4)
+  end subroutine
+  subroutine air5_wall_span_cpp(weights,profile)
+    real(real_kind),contiguous,intent(in) :: weights(:)
+    real(real_kind),contiguous,intent(out) :: profile(:,:)
+    integer(c_int) :: owned_x
+    integer(int64) :: nodes
+    owned_x=int(im+merge(1,0,ig0+im==ia),c_int)
+    call require_status(wall_air5_span(history,weights,owned_x,profile),'AIR5 wall spanwise shear integral')
+    nodes=merge(int(im+1,int64),0_int64,jg0==0)
+    write(*,'(a,i0,3(a,i0))') 'ASTR_INSITU_CPP_WALL_SEPARATION rank=',mpirank, &
+      ' profile_download_bytes=',3*nodes*real_bytes,' weight_upload_bytes=',merge(km*real_bytes,0,jg0==0), &
+      ' status_download_bytes=',merge(4,0,jg0==0)
   end subroutine
   subroutine pack_wall_statistics_cpp(values,window,time)
     real(real_kind),contiguous,intent(out) :: values(:,:,:,:)

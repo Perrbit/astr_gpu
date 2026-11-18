@@ -144,8 +144,8 @@ contains
 #ifdef ASTR_GPU_CPP
     block
       use commvar, only: use_gpu
-      if(use_gpu.and.(source<0.or.source==3.or.source==4.or.source>8)) then
-        message='C++ solver-sample slice sources are not implemented'
+      if(use_gpu.and.(source<0.or.source>8)) then
+        message='unsupported C++ index slice source'
         call MPI_Comm_free(comm,err);call mpi_ok(err);return
       endif
     end block

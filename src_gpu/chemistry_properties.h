@@ -10,6 +10,9 @@ extern "C" {
 int astr_device_air5_prepare(void *handle);
 int astr_device_air5_conservative(void *handle,const int first[3],const int last[3]);
 int astr_device_air5_primitives(void *handle,const int first[3],const int last[3],int preserve_all);
+/* Refresh physical nodes outside the inclusive box just recovered by chemistry.
+ * The certified box must exclude all six rank faces. Ghosts are untouched. */
+int astr_device_air5_primitives_shell(void *handle,const int first[3],const int last[3],int preserve_all);
 /* Refresh several inclusive boxes in one status phase. Bounds are Fortran
  * (3,regions), i.e. three coordinates per box. Clears status once; later valid
  * regions cannot erase an earlier failure. Failed nodes do not write caches.

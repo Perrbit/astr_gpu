@@ -53,10 +53,11 @@ def main():
             subprocess.run(command, cwd=output, stdout=log, stderr=subprocess.STDOUT, check=True)
         text = (output / name).read_text()
         assert text.count(marker) == 1
+        assert text.count('AIR5_PRIMITIVE_SHELL_PASS cases=24 asymmetric_and_singleton=checked') == 1
         if name == 'memcheck.log':
             assert text.count('ERROR SUMMARY: 0 errors') == 1
             assert text.count('LEAK SUMMARY: 0 bytes leaked') == 1
-    report = dict(contexts=4, regions=5, failure_checks=16,
+    report = dict(contexts=4, regions=5, failure_checks=16, shell_checks=24,
                   cache_words='batch equals separate checked calls',
                   authoritative_words='q/carry/history unchanged',
                   coverage='physical, two face halos, skipped exterior corner, duplicate node',

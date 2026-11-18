@@ -399,6 +399,10 @@ module mainloop
     use validation_io, only: write_compact_statistics_validation_snapshot
 #ifdef ASTR_GPU_CPP
     use production_statistics_runtime, only: accumulate_compact_statistics_cpp,reset_compact_statistics_cpp
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_runtime_cpp, only: sample_air5_mean_cpp
+    use chemistry_mean_statistics_cpp, only: reset_air5_mean_statistics_cpp
+#endif
 #endif
 #ifdef _CUDA
     use halo_exchange_gpu, only: exchange_field_halo_gpu
@@ -428,7 +432,17 @@ module mainloop
     if(new_window) then
       call reset_mean_statistics_window()
 #ifdef ASTR_GPU_CPP
-      if(use_gpu) call reset_compact_statistics_cpp()
+      if(use_gpu) then
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(lcomb) then
+          call reset_air5_mean_statistics_cpp()
+        else
+#endif
+          call reset_compact_statistics_cpp()
+#ifdef ASTR_AIR5_CHEMISTRY
+        endif
+#endif
+      endif
 #endif
 #ifdef _CUDA
       if(use_gpu) then
@@ -448,7 +462,15 @@ module mainloop
       started=ptime()
 #ifdef ASTR_GPU_CPP
       if(use_gpu) then
-        call accumulate_compact_statistics_cpp()
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(lcomb) then
+          call sample_air5_mean_cpp()
+        else
+#endif
+          call accumulate_compact_statistics_cpp()
+#ifdef ASTR_AIR5_CHEMISTRY
+        endif
+#endif
       else
 #endif
 #ifdef _CUDA

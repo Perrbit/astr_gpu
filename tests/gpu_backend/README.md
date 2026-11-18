@@ -5796,10 +5796,11 @@ There are130 functional HDF5 file-pair comparisons; maximum budget ratio is
 0.008326672684688674. NP2-x Memcheck has zero errors/leaks and its seven files
 are also word-equal to the continuous result. All MPI here is host-side
 metadata/HDF5, not device-buffer transport.
-The module is compiled into ordinary CPP ASTR but ordinary AIR5 does not yet
-dispatch it. This component does not close run-control integration, complete
-checkpoint bundles, cross-topology restart, in-situ mean providers, reacting
-CFD/G2, physics or DCU.
+The ordinary C++ AIR5 run loop is tested separately by
+`run_cpp_air5_output.py --mean-statistics`. That test covers complete-step
+sampling, scheduled output, same-topology checkpoint bundles and observation
+isolation for the specified-top HBL case (see migration progress 10.219).
+The component test does not cover in-situ mean consumers, CFD/G2, physics or DCU.
 
 ## AIR5 Captured Projection Geometry Diagnosis
 

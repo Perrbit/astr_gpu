@@ -12,6 +12,9 @@ module index_slice_cpp
   use insitu_statistics_cpp, only: statistics_cpp_view
   use insitu_fields, only: insitu_owned_counts
   use insitu_selected_device_cpp, only: selected_active_views_cpp
+#ifdef ASTR_AIR5_CHEMISTRY
+  use chemistry_mean_statistics_cpp, only: slice_air5_mean_info_cpp
+#endif
   implicit none
   private
   public :: allocate_index_slice_cpp,release_index_slice_cpp,fill_index_slice_cpp
@@ -28,12 +31,22 @@ contains
     integer,intent(in) :: source
     type(device_view) :: view,indices
     integer(c_int) :: ids(5),cells(3),nf,status
+#ifdef ASTR_AIR5_CHEMISTRY
+    logical :: active,covered
+    integer(int64) :: samples
+    real(c_double) :: window(2),duration
+#endif
     ok=.false.
     select case(source)
     case(0:2)
       view%data=c_null_ptr
       if(source/=0) call statistics_cpp_view(view)
       ok=index_statistics(cpp_device_context(),view,int(insitu_owned_counts(),c_int),int(source,c_int))==0
+#ifdef ASTR_AIR5_CHEMISTRY
+    case(3:4)
+      call slice_air5_mean_info_cpp(active,covered,samples,window,duration)
+      if(covered) ok=index_air5_mean(cpp_device_context(),duration,int(source,c_int))==0
+#endif
     case(5:8)
       status=selected_active_views_cpp(view,indices,ids,cells,nf)
       if(status==0) status=index_selected(cpp_device_context(),view,indices,nf,ids,cells,int(source,c_int),const2,const6)

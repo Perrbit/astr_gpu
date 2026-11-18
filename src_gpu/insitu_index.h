@@ -32,6 +32,7 @@ int astr_insitu_index_source(void *parent,int coordinates,AstrDeviceView *view);
 /* 0 instantaneous, 1 Reynolds, 2 Favre velocity. Borrow the owned moments;
  * mean center values use the completed unique-owner neighborhood packet. */
 int astr_insitu_index_statistics(void *parent,const AstrDeviceView *state,const int owned[3],int source);
+int astr_insitu_index_air5_mean(void *parent,double duration,int source);
 int astr_insitu_index_selected(void *parent,const AstrDeviceView *state,const AstrDeviceView *indices,
     int fields,const int *ids,const int cells[3],int source,astr_numerical_real const2,astr_numerical_real const6);
 int astr_insitu_index_usage(void *parent,int64_t values[3]);

@@ -8,6 +8,7 @@ extern "C" {
 /* Owned, half-open node box; a physical upper wall may add one owned node.
  * Parent/stream are borrowed. The solver q is never modified. */
 int astr_insitu_moments_create(void *parent,const int owned[3],const astr_numerical_real window[2],void **moments);
+int astr_insitu_moments_create_air5(void *parent,const int owned[3],const astr_numerical_real window[2],void **moments);
 /* Endpoint weights come from the shared Fortran clipped_trapezoid routine.
  * The first observation seeds previous rho/u with both weights zero. */
 int astr_insitu_moments_push(void *moments,astr_numerical_real time,const astr_numerical_real weights[2]);

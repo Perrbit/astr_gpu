@@ -153,14 +153,16 @@ contains
 
   subroutine legacy_info(active,covered,window,count,duration)
     use statistic, only: nsamples,lmeanallocated,liosta,time_sbeg,mean_last_sample_identity,mean_time_weight
-#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+#if defined(ASTR_GPU_CPP) && defined(ASTR_AIR5_CHEMISTRY)
+    use chemistry_mean_statistics_cpp, only: slice_air5_mean_info_gpu=>slice_air5_mean_info_cpp
+#elif defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
     use chemistry_mean_statistics_gpu, only: slice_air5_mean_info_gpu
 #endif
     logical,intent(out) :: active,covered
     real(real_kind),intent(out) :: window(2)
     real(real_kind),intent(out) :: duration
     integer(int64),intent(out) :: count
-#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+#if (defined(ASTR_GPU_CPP) || defined(_CUDA)) && defined(ASTR_AIR5_CHEMISTRY)
     if(use_gpu.and.numq==11) then
       call slice_air5_mean_info_gpu(active,covered,count,window,duration);return
     endif

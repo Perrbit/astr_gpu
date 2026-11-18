@@ -5,7 +5,7 @@ module chemistry_mean_statistics_cpp
   use mpi,only:MPI_COMM_WORLD
   use astr_precision,only:real_kind,real_bytes
   use device_state,only:device_view,device_state_view,device_state_upload,device_state_download, &
-    device_air5_mean_sum,device_air5_mean_endpoint
+    device_air5_mean_sum,device_air5_mean_endpoint,device_air5_mean_velocity,device_velocity
   use chemistry_device_statistics
   use checkpoint_state_io,only:checkpoint_state_identity,checkpoint_state_transfer, &
     allocate_checkpoint_buffer,checkpoint_state_require
@@ -36,10 +36,12 @@ contains
     type(c_ptr),intent(in) :: handle
     integer(int64),intent(in) :: device_budget
     integer(int64) :: bytes
+    type(device_view) :: velocity
     call checkpoint_state_require(.not.active,MPI_COMM_WORLD,'C++ AIR5 mean statistics already initialized')
     call checkpoint_state_require(real_bytes==8.and.numq==11.and.num_species==5.and.num_modequ==1.and. &
       .not.nondimen.and.diffterm,MPI_COMM_WORLD,'C++ AIR5 mean statistics configuration')
-    bytes=int(im+1,int64)*(jm+1)*(km+1)*58*8+4
+    call check(device_state_view(handle,device_velocity,velocity),'AIR5 mean source velocity view')
+    bytes=int(im+1,int64)*(jm+1)*(km+1)*58*8+product(int(velocity%extent,int64))*velocity%element_bytes+4
     call checkpoint_state_require(bytes<=device_budget,MPI_COMM_WORLD,'AIR5 mean statistics device budget')
     context=handle
     call check(air5_mean_prepare(context),'C++ AIR5 mean statistics allocation')
@@ -82,12 +84,15 @@ contains
     call check(device_state_view(context,device_air5_mean_sum,view),'AIR5 mean sum view')
     bytes=product(int(view%extent,int64))*view%element_bytes
     call check(device_state_view(context,device_air5_mean_endpoint,view),'AIR5 mean endpoint view')
+    bytes=bytes+product(int(view%extent,int64))*view%element_bytes
+    call check(device_state_view(context,device_air5_mean_velocity,view),'AIR5 mean scratch velocity view')
     bytes=bytes+product(int(view%extent,int64))*view%element_bytes+4
   end function
 
-  subroutine accumulate_air5_mean_statistics_cpp()
+  subroutine accumulate_air5_mean_statistics_cpp(ends)
     use commvar,only:nstep,time,lavg
     use statistic,only:nsamples
+    integer(c_int),optional,intent(in) :: ends(3,2)
     real(real64) :: interval
     integer(c_int) :: failed
     if(.not.active)return
@@ -97,6 +102,8 @@ contains
     call checkpoint_state_require(ieee_is_finite(time).and.ieee_is_finite(interval).and. &
       (sample_count==0.or.interval>0),MPI_COMM_WORLD,'invalid AIR5 mean sampling clock')
     call checkpoint_state_require(sample_count<int(huge(nsamples),int64),MPI_COMM_WORLD,'AIR5 mean sample count overflow')
+    if(present(ends)) &
+      call check(air5_mean_refresh_velocity(context,ends(:,1),ends(:,2)),'C++ AIR5 mean velocity halo and gradient')
     call check(air5_mean_sample(context,interval,merge(1_c_int,0_c_int,sample_count>0)),'C++ AIR5 mean sample launch')
     call check(air5_mean_check(context,failed),'C++ AIR5 mean sample status')
     call checkpoint_state_require(failed==0,MPI_COMM_WORLD,'AIR5 mean sampling transport or finite-state failure')

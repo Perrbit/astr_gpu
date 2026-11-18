@@ -22,6 +22,7 @@ struct IndexPlan {
     AstrDeviceView selected_indices{};
     int selected_fields[5]{},selected_count=0;
     Real const2=0,const6=0;
+    Real mean_duration=0;
     Real weights[49]{};
     int64_t d2h=0,h2d=0,sent=0;
 };
@@ -88,6 +89,7 @@ struct Sources {
     AstrDeviceView density,velocity,pressure,temperature,tv,species,moments,selected_indices,q;
     int source,owned[3],selected_fields[5],selected_count;
     Real const2,const6;
+    Real mean_duration;
 };
 Sources sources(const IndexPlan &p)
 {
@@ -99,7 +101,8 @@ Sources sources(const IndexPlan &p)
     out.moments=p.moments;out.selected_indices=p.selected_indices;out.q=s.fields[ASTR_DEVICE_Q].view;out.source=p.source;
     for(int a=0;a<3;++a) out.owned[a]=p.owned[a];
     for(int a=0;a<5;++a) out.selected_fields[a]=p.selected_fields[a];
-    out.selected_count=p.selected_count;out.const2=p.const2;out.const6=p.const6;return out;
+    out.selected_count=p.selected_count;out.const2=p.const2;out.const6=p.const6;
+    out.mean_duration=p.mean_duration;return out;
 }
 __device__ Real source_value(const Sources &s,int i,int j,int k,int field)
 {
@@ -130,6 +133,12 @@ __device__ Real source_value(const Sources &s,int i,int j,int k,int field)
         const Real u=at(s.q,i,j,k,2)/rho,v=at(s.q,i,j,k,3)/rho,w=at(s.q,i,j,k,4)/rho;
         const Real pressure=(at(s.q,i,j,k,5)-Real(.5)*rho*(u*u+v*v+w*w))/s.const6;
         return (field==5?pressure:(pressure/rho)*s.const2)-mean;
+    }
+    if(s.source==3 || s.source==4) {
+        const bool favre=s.source==4;
+        const int slot=!favre && field>=2 && field<=4 ? field+26 : field;
+        const Real denominator=favre ? at(s.moments,i,j,k,1) : s.mean_duration;
+        return at(s.moments,i,j,k,slot)/denominator;
     }
     if(s.source!=0) {
         const size_t n=i+static_cast<size_t>(s.owned[0])*(j+static_cast<size_t>(s.owned[1])*k);
@@ -445,7 +454,8 @@ extern "C" int astr_insitu_index_statistics(void *parent,const AstrDeviceView *s
 {
     auto *p=plan(parent);if(!p) return ASTR_DEVICE_NOT_ALLOCATED;
     if(source==0) {
-        for(int i=0;i<p->raw_count;++i) if(p->raw[i]>6) return ASTR_DEVICE_INVALID_ARGUMENT;
+        const int primitives=p->parent->air5_ready ? 12 : 6;
+        for(int i=0;i<p->raw_count;++i) if(p->raw[i]>primitives) return ASTR_DEVICE_INVALID_ARGUMENT;
         p->source=0;p->moments=AstrDeviceView{};return 0;
     }
     if((source!=1 && source!=2) || !state || !state->data || !owned || state->rank!=2 || state->element_bytes!=sizeof(Real) ||
@@ -462,6 +472,21 @@ extern "C" int astr_insitu_index_statistics(void *parent,const AstrDeviceView *s
         (source==2 && (p->fields[n]==1 || p->fields[n]==27))) return ASTR_DEVICE_INVALID_ARGUMENT;
     p->moments=*state;p->source=source;
     for(int a=0;a<3;++a) p->owned[a]=owned[a];
+    return 0;
+}
+extern "C" int astr_insitu_index_air5_mean(void *parent,double duration,int source)
+{
+    auto *p=plan(parent);if(!p) return ASTR_DEVICE_NOT_ALLOCATED;
+    const AstrDeviceView moments=p->parent->fields[ASTR_DEVICE_AIR5_MEAN_SUM].view;
+    if(!moments.data) return ASTR_DEVICE_NOT_ALLOCATED;
+    if((source!=3 && source!=4) || !(duration>0) || !std::isfinite(duration))
+        return ASTR_DEVICE_INVALID_ARGUMENT;
+    for(int i=0;i<p->raw_count;++i) {
+        const int field=p->raw[i];
+        if(source==3 ? (field<1 || field>5) : (field<2 || field>6 || field==5))
+            return ASTR_DEVICE_INVALID_ARGUMENT;
+    }
+    p->moments=moments;p->mean_duration=duration;p->source=source;
     return 0;
 }
 extern "C" int astr_insitu_index_selected(void *parent,const AstrDeviceView *state,const AstrDeviceView *indices,

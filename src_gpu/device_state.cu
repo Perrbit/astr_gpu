@@ -68,7 +68,8 @@ int release(State *state)
                    state->nscbc_outlet_plane.view.data,state->nscbc_top_target.view.data,state->nscbc_top_plane.view.data,
                    state->nscbc_top_mach,state->nscbc_top_prediff.view.data,state->slip_lower_mask,state->lower_wall_velocity.view.data,
                    state->inflow_slices.view.data,state->critical_mask,state->nscbc_incident_status,state->air5_failure,
-                   state->air5_mean_failure,state->air5_diffusion_report,state->air5_convection_report};
+                   state->air5_mean_failure,state->air5_diffusion_report,state->air5_convection_report,
+                   state->air5_conservation_work};
     for (void *pointer : work) {
         if (!pointer) continue;
         const cudaError_t freed = cudaFree(pointer);

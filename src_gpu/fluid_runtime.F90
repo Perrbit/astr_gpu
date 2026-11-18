@@ -30,6 +30,8 @@ module fluid_runtime
   use me6_flow_cpp, only: prepare_me6_cpp,me6_diffusion_cpp,report_me6_cpp
 #ifdef ASTR_AIR5_CHEMISTRY
   use chemistry_runtime_cpp, only: initialize_air5_cpp,advance_air5_cpp,check_air5_cpp_state,transfer_air5_aux_cpp
+  use chemistry_mean_statistics_cpp, only: release_air5_mean_statistics_cpp
+  use chemistry_conservation_cpp, only: close_air5_conservation_file_cpp
 #endif
   implicit none
   private
@@ -1741,6 +1743,12 @@ contains
     call release_compact_flow_cpp()
     call release_dynamic_inflow_cpp()
     if(diffterm.and.viscous_form=='me6_opti') call report_me6_cpp(context)
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb) then
+      call release_air5_mean_statistics_cpp()
+      call close_air5_conservation_file_cpp()
+    endif
+#endif
     call check(device_state_destroy(context),'release device state')
     if(allocated(lower_wall_velocity)) deallocate(lower_wall_velocity)
     host_primitives_current=.false.

@@ -7,6 +7,7 @@
 #include "insitu_wall.h"
 #include "halo_transport.h"
 #include "device_state_internal.cuh"
+#include "chemistry_properties_math.cuh"
 using Real=astr::numerical_real;
 
 namespace {
@@ -16,7 +17,7 @@ struct Wall {
     MPI_Comm comm=MPI_COMM_NULL;
     int rank=0,nx=0,nz=0,nw=0,first=0,layers=3,mode=0;
     int lower[3]{},upper[3]{},sizes[3]{},periodic[3]{};
-    bool curved=false,borrowed=false,valid=false,previous=false;
+    bool curved=false,air5=false,borrowed=false,valid=false,previous=false;
     size_t nodes=0,capacity=0;
     Real *state=nullptr,*primitive=nullptr,*geometry=nullptr,*fields=nullptr,*line=nullptr;
     Real *send=nullptr,*receive=nullptr,*send_host=nullptr,*receive_host=nullptr;
@@ -24,14 +25,17 @@ struct Wall {
     int *invalid=nullptr;
     int64_t d2h=0,h2d=0,sent=0,scalar=0,observed=0,captures=0,setup=0;
     Real material[7]{};
+    int state_fields() const {return (air5?11:5)*layers;}
+    int fields_count() const {return air5?18:4;}
+    int groups() const {return air5?6:1;}
 };
 struct Material {Real c[7];};
 const MPI_Datatype real_type=sizeof(Real)==sizeof(float)?MPI_FLOAT:MPI_DOUBLE;
 size_t primitive_nodes(const Wall &p) {return static_cast<size_t>(p.nx+6)*(p.nz+6)*p.nw;}
 int64_t device_bytes(const Wall &p)
 {
-    return sizeof(Real)*((5*p.layers+13)*p.nodes+(p.curved?4*primitive_nodes(p):0)+
-        6*p.nx+2*p.capacity+(p.moments?30*p.nodes:0))+sizeof(int);
+    return sizeof(Real)*((p.state_fields()+9+p.fields_count())*p.nodes+(p.curved?4*primitive_nodes(p):0)+
+        6*p.nx+2*p.capacity+(p.moments?30*p.groups()*p.nodes:0))+sizeof(int);
 }
 int agree(MPI_Comm comm,int rank,int local)
 {
@@ -64,13 +68,14 @@ __device__ size_t primitive_index(int i,int k,int w,int c,int nx,int nz,int nw)
 {
     return i+3+static_cast<size_t>(nx+6)*(k+3+(nz+6)*(w+nw*c));
 }
-__global__ void pack(AstrDeviceView q,Real *state,int nx,int nz,int nw,int first,int jm,int layers,size_t nodes)
+__global__ void pack(AstrDeviceView q,Real *state,int nx,int nz,int nw,int first,int jm,int layers,int components,size_t nodes)
 {
     const size_t n=static_cast<size_t>(blockIdx.x)*blockDim.x+threadIdx.x;
     if(n>=nodes) return;
     const int i=n%nx,k=(n/nx)%nz,w=n/(static_cast<size_t>(nx)*nz);
     const int j=w==0?first:jm,side=j==jm?-1:1;
-    for(int m=0;m<layers;++m) for(int c=0;c<5;++c) state[n+nodes*(5*m+c)]=at(q,i,j+side*m,k,c+1);
+    for(int m=0;m<layers;++m) for(int c=0;c<components;++c)
+        state[n+nodes*(components*m+c)]=at(q,i,j+side*m,k,c+1);
 }
 template<bool unpack>
 __global__ void endpoint(Real *state,Real *buffer,int nx,int nz,int nw,int axis,size_t count)
@@ -171,17 +176,72 @@ __global__ void derive(const Real *state,const Real *primitive,const Real *geome
     const Real values[4]={pressure[0],shear,heat,ny};
     for(int c=0;c<4;++c) {if(!isfinite(values[c])) atomicExch(bad,1);fields[n+nodes*c]=values[c];}
 }
-__global__ void selected_line(const Real *geometry,const Real *fields,Real *line,int nx,int nz,int nw,int k,int w)
+__global__ void derive_air5(const Real *state,Real *fields,AstrDeviceView metric,int nx,int nz,size_t nodes,int *bad)
+{
+    const size_t n=static_cast<size_t>(blockIdx.x)*blockDim.x+threadIdx.x;
+    if(n>=nodes)return;
+    const int i=n%nx,k=(n/nx)%nz;
+    double v[3][12],mu,kt,kv,smu[5],binary[25],diffusion[5];
+    for(int m=0;m<3;++m) {
+        double q[11];
+        for(int c=0;c<11;++c)q[c]=state[n+nodes*(11*m+c)];
+        if(astr::air5::conservative_to_primitive(q,false,v[m][0],v[m]+1,v[m][4],v[m]+7,v[m][5],v[m][6])) {
+            atomicExch(bad,1);return;
+        }
+    }
+    const double normal=at(metric,i,0,k,2,2);
+    if(!(isfinite(normal) && normal>0) ||
+        astr::air5::transport_properties(v[0][4],v[0][5],v[0][6],v[0]+7,mu,kt,kv,smu,binary,diffusion)) {
+        atomicExch(bad,1);return;
+    }
+    double derivative[3];const int columns[]={1,4,5};
+    for(int a=0;a<3;++a) {
+        const int c=columns[a];
+        derivative[a]=(-.5*v[2][c]+2.*v[1][c]-1.5*v[0][c])*normal;
+    }
+    for(int c=0;c<12;++c)fields[n+nodes*c]=v[0][c];
+    const double tr=-kt*derivative[1],vib=-kv*derivative[2];
+    const double wall[]={mu*derivative[0],tr,vib,0.,tr+vib,1.};
+    for(int c=0;c<6;++c) {
+        if(!isfinite(wall[c]))atomicExch(bad,1);
+        fields[n+nodes*(c+12)]=wall[c];
+    }
+}
+__global__ void selected_line(const Real *geometry,const Real *fields,Real *line,int nx,int nz,int nw,int k,int w,bool air5)
 {
     const int i=blockIdx.x*blockDim.x+threadIdx.x;
     if(i>=nx) return;
     const size_t nodes=static_cast<size_t>(nx)*nz*nw,n=i+static_cast<size_t>(nx)*(k+nz*w);
-    for(int c=0;c<6;++c) line[6*i+c]=c<3?geometry[n+nodes*c]:fields[n+nodes*(c-3)];
+    const int air5_columns[]={6,12,16};
+    for(int c=0;c<3;++c) {
+        line[6*i+c]=geometry[n+nodes*c];
+        line[6*i+c+3]=fields[n+nodes*(air5?air5_columns[c]:c)];
+    }
+}
+__global__ void spanwise_air5_shear(const Real *geometry,const Real *fields,const Real *weights,
+    Real *profile,int nx,int nz,int owned_x,int *bad)
+{
+    const int i=blockIdx.x*blockDim.x+threadIdx.x;
+    if(i>=nx)return;
+    const size_t nodes=static_cast<size_t>(nx)*nz;
+    Real wx=0,ws=0,measure=0;
+    if(i<owned_x) {
+        for(int k=0;k<nz-1;++k) {
+            const size_t n=i+static_cast<size_t>(nx)*k;
+            wx+=weights[k]*geometry[n];
+            ws+=weights[k]*fields[n+12*nodes];
+            measure+=weights[k];
+        }
+    }
+    if(!(isfinite(wx) && isfinite(ws) && isfinite(measure)))atomicExch(bad,1);
+    profile[i]=wx;profile[i+nx]=ws;profile[i+2*nx]=measure;
 }
 __global__ void push_moments(const Real *fields,Real *moments,size_t nodes,Real w0,Real w1,bool previous,int *bad)
 {
     const size_t n=static_cast<size_t>(blockIdx.x)*blockDim.x+threadIdx.x;
     if(n>=nodes) return;
+    fields+=3*static_cast<size_t>(blockIdx.y)*nodes;
+    moments+=30*static_cast<size_t>(blockIdx.y)*nodes;
     Real s[30]{};
     if(previous) for(int c=0;c<30;++c) s[c]=moments[n+nodes*c];
     for(int e=0;e<2;++e) {
@@ -213,6 +273,8 @@ __global__ void mean_fields(const Real *moments,Real *fields,size_t nodes,Real d
 {
     const size_t n=static_cast<size_t>(blockIdx.x)*blockDim.x+threadIdx.x;
     if(n>=nodes) return;
+    fields+=3*static_cast<size_t>(blockIdx.y)*nodes;
+    moments+=30*static_cast<size_t>(blockIdx.y)*nodes;
     if(moments[n+4*nodes]!=duration) {atomicExch(bad,1);return;}
     for(int c=0;c<3;++c) {
         const Real value=moments[n+nodes*(c+6)];
@@ -224,7 +286,7 @@ int exchange(Wall &p,int axis,int side,size_t count,bool &received)
 {
     received=false;
     if(p.sizes[axis]==1) {
-        if(!p.periodic[axis]) return 0;
+        if(!p.periodic[axis] || count==0) return 0;
         received=true;return static_cast<int>(cudaMemcpyAsync(p.receive,p.send,count*sizeof(Real),cudaMemcpyDeviceToDevice,p.parent->stream));
     }
     const int destination=side==0?p.lower[axis]:p.upper[axis],source=side==0?p.upper[axis]:p.lower[axis];
@@ -248,7 +310,8 @@ int exchange(Wall &p,int axis,int side,size_t count,bool &received)
 int allocate_moments(Wall &p)
 {
     int status=0;
-    if(!p.moments && p.nodes>0) status=static_cast<int>(cudaMalloc(reinterpret_cast<void **>(&p.moments),30*p.nodes*sizeof(Real)));
+    if(!p.moments && p.nodes>0) status=static_cast<int>(
+        cudaMalloc(reinterpret_cast<void **>(&p.moments),30*p.groups()*p.nodes*sizeof(Real)));
     return agree(p.comm,p.rank,status);
 }
 }
@@ -274,16 +337,21 @@ extern "C" int astr_insitu_wall_create(void *parent,int communicator,const int l
         parts*=sizes[a];
     }
     if(parts!=ranks || (curved && (!periodic[0] || !periodic[2] || s.upper[0]<3 || s.upper[2]<3))) status=ASTR_DEVICE_INVALID_ARGUMENT;
-    for(int c=0;c<7;++c) if(!(std::isfinite(material[c]) && material[c]>0)) status=ASTR_DEVICE_INVALID_ARGUMENT;
+    if(s.air5_ready) {
+        if(sizeof(Real)!=sizeof(double) || nw>1 || (nw && first!=0) || layers!=3 || curved)
+            status=ASTR_DEVICE_INVALID_ARGUMENT;
+    } else {
+        for(int c=0;c<7;++c) if(!(std::isfinite(material[c]) && material[c]>0)) status=ASTR_DEVICE_INVALID_ARGUMENT;
+    }
     status=agree(comm,rank,status);if(status!=0) return status;
     auto *p=new(std::nothrow) Wall;
     status=agree(comm,rank,p?0:static_cast<int>(cudaErrorMemoryAllocation));if(status!=0) {delete p;return status;}
     p->parent=&s;p->rank=rank;p->nx=s.upper[0]+1;p->nz=s.upper[2]+1;p->nw=nw;p->first=first;
-    p->layers=layers;p->curved=curved!=0;p->mode=mode;p->nodes=static_cast<size_t>(p->nx)*p->nz*nw;
+    p->layers=layers;p->curved=curved!=0;p->air5=s.air5_ready;p->mode=mode;p->nodes=static_cast<size_t>(p->nx)*p->nz*nw;
     for(int a=0;a<3;++a) {p->lower[a]=lower[a];p->upper[a]=upper[a];p->sizes[a]=sizes[a];p->periodic[a]=periodic[a];}
     std::copy(material,material+7,p->material);
     for(int axis:{0,2}) {
-        p->capacity=std::max(p->capacity,static_cast<size_t>(std::max(5*layers,12))*nw*(axis==0?p->nz:p->nx));
+        p->capacity=std::max(p->capacity,static_cast<size_t>(std::max(p->state_fields(),12))*nw*(axis==0?p->nz:p->nx));
         int remote=nw;
         if(sizes[axis]>1) status=MPI_Sendrecv(&nw,1,MPI_INT,lower[axis],8+axis,&remote,1,MPI_INT,upper[axis],8+axis,comm,MPI_STATUS_IGNORE);
         if(status==MPI_SUCCESS && upper[axis]!=MPI_PROC_NULL && remote!=nw) status=ASTR_DEVICE_INVALID_ARGUMENT;
@@ -294,7 +362,8 @@ extern "C" int astr_insitu_wall_create(void *parent,int communicator,const int l
     status=agree(comm,rank,status);if(status!=0) {delete p;return status;}
     status=MPI_Comm_dup(comm,&p->comm);
     auto allocate=[&](Real **v,size_t count) {if(status==0 && count>0) status=static_cast<int>(cudaMalloc(reinterpret_cast<void **>(v),count*sizeof(Real)));};
-    allocate(&p->state,5*layers*p->nodes);allocate(&p->geometry,9*p->nodes);allocate(&p->fields,4*p->nodes);
+    allocate(&p->state,p->state_fields()*p->nodes);allocate(&p->geometry,9*p->nodes);
+    allocate(&p->fields,p->fields_count()*p->nodes);
     allocate(&p->line,6*p->nx);allocate(&p->send,p->capacity);allocate(&p->receive,p->capacity);
     if(p->curved) allocate(&p->primitive,4*primitive_nodes(*p));
     if(status==0) status=static_cast<int>(cudaMalloc(reinterpret_cast<void **>(&p->invalid),sizeof(int)));
@@ -314,13 +383,14 @@ extern "C" int astr_insitu_wall_capture(void *wall)
     if(status!=0) return status;
     status=static_cast<int>(cudaMemsetAsync(p.invalid,0,sizeof(int),s.stream));
     if(status==0 && p.nodes>0) {
-        pack<<<(p.nodes+255)/256,256,0,s.stream>>>(s.fields[ASTR_DEVICE_Q].view,p.state,p.nx,p.nz,p.nw,p.first,s.upper[1],p.layers,p.nodes);
+        pack<<<(p.nodes+255)/256,256,0,s.stream>>>(s.fields[ASTR_DEVICE_Q].view,p.state,p.nx,p.nz,p.nw,
+            p.first,s.upper[1],p.layers,p.air5?11:5,p.nodes);
         status=static_cast<int>(cudaGetLastError());
     }
     status=ready(p,status);if(status!=0) return status;
     for(int axis:{0,2}) {
         if(p.sizes[axis]==1 && !p.periodic[axis]) continue;
-        const size_t count=static_cast<size_t>(5*p.layers)*p.nw*(axis==0?p.nz:p.nx);
+        const size_t count=static_cast<size_t>(p.state_fields())*p.nw*(axis==0?p.nz:p.nx);
         if(count>0) endpoint<false><<<(count+255)/256,256,0,s.stream>>>(p.state,p.send,p.nx,p.nz,p.nw,axis,count);
         status=ready(p,static_cast<int>(cudaGetLastError()));bool received=false;
         if(status==0) status=exchange(p,axis,0,count,received);
@@ -347,8 +417,12 @@ extern "C" int astr_insitu_wall_capture(void *wall)
             status=ready(p,status!=0?status:static_cast<int>(cudaGetLastError()));if(status!=0) return status;
         }
     }
-    if(p.nodes>0) derive<<<(p.nodes+255)/256,256,0,s.stream>>>(p.state,p.primitive,p.geometry,p.fields,
-        s.fields[ASTR_DEVICE_METRIC].view,p.nx,p.nz,p.nw,p.first,s.upper[1],p.layers,p.curved,p.nodes,material,p.invalid);
+    if(p.nodes>0) {
+        const auto metric=s.fields[ASTR_DEVICE_METRIC].view;
+        if(p.air5) derive_air5<<<(p.nodes+255)/256,256,0,s.stream>>>(p.state,p.fields,metric,p.nx,p.nz,p.nodes,p.invalid);
+        else derive<<<(p.nodes+255)/256,256,0,s.stream>>>(p.state,p.primitive,p.geometry,p.fields,metric,
+            p.nx,p.nz,p.nw,p.first,s.upper[1],p.layers,p.curved,p.nodes,material,p.invalid);
+    }
     status=ready(p,static_cast<int>(cudaGetLastError()));int bad=0;
     if(status==0) {status=static_cast<int>(cudaMemcpy(&bad,p.invalid,sizeof(int),cudaMemcpyDeviceToHost));p.scalar+=sizeof(int);}
     if(status==0 && bad) status=ASTR_DEVICE_NONPHYSICAL;
@@ -360,7 +434,10 @@ extern "C" int astr_insitu_wall_view(void *wall,int geometry,AstrDeviceView *vie
     auto &p=*static_cast<Wall *>(wall);if(!p.valid) return ASTR_DEVICE_NOT_ALLOCATED;
     *view=AstrDeviceView{};view->data=geometry?p.geometry:p.fields;view->rank=4;view->element_bytes=sizeof(Real);
     int64_t stride=1;
-    for(int a=0;a<5;++a) {view->lower[a]=0;view->extent[a]=a==0?p.nx:a==1?p.nz:a==2?p.nw:a==3?(geometry?9:4):1;view->stride[a]=stride;stride*=view->extent[a];}
+    for(int a=0;a<5;++a) {
+        view->lower[a]=0;view->extent[a]=a==0?p.nx:a==1?p.nz:a==2?p.nw:a==3?(geometry?9:p.fields_count()):1;
+        view->stride[a]=stride;stride*=view->extent[a];
+    }
     return 0;
 }
 extern "C" int astr_insitu_wall_line(void *wall,int k,int side,Real *host,size_t bytes)
@@ -368,7 +445,7 @@ extern "C" int astr_insitu_wall_line(void *wall,int k,int side,Real *host,size_t
     if(!wall || !host) return ASTR_DEVICE_INVALID_ARGUMENT;
     auto &p=*static_cast<Wall *>(wall);
     if(!p.valid || k<0 || k>=p.nz || side<0 || side>=p.nw || bytes!=6*p.nx*sizeof(Real)) return ASTR_DEVICE_INVALID_ARGUMENT;
-    selected_line<<<(p.nx+255)/256,256,0,p.parent->stream>>>(p.geometry,p.fields,p.line,p.nx,p.nz,p.nw,k,side);
+    selected_line<<<(p.nx+255)/256,256,0,p.parent->stream>>>(p.geometry,p.fields,p.line,p.nx,p.nz,p.nw,k,side,p.air5);
     int status=astr::finish_launch(*p.parent);
     if(status==0) status=static_cast<int>(cudaMemcpyAsync(host,p.line,bytes,cudaMemcpyDeviceToHost,p.parent->stream));
     if(status==0) status=static_cast<int>(cudaStreamSynchronize(p.parent->stream));
@@ -377,11 +454,38 @@ extern "C" int astr_insitu_wall_line(void *wall,int k,int side,Real *host,size_t
 extern "C" int astr_insitu_wall_download(void *wall,Real *host,size_t bytes)
 {
     if(!wall || !host) return ASTR_DEVICE_INVALID_ARGUMENT;
-    auto &p=*static_cast<Wall *>(wall);if(!p.valid || bytes!=4*p.nodes*sizeof(Real)) return ASTR_DEVICE_INVALID_ARGUMENT;
+    auto &p=*static_cast<Wall *>(wall);
+    if(!p.valid || bytes!=p.fields_count()*p.nodes*sizeof(Real)) return ASTR_DEVICE_INVALID_ARGUMENT;
     int status=0;
     if(bytes>0) status=static_cast<int>(cudaMemcpyAsync(host,p.fields,bytes,cudaMemcpyDeviceToHost,p.parent->stream));
     if(status==0) status=static_cast<int>(cudaStreamSynchronize(p.parent->stream));
     if(status==0) p.observed+=bytes;return status;
+}
+extern "C" int astr_insitu_wall_air5_span(void *wall,const Real *weights,int owned_x,Real *host)
+{
+    if(!wall || !weights || !host)return ASTR_DEVICE_INVALID_ARGUMENT;
+    auto &p=*static_cast<Wall *>(wall);
+    if(!p.valid || !p.air5 || owned_x<0 || owned_x>p.nx)return ASTR_DEVICE_INVALID_ARGUMENT;
+    if(p.nw==0) {
+        std::fill(host,host+3*p.nx,Real(0));
+        return 0;
+    }
+    auto &s=*p.parent;
+    // Endpoint exchange has completed. Its send slot holds weights and the line slot holds the result.
+    int status=static_cast<int>(cudaMemcpyAsync(p.send,weights,(p.nz-1)*sizeof(Real),cudaMemcpyHostToDevice,s.stream));
+    if(status==0)status=static_cast<int>(cudaMemsetAsync(p.invalid,0,sizeof(int),s.stream));
+    if(status)return status;
+    spanwise_air5_shear<<<(p.nx+255)/256,256,0,s.stream>>>(p.geometry,p.fields,p.send,p.line,p.nx,p.nz,owned_x,p.invalid);
+    status=astr::finish_launch(s);
+    if(status)return status;
+    int bad=0;
+    const size_t bytes=3*static_cast<size_t>(p.nx)*sizeof(Real);
+    status=static_cast<int>(cudaMemcpyAsync(host,p.line,bytes,cudaMemcpyDeviceToHost,s.stream));
+    if(status==0)status=static_cast<int>(cudaMemcpyAsync(&bad,p.invalid,sizeof(int),cudaMemcpyDeviceToHost,s.stream));
+    if(status==0)status=static_cast<int>(cudaStreamSynchronize(s.stream));
+    if(status)return status;
+    p.h2d+=(p.nz-1)*sizeof(Real);p.observed+=bytes;p.scalar+=sizeof(int);
+    return bad ? ASTR_DEVICE_NONPHYSICAL : 0;
 }
 extern "C" int astr_insitu_wall_metrics(void *wall,int64_t values[10])
 {
@@ -401,7 +505,7 @@ extern "C" int astr_insitu_wall_statistics_push(void *wall,const Real weights[2]
     status=agree(p.comm,p.rank,status);if(status!=0) return status;
     status=allocate_moments(p);if(status!=0) return status;
     status=static_cast<int>(cudaMemsetAsync(p.invalid,0,sizeof(int),s.stream));
-    if(status==0 && p.nodes>0) push_moments<<<(p.nodes+255)/256,256,0,s.stream>>>(
+    if(status==0 && p.nodes>0) push_moments<<<dim3((p.nodes+255)/256,p.groups()),256,0,s.stream>>>(
         p.fields,p.moments,p.nodes,weights[0],weights[1],p.previous,p.invalid);
     status=ready(p,status!=0?status:static_cast<int>(cudaGetLastError()));int bad=0;
     if(status==0) {status=static_cast<int>(cudaMemcpy(&bad,p.invalid,sizeof(int),cudaMemcpyDeviceToHost));p.scalar+=sizeof(int);}
@@ -412,22 +516,29 @@ extern "C" int astr_insitu_wall_statistics_pack(void *wall,Real *host,size_t byt
 {
     if(!wall || !window) return ASTR_DEVICE_INVALID_ARGUMENT;
     auto &p=*static_cast<Wall *>(wall);const size_t N=p.nodes;
-    if(!p.previous || bytes!=34*N*sizeof(Real) || (bytes>0 && !host)) return ASTR_DEVICE_INVALID_ARGUMENT;
+    if(!p.previous || bytes!=34*p.groups()*N*sizeof(Real) || (bytes>0 && !host)) return ASTR_DEVICE_INVALID_ARGUMENT;
     if(N==0) return 0;
-    std::fill(host,host+N,window[0]);std::fill(host+N,host+2*N,window[1]);
-    std::fill(host+2*N,host+3*N,time);std::fill(host+33*N,host+34*N,Real(1));
-    int status=static_cast<int>(cudaMemcpyAsync(host+3*N,p.moments,30*N*sizeof(Real),cudaMemcpyDeviceToHost,p.parent->stream));
+    int status=0;
+    for(int g=0;g<p.groups() && status==0;++g) {
+        Real *segment=host+34*g*N;
+        std::fill(segment,segment+N,window[0]);std::fill(segment+N,segment+2*N,window[1]);
+        std::fill(segment+2*N,segment+3*N,time);std::fill(segment+33*N,segment+34*N,Real(1));
+        status=static_cast<int>(cudaMemcpyAsync(segment+3*N,p.moments+30*g*N,
+            30*N*sizeof(Real),cudaMemcpyDeviceToHost,p.parent->stream));
+    }
     if(status==0) status=static_cast<int>(cudaStreamSynchronize(p.parent->stream));
-    if(status==0) p.observed+=30*N*sizeof(Real);return status;
+    if(status==0) p.observed+=30*p.groups()*N*sizeof(Real);return status;
 }
 extern "C" int astr_insitu_wall_statistics_restore(void *wall,const Real *host,size_t bytes)
 {
     if(!wall) return ASTR_DEVICE_INVALID_ARGUMENT;
     auto &p=*static_cast<Wall *>(wall);const size_t N=p.nodes;
-    int status=p.previous || bytes!=34*N*sizeof(Real) || (bytes>0 && !host)?ASTR_DEVICE_INVALID_ARGUMENT:0;
+    int status=p.previous || bytes!=34*p.groups()*N*sizeof(Real) || (bytes>0 && !host)?ASTR_DEVICE_INVALID_ARGUMENT:0;
     status=agree(p.comm,p.rank,status);if(status!=0) return status;
     status=allocate_moments(p);if(status!=0) return status;
-    if(N>0) status=static_cast<int>(cudaMemcpyAsync(p.moments,host+3*N,30*N*sizeof(Real),cudaMemcpyHostToDevice,p.parent->stream));
+    for(int g=0;N>0 && g<p.groups() && status==0;++g)
+        status=static_cast<int>(cudaMemcpyAsync(p.moments+30*g*N,host+(34*g+3)*N,
+            30*N*sizeof(Real),cudaMemcpyHostToDevice,p.parent->stream));
     status=ready(p,status);if(status==0) p.previous=true;return status;
 }
 extern "C" int astr_insitu_wall_statistics_mean(void *destination,void *statistics,Real duration)
@@ -435,17 +546,19 @@ extern "C" int astr_insitu_wall_statistics_mean(void *destination,void *statisti
     if(!destination || !statistics) return ASTR_DEVICE_INVALID_ARGUMENT;
     auto &p=*static_cast<Wall *>(destination);auto &history=*static_cast<Wall *>(statistics);auto &s=*p.parent;
     int status=!p.valid || !history.previous || p.parent!=history.parent || p.nx!=history.nx || p.nz!=history.nz ||
-        p.nw!=history.nw || p.first!=history.first || !(std::isfinite(duration) && duration>0)?ASTR_DEVICE_INVALID_ARGUMENT:0;
+        p.nw!=history.nw || p.first!=history.first || p.air5!=history.air5 ||
+        !(std::isfinite(duration) && duration>0)?ASTR_DEVICE_INVALID_ARGUMENT:0;
     status=agree(p.comm,p.rank,status);if(status!=0) return status;
     status=static_cast<int>(cudaMemsetAsync(p.invalid,0,sizeof(int),s.stream));
-    if(status==0 && p.nodes>0) mean_fields<<<(p.nodes+255)/256,256,0,s.stream>>>(history.moments,p.fields,p.nodes,duration,p.invalid);
+    if(status==0 && p.nodes>0) mean_fields<<<dim3((p.nodes+255)/256,p.groups()),256,0,s.stream>>>(
+        history.moments,p.fields,p.nodes,duration,p.invalid);
     status=ready(p,status!=0?status:static_cast<int>(cudaGetLastError()));int bad=0;
     if(status==0) {status=static_cast<int>(cudaMemcpy(&bad,p.invalid,sizeof(int),cudaMemcpyDeviceToHost));p.scalar+=sizeof(int);}
     if(status==0 && bad) status=ASTR_DEVICE_NONPHYSICAL;
     status=agree(p.comm,p.rank,status);if(status!=0) return status;
     for(int axis:{0,2}) {
         if(p.sizes[axis]==1 && !p.periodic[axis]) continue;
-        const size_t count=static_cast<size_t>(4)*p.nw*(axis==0?p.nz:p.nx);
+        const size_t count=static_cast<size_t>(p.fields_count())*p.nw*(axis==0?p.nz:p.nx);
         if(count>0) endpoint<false><<<(count+255)/256,256,0,s.stream>>>(p.fields,p.send,p.nx,p.nz,p.nw,axis,count);
         status=ready(p,static_cast<int>(cudaGetLastError()));bool received=false;
         if(status==0) status=exchange(p,axis,0,count,received);

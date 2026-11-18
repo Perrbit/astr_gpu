@@ -17,7 +17,8 @@ module insitu_statistics_cpp
   public :: pack_statistics_cpp_state,unpack_statistics_cpp_state,download_statistics_cpp_output
   public :: release_statistics_cpp,statistics_cpp_transfer_counts,slice_statistics_cpp_info
   public :: statistics_cpp_view
-  type(c_ptr),save :: plan=c_null_ptr
+  public :: push_air5_volume_cpp,pack_air5_volume_cpp,restore_air5_volume_cpp,release_air5_volume_cpp
+  type(c_ptr),save :: plan=c_null_ptr,air5_volume_plan=c_null_ptr
   logical,save :: weights_ready=.false.
   integer(int64),save :: device_budget=0,device_headroom=0,sample_calls=0,output_downloads=0
 contains
@@ -33,26 +34,33 @@ contains
   subroutine configure_statistics_cpp_budget(limit,headroom,ok)
     integer(int64),intent(in) :: limit,headroom
     logical,intent(out) :: ok
-    ok=.not.c_associated(plan).and.limit>0.and.headroom>=0
+    ok=.not.c_associated(plan).and..not.c_associated(air5_volume_plan).and.limit>0.and.headroom>=0
     if(.not.ok) return
     device_budget=limit;device_headroom=headroom
   end subroutine
 
   subroutine admit_allocation(extra)
     integer(int64),intent(in) :: extra
+    integer(int64) :: request
+    logical :: ok
+    if(device_budget==0) return
+    call checked_bytes(int(insitu_owned_counts(),int64),31_int64*real_bytes,request,ok)
+    call guard(ok,'statistics allocation byte count')
+    call guard(extra>=0.and.extra<=huge(request)-request-52,'statistics output allocation byte count')
+    call admit_statistics_bytes(request+52+extra)
+  end subroutine
+
+  subroutine admit_statistics_bytes(request)
+    integer(int64),intent(in) :: request
     integer :: node,nrank,i,ierr,status
     integer(c_size_t) :: free_memory,total_memory
-    integer(int64) :: request,total,available
+    integer(int64) :: total,available
     integer(int64),allocatable :: requests(:),free_values(:)
     character(kind=c_char,len=32) :: pci
     character(kind=c_char,len=32),allocatable :: identities(:)
     type(resource_budget) :: budget
     logical :: ok
     if(device_budget==0) return
-    call checked_bytes(int(insitu_owned_counts(),int64),31_int64*real_bytes,request,ok)
-    call guard(ok,'statistics allocation byte count')
-    call guard(extra>=0.and.extra<=huge(request)-request-52,'statistics output allocation byte count')
-    request=request+52+extra
     pci=repeat(achar(0,kind=c_char),32)
     status=device_pci_identity(cpp_device_context(),pci,32_c_int)
     call guard(status==0,'statistics device identity')
@@ -86,6 +94,63 @@ contains
     call guard(ok,'statistics budget configuration')
     call reserve_bytes(budget,1,total,available,ok)
     call guard(ok,'statistics allocation exceeds configured device budget or reserve')
+  end subroutine
+
+  subroutine prepare_air5_volume_cpp(measure,window)
+    use parallel, only: mpirank
+    real(real_kind),contiguous,intent(in) :: measure(:,:,:)
+    real(real_kind),intent(in) :: window(2)
+    integer :: status
+    integer(int64) :: bytes
+    if(c_associated(air5_volume_plan))return
+    bytes=(121*size(measure,kind=int64)+7)*real_bytes+4
+    call admit_statistics_bytes(bytes)
+    status=moments_create_air5(cpp_device_context(),int(shape(measure),c_int),window,air5_volume_plan)
+    call guard(status==0,'AIR5 volume statistics state allocation')
+    status=moments_weights(air5_volume_plan,measure,size(measure,kind=c_size_t)*real_bytes)
+    call guard(status==0,'AIR5 volume geometry weights upload')
+    write(*,'(a,i0,3(a,i0))') 'ASTR_INSITU_CPP_AIR5_VOLUME rank=',mpirank,' workspace_bytes=',bytes, &
+      ' weight_upload_bytes=',size(measure,kind=int64)*real_bytes,' sample_scalar_d2h_bytes=',7*real_bytes+4
+  end subroutine
+
+  subroutine push_air5_volume_cpp(measure,window,time,endpoint_weights,volume,velocity,variance)
+    real(real_kind),contiguous,intent(in) :: measure(:,:,:)
+    real(real_kind),intent(in) :: window(2),time,endpoint_weights(2)
+    real(real_kind),intent(out) :: volume,velocity(3),variance(3)
+    real(real_kind) :: local(7),global(7)
+    integer :: status
+    call prepare_air5_volume_cpp(measure,window)
+    status=moments_push(air5_volume_plan,time,endpoint_weights)
+    call guard(status==0,'AIR5 volume moment update')
+    status=moments_spatial(air5_volume_plan,local)
+    call guard(status==0,'AIR5 device volume reduction')
+    call MPI_Allreduce(local,global,7,mpi_real_type,MPI_SUM,MPI_COMM_WORLD,status)
+    call guard(status==MPI_SUCCESS.and.all(ieee_is_finite(global)).and.global(1)>0,'AIR5 global volume reduction')
+    volume=global(1);velocity=global(2:4)/volume;variance=global(5:7)/volume
+    call guard(all(ieee_is_finite([velocity,variance])).and.all(variance>=0),'AIR5 global volume diagnostics')
+  end subroutine
+
+  subroutine pack_air5_volume_cpp(values)
+    real(real_kind),contiguous,intent(out) :: values(:,:,:,:)
+    integer :: status
+    status=moments_pack(air5_volume_plan,values,size(values,kind=c_size_t)*real_bytes)
+    call guard(status==0,'AIR5 volume explicit statistics download')
+  end subroutine
+
+  subroutine restore_air5_volume_cpp(values,measure,window,time)
+    real(real_kind),contiguous,intent(in) :: values(:,:,:,:),measure(:,:,:)
+    real(real_kind),intent(in) :: window(2),time
+    integer :: status
+    call prepare_air5_volume_cpp(measure,window)
+    status=moments_restore(air5_volume_plan,values,size(values,kind=c_size_t)*real_bytes,time)
+    call guard(status==0,'AIR5 volume statistics restore')
+  end subroutine
+
+  subroutine release_air5_volume_cpp()
+    integer :: status
+    if(.not.c_associated(air5_volume_plan))return
+    status=moments_destroy(air5_volume_plan)
+    call guard(status==0,'AIR5 volume statistics release')
   end subroutine
 
   subroutine prepare(window)

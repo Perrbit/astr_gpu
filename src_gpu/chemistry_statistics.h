@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 #include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
@@ -19,6 +20,9 @@ int astr_device_air5_mean_reset(void *handle);
 /* Retire external consumers first. Release waits the owning stream, invalidates
  * the two borrowed statistic views, and leaves other solver fields allocated. */
 int astr_device_air5_mean_release(void *handle);
+int astr_device_air5_mean_refresh_velocity(void *handle,const int low[3],const int high[3]);
+int astr_device_air5_conservation_prepare(void *handle,int64_t budget,int64_t *bytes);
+int astr_device_air5_conservation_collect(void *handle,double totals[11]);
 int astr_device_air5_mean_sample(void *handle,double interval,int has_previous);
 /* Failed nodes do not commit; other nodes may have committed. No rollback.
  * This separate status slot does not overwrite the solver's physics status. */

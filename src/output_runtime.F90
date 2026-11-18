@@ -49,11 +49,19 @@ module output_runtime
   use statistic, only: channel_driver_state,complete_mean_statistics_file,nsamples
   use benchmark_runtime, only: benchmark_field_io_disabled,insitu_clock,report_insitu_timing
 #ifdef ASTR_GPU_CPP
-  use fluid_runtime, only: cpp_export_host_state,cpp_import_host_state,cpp_crashfix_supported,cpp_adaptive_energy_sum
+  use fluid_runtime, only: cpp_export_host_state,cpp_import_host_state,cpp_crashfix_supported,cpp_adaptive_energy_sum, &
+    cpp_device_context
   use inflow_timeseries_cpp, only: complete_inflow_cpp_file
   use production_statistics_runtime, only: complete_compact_statistics_file,compact_statistics_host_bytes, &
     compact_statistics_requested,compact_statistics_supported, &
     initialize_compact_statistics_gpu=>initialize_compact_statistics_cpp
+#ifdef ASTR_AIR5_CHEMISTRY
+  use chemistry_mean_statistics_cpp, only: initialize_air5_mean_statistics_cpp,complete_air5_mean_statistics_cpp_file, &
+    slice_air5_mean_info_cpp,air5_mean_statistics_cpp_device_bytes
+  use chemistry_conservation_cpp, only: configure_air5_conservation_cpp, &
+    air5_conservation_state=>air5_conservation_state_cpp,restore_air5_conservation_state=>restore_air5_conservation_state_cpp, &
+    begin_air5_conservation_file=>begin_air5_conservation_file_cpp
+#endif
 #endif
 #ifdef ASTR_AIR5_CHEMISTRY
   use commarray, only: tve,spc
@@ -74,8 +82,9 @@ module output_runtime
   use checkpoint_state_gpu, only: checkpoint_air5_gpu
   use chemistry_mean_statistics_gpu, only: initialize_air5_mean_statistics_gpu,complete_air5_mean_statistics_file, &
     air5_mean_statistics_device_bytes,slice_air5_mean_info_gpu
-  use chemistry_flow_solver_gpu, only: air5_conservation_state_gpu,restore_air5_conservation_state_gpu, &
-    begin_air5_conservation_file_gpu,configure_air5_checkpoint_conservation_gpu
+  use chemistry_flow_solver_gpu, only: air5_conservation_state=>air5_conservation_state_gpu, &
+    restore_air5_conservation_state=>restore_air5_conservation_state_gpu, &
+    begin_air5_conservation_file=>begin_air5_conservation_file_gpu,configure_air5_checkpoint_conservation_gpu
 #endif
 #endif
   implicit none
@@ -276,6 +285,16 @@ contains
     air5_output_case=(trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli').and.lcomb.and.numq==11.and. &
       num_species==5.and.num_modequ==1.and..not.lreadgrid.and. &
       all(bctype==[11,50,41,51,1,1])
+#endif
+  end function
+  logical function air5_conservation_checkpoint()
+    air5_conservation_checkpoint=.false.
+#if defined(ASTR_AIR5_CHEMISTRY)
+#if defined(ASTR_GPU_CPP)
+    air5_conservation_checkpoint=air5_output_case().and.use_gpu.and.conservation_statistics
+#elif defined(_CUDA)
+    air5_conservation_checkpoint=air5_output_case().and.use_gpu
+#endif
 #endif
   end function
   integer function air5_resource_count() result(count)
@@ -695,7 +714,11 @@ contains
   subroutine configure_output_runtime()
     character(128) :: value
     integer :: status
-    logical :: ok
+    logical :: ok,read_conservation,valid_conservation
+#if defined(ASTR_GPU_CPP) && defined(ASTR_AIR5_CHEMISTRY)
+    logical :: root_conservation
+    integer :: ierr
+#endif
     call load_output_options()
     if(.not.enabled) return
     if(benchmark_field_io_disabled()) then
@@ -708,8 +731,13 @@ contains
       (options%checkpoint%enabled.or.len_trim(options%restore_directory)>0)) &
       call verify_read_profile_geometry()
     call check_capability()
-    if(air5_output_case()) then
+    read_conservation=air5_output_case()
+#if defined(ASTR_GPU_CPP) && defined(ASTR_AIR5_CHEMISTRY)
+    read_conservation=read_conservation.or.(use_gpu.and.lcomb)
+#endif
+    if(read_conservation) then
       value=''
+      valid_conservation=.true.
       call get_environment_variable('ASTR_AIR5_C4_CONSERVATION',value,status=status)
       call check(status==0.or.status==1,'AIR5 conservation option is truncated')
       select case(trim(value))
@@ -718,11 +746,15 @@ contains
       case('','0','f','F','false','FALSE','no','NO','off','OFF')
         conservation_statistics=.false.
       case default
-        call check(.false.,'invalid AIR5 conservation diagnostic option')
+        valid_conservation=.false.
       end select
+      call check(valid_conservation,'invalid AIR5 conservation diagnostic option')
       call check(.not.conservation_statistics.or.use_gpu,'AIR5 conservation diagnostic is GPU-only')
-#ifdef ASTR_GPU_CPP
-      if(use_gpu)call check(.not.conservation_statistics,'AIR5 C++ conservation diagnostic is not yet connected')
+#if defined(ASTR_GPU_CPP) && defined(ASTR_AIR5_CHEMISTRY)
+      root_conservation=conservation_statistics
+      call MPI_Bcast(root_conservation,1,MPI_LOGICAL,0,MPI_COMM_WORLD,ierr)
+      call check(ierr==MPI_SUCCESS.and.(root_conservation.eqv.conservation_statistics), &
+        'AIR5 conservation diagnostic option differs between ranks')
 #endif
     endif
     call configure_adaptive(options%adaptive,0_int64,0.e0_real_kind,ok)
@@ -771,12 +803,6 @@ contains
 #endif
     endif
     if(.not.candidate%statistics%enabled) return
-#if defined(ASTR_GPU_CPP) && defined(ASTR_AIR5_CHEMISTRY)
-    if(use_gpu.and.lcomb)then
-      ok=.false.;message='C++ AIR5 main-loop mean statistics are not yet connected'
-      return
-    endif
-#endif
     requested_mean=.not.use_gpu.or.air5_output_case()
     if(statistics_active.and.requested_mean) then
       ok=.false.;message='formal and CPU legacy statistics need separate transactions'
@@ -791,7 +817,7 @@ contains
   end subroutine
 
   subroutine refresh_output_mean_statistics()
-#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_AIR5_CHEMISTRY)
     logical :: allocated_mean,covered
     integer(int64) :: count
     real(real64) :: window(2)
@@ -806,10 +832,15 @@ contains
     mean_statistics=lavg.and.(.not.use_gpu.or.air5_output_case())
     call check(.not.(statistics_active.and.mean_statistics),'formal and CPU legacy statistics need separate transactions')
     call check(lavg.eqv.(compact_statistics.or.mean_statistics),'legacy statistics unavailable for this case/backend')
-#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_AIR5_CHEMISTRY)
     if(use_gpu.and.mean_statistics) then
+#ifdef ASTR_GPU_CPP
+      call slice_air5_mean_info_cpp(allocated_mean,covered,count,window)
+      if(.not.allocated_mean) call initialize_air5_mean_statistics_cpp(cpp_device_context(),options%device_budget_bytes)
+#else
       call slice_air5_mean_info_gpu(allocated_mean,covered,count,window)
       if(.not.allocated_mean) call initialize_air5_mean_statistics_gpu(options%device_budget_bytes)
+#endif
     endif
 #endif
     contract(8)=merge(1_int64,0_int64,statistics_active)+merge(2_int64,0_int64,compact_statistics)+ &
@@ -850,7 +881,10 @@ contains
     call check_capability()
     call refresh_output_mean_statistics()
     call begin_output_insitu()
-#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+#if defined(ASTR_GPU_CPP) && defined(ASTR_AIR5_CHEMISTRY)
+    if(use_gpu.and.lcomb) call configure_air5_conservation_cpp(cpp_device_context(),conservation_statistics, &
+      options%device_budget_bytes-air5_mean_statistics_cpp_device_bytes())
+#elif defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
     if(use_gpu.and.air5_output_case()) then
       call configure_air5_checkpoint_conservation_gpu( &
         options%device_budget_bytes-air5_mean_statistics_device_bytes(),ok)
@@ -945,8 +979,8 @@ contains
         options%restart_output=='override',source_bytes)
 #ifdef ASTR_AIR5_CHEMISTRY
       if(air5_output_case()) call air5_contract_file(trim(path)//'/air5_config.bin',.false.)
-#ifdef _CUDA
-      if(air5_output_case().and.use_gpu) call conservation_file(trim(path)//'/air5_conservation.bin',.false.,identity)
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
+      if(air5_conservation_checkpoint()) call conservation_file(trim(path)//'/air5_conservation.bin',.false.,identity)
 #endif
 #endif
       call flow_file(trim(path)//'/state.h5',.false.,identity)
@@ -1012,10 +1046,14 @@ contains
         call begin_archives(identity,reuse==1)
       endif
     endif
-#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_AIR5_CHEMISTRY)
     if(conservation_statistics) then
-      write(value,'("air5_conservation_from_step",i0.12,".dat")') identity%step
-      call begin_air5_conservation_file_gpu(trim(options%directory)//'/'//trim(value),ok)
+      if(air5_output_case()) then
+        write(value,'("air5_conservation_from_step",i0.12,".dat")') identity%step
+        call begin_air5_conservation_file(trim(options%directory)//'/'//trim(value),ok)
+      else
+        call begin_air5_conservation_file('air5_c4_conservation.dat',ok)
+      endif
       call check(ok,'cannot create exclusive AIR5 conservation diagnostic segment')
     endif
 #endif
@@ -1060,6 +1098,13 @@ contains
     logical,intent(in) :: writing
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
+#if defined(ASTR_GPU_CPP) && defined(ASTR_AIR5_CHEMISTRY)
+    if(use_gpu.and.air5_output_case()) then
+      call complete_air5_mean_statistics_cpp_file(path,writing,identity,budget,allow_repartition=air5_repartition_case(), &
+        repartition_axes=registered_repartition_axes())
+      return
+    endif
+#endif
 #if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
     if(use_gpu.and.air5_output_case()) then
       call complete_air5_mean_statistics_file(path,writing,identity,budget,allow_repartition=air5_repartition_case(), &
@@ -1144,7 +1189,7 @@ contains
       identity,state_host_budget())
     if(mean_statistics) call mean_statistics_file('outdat/restore_statistics_probe.h5',.true., &
       identity,state_host_budget())
-#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_AIR5_CHEMISTRY)
     if(conservation_statistics) call conservation_file('outdat/restore_conservation_probe.bin',.true.,identity)
 #endif
     restore_probe_pending=.false.
@@ -1424,7 +1469,7 @@ contains
     endif
   end subroutine
 
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
   subroutine conservation_file(path,writing,identity)
     use ieee_arithmetic, only: ieee_is_finite
     character(*),intent(in) :: path
@@ -1435,7 +1480,7 @@ contains
     character(8) :: magic
     integer :: unit,err,closed,ierr
     call check(state_host_budget()>=512,'AIR5 conservation scalar state budget')
-    call air5_conservation_state_gpu(metadata,baseline)
+    call air5_conservation_state(metadata,baseline)
     call check(metadata(1)==merge(1_int64,0_int64,conservation_statistics), &
       'AIR5 conservation activation differs from output configuration')
     if(writing) then
@@ -1479,7 +1524,7 @@ contains
       endif
       call check(err==0.and.closed==0,'write AIR5 conservation state')
     else
-      call restore_air5_conservation_state_gpu(metadata,baseline)
+      call restore_air5_conservation_state(metadata,baseline)
     endif
   end subroutine
 #endif
@@ -2218,8 +2263,8 @@ contains
     if(air5_output_case()) then
 #ifdef ASTR_AIR5_CHEMISTRY
       call air5_contract_file(trim(path)//'/air5_config.bin',.true.)
-#ifdef _CUDA
-      if(use_gpu) call conservation_file(trim(path)//'/air5_conservation.bin',.true.,identity)
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
+      if(air5_conservation_checkpoint()) call conservation_file(trim(path)//'/air5_conservation.bin',.true.,identity)
 #endif
 #endif
       resources(3:resource_count)=air5_checkpoint_resources()
@@ -2254,12 +2299,10 @@ contains
     if(air5_output_case()) then
       file_count=file_count+1
       files(file_count)='air5_config.bin'
-#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
-      if(use_gpu) then
+      if(air5_conservation_checkpoint()) then
         file_count=file_count+1
         files(file_count)='air5_conservation.bin'
       endif
-#endif
     endif
     if(dynamic_output_case()) then
       file_count=file_count+1
