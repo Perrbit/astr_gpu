@@ -235,6 +235,13 @@ astr_device_state目标级--fmad=false设置，作为当前冻结C++迁移基线
 不能因共享库的当前选项就省略这些约束，也不为通过误差门槛统一开启
 fast-math或重关联。专用选项不得在合并构建目标时丢失。
 
+2026-11-18：DTK 26.04/GPUfusion 的 `gfx906` 实测见进度10.228。
+仅传 `--fmad=false` 的探针仍有隐式 FP64 乘加收缩，`--ftz=false`
+被驱动明确忽略。原 AIR5 专用翻译单元和探针采用
+`-ffp-contract=off` 与 `-fdenormal-fp-math=ieee,ieee`，原生 CUDA
+和 Fortran 选项不变。汇编和代表对象预检不代替设备 IEEE/G1；
+不把先前非反应 DCU 构建的命令行选项认作已验证的指令语义。
+
 ### 4.4 输出、统计和续算
 
 - 沿用现有输入与完整步输出调度，不恢复旧controller或旧检查点格式。

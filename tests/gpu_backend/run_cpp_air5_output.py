@@ -166,6 +166,7 @@ def main():
     parser.add_argument("--topology", type=int, nargs=3, default=(2, 1, 1))
     parser.add_argument("--transport", choices=("pinned", "device"), default="pinned")
     parser.add_argument("--mpi-btl", default="self,vader,tcp")
+    parser.add_argument("--mpi-osc", default="pt2pt")
     parser.add_argument("--mean-statistics", action="store_true")
     parser.add_argument("--uncompensated", action="store_true")
     parser.add_argument("--conservation", action="store_true")
@@ -176,7 +177,7 @@ def main():
         parser.error("--reference-binary requires --mean-statistics or --conservation")
     root = args.output.resolve()
     root.mkdir()
-    env = os.environ | dict(OMPI_MCA_pml="ob1", OMPI_MCA_btl=args.mpi_btl, OMPI_MCA_osc="pt2pt",
+    env = os.environ | dict(OMPI_MCA_pml="ob1", OMPI_MCA_btl=args.mpi_btl, OMPI_MCA_osc=args.mpi_osc,
                             OMPI_MCA_coll="^cuda,hcoll,ucc", OMPI_MCA_opal_cuda_support="0",
                             ASTR_GPU_HALO_TRANSPORT=args.transport, ASTR_GPU_SYNC_MODE="explicit",
                             ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, args.topology)))

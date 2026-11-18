@@ -23,7 +23,7 @@ program air5_chemistry_phase_probe
   real(c_double),allocatable :: all_minimums(:,:),all_maximums(:,:)
   integer(c_int),allocatable :: all_counts(:,:),all_status(:)
   integer(c_int64_t),allocatable :: all_activity(:,:)
-  integer(c_int) :: first(3,2),last(3,2),regions,physics,returned
+  integer(c_int) :: first(3,2),last(3,2),regions,physics,returned,devices,device
   integer :: rank,ranks,cart,topology(3),coord(3),i,j,k,c,n,u,status,ierr,test,side,field
   logical :: collect,packed,activity,periods(3)
   character(1024) :: input,text
@@ -35,7 +35,10 @@ program air5_chemistry_phase_probe
   call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',text,status=status)
   if(status/=0)error stop 'missing local rank'
   read(text,*)rank
-  call check(device_bind(int(modulo(rank,2),c_int)))
+  call check(device_count(devices))
+  if(devices<1)error stop 'no visible device'
+  device=modulo(int(rank,c_int),devices)
+  call check(device_bind(device))
   call MPI_Init(ierr);call check(ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr);call check(ierr)
   if(product(topology)/=ranks)error stop 'topology size'
@@ -67,7 +70,7 @@ program air5_chemistry_phase_probe
     if(test>=8.and.rank==ranks-1)initial(first(1,1),1,0,1)=-1._c_double
     low=0._c_double;low(0,0,0,1)=-0._c_double;history=1e-10_c_double
     do side=1,2
-      call check(device_state_create(int(modulo(rank,2),c_int),int(im,c_int),int(jm,c_int),int(km,c_int), &
+      call check(device_state_create(device,int(im,c_int),int(jm,c_int),int(km,c_int), &
         int(h,c_int),int(modulo(test,2),c_int),handle(side)))
       call check(air5_device_prepare(handle(side)));call check(air5_chemistry_prepare(handle(side),options))
       call check(device_state_upload(handle(side),device_q,initial,int(size(initial),c_size_t)*8_c_size_t))
@@ -135,7 +138,8 @@ program air5_chemistry_phase_probe
       call check(device_state_destroy(handle(side)))
     enddo
   enddo
-  write(*,'(a,i0,a)')'AIR5_CHEMISTRY_PHASE_PASS rank=',rank,' cases=9 global_failures=2 device_words=exact'
+  write(*,'(a,i0,a,i0)')'AIR5_CHEMISTRY_PHASE_PASS rank=',rank, &
+    ' cases=9 global_failures=2 device_words=exact device=',device
   call MPI_Comm_free(cart,ierr);call check(ierr)
   call MPI_Finalize(ierr)
 contains

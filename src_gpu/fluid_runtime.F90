@@ -168,6 +168,8 @@ contains
     if(lcomb)then
       call create_solver_context(transport_mode,local_rank,sync)
       call initialize_air5_cpp(context,transport_mode)
+      write(*,'(a,i0,2a,a,i0,2a)') 'ASTR_GPU_CPP rank=',mpirank,' backend=',ASTR_GPU_CPP_NAME, &
+        ' device=',local_rank,' sync=',trim(sync)
       return
     endif
 #endif

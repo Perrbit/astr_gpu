@@ -25,15 +25,9 @@ set_target_properties(astr_device_state PROPERTIES CUDA_STANDARD 14
 target_include_directories(astr_device_state PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/src" "${ASTR_DEVICE_STATE_MODULES}")
 target_compile_options(astr_device_state PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
-set_source_files_properties(chemistry_properties.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
-set_source_files_properties(chemistry_coupling.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
-set_source_files_properties(chemistry_transport.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
-set_source_files_properties(chemistry_faces.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
-set_source_files_properties(chemistry_convection.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
-set_source_files_properties(chemistry_diffusion.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
-set_source_files_properties(chemistry_convection_budget.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
-set_source_files_properties(chemistry_filter.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
-set_source_files_properties(chemistry_boundary.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
-set_source_files_properties(chemistry_statistics.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
-set_source_files_properties(halo_transport.cu PROPERTIES COMPILE_OPTIONS "--ftz=false")
+set_source_files_properties(
+  chemistry_properties.cu chemistry_coupling.cu chemistry_transport.cu chemistry_faces.cu
+  chemistry_convection.cu chemistry_diffusion.cu chemistry_convection_budget.cu
+  chemistry_filter.cu chemistry_boundary.cu chemistry_statistics.cu halo_transport.cu
+  PROPERTIES COMPILE_OPTIONS "${ASTR_AIR5_FP_OPTIONS}")
 target_link_libraries(astr_device_state PUBLIC MPI::MPI_C MPI::MPI_Fortran)

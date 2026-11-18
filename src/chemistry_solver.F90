@@ -1316,7 +1316,7 @@ contains
     integer, save :: face_comm=MPI_COMM_NULL
     integer :: sizes(3),minus_rank(3),plus_rank(3),count,shape_face(3),ierr,unit,io_status,ntypes(3)
     logical :: receive_plus,receive_minus
-    integer :: mpi_status(MPI_STATUS_SIZE)
+    integer :: recv_status(MPI_STATUS_SIZE)
     character(len=1024) :: prefix
     character(len=1152) :: filename
     character(len=32) :: label
@@ -1362,11 +1362,11 @@ contains
       convection_face_buffer(:count,3:4)=0.0_real64
       call MPI_Sendrecv(convection_face_buffer(:,1),count,MPI_DOUBLE_PRECISION,minus_rank(direction), &
         2*direction-1,convection_face_buffer(:,3),count,MPI_DOUBLE_PRECISION,plus_rank(direction), &
-        2*direction-1,face_comm,mpi_status,ierr)
+        2*direction-1,face_comm,recv_status,ierr)
       if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
       call MPI_Sendrecv(convection_face_buffer(:,2),count,MPI_DOUBLE_PRECISION,plus_rank(direction), &
         2*direction,convection_face_buffer(:,4),count,MPI_DOUBLE_PRECISION,minus_rank(direction), &
-        2*direction,face_comm,mpi_status,ierr)
+        2*direction,face_comm,recv_status,ierr)
       if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
     endif
     ! Faces 0:dim-1 are locally owned. Face dim belongs to the next rank;

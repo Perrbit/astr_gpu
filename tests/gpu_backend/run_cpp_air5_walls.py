@@ -288,6 +288,7 @@ def main():
         parser.add_argument(f"--{name}", required=True, type=Path)
     parser.add_argument("--topology", nargs=3, type=int, default=(2, 1, 1))
     parser.add_argument("--mpi-btl", default="self,vader,tcp")
+    parser.add_argument("--mpi-osc", default="pt2pt")
     parser.add_argument("--reference-mpiexec", type=Path)
     parser.add_argument("--separation", action="store_true")
     parser.add_argument("--volume-statistics", action="store_true")
@@ -304,7 +305,7 @@ def main():
     bounds = [edge for length in lengths for edge in (0., 1.01*length)]
     images = render_products(lengths) if args.images_implementation else []
     nranks = prod(args.topology)
-    env = os.environ | dict(OMPI_MCA_pml="ob1", OMPI_MCA_btl=args.mpi_btl, OMPI_MCA_osc="pt2pt",
+    env = os.environ | dict(OMPI_MCA_pml="ob1", OMPI_MCA_btl=args.mpi_btl, OMPI_MCA_osc=args.mpi_osc,
                             OMPI_MCA_coll="^cuda,hcoll,ucc", OMPI_MCA_opal_cuda_support="0",
                             ASTR_GPU_HALO_TRANSPORT="pinned", ASTR_GPU_SYNC_MODE="explicit",
                             ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, args.topology)),

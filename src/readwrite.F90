@@ -480,15 +480,6 @@ module readwrite
     !
     use commvar
     use parallel,only : bcast,mpibar
-    use commvar, only : ia,ja,ka,lihomo,ljhomo,lkhomo,conschm,difschm, &
-                        nondimen,diffterm,ref_tem,ref_vel,ref_len,     &
-                        ref_den,reynolds,mach,                         &
-                        num_species,flowtype,lfilter,alfa_filter,      &
-                        lreadgrid,lfftk,gridfile,kcutoff,              &
-                        ninit,rkscheme,spg_def,lchardecomp,             &
-                        recon_schem,lrestart,limmbou,solidfile,        &
-                        bfacmpld,shkcrt,turbmode,schmidt,ibmode,       &
-                        ltimrpt,testmode,use_gpu
     use sponge_layer, only : spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km
     use parallel,only : bcast
     use cmdefne, only : readkeyboad,case_input_path
@@ -500,7 +491,6 @@ module readwrite
     use mpi, only: MPI_COMM_WORLD
     !
 #ifdef COMB
-    use commvar, only : lcomb
     use thermchem,only: chemrep,chemread,thermdyn
 #endif
     !
