@@ -39,7 +39,7 @@ MATRIX = [
 def prepare(case, label, backend, scheme, diffusion, filtering, restore=None,
             convection='keep', viscosity='standard', stretched=False, wall_temperature=1.,exact_restart=True,
             steps=4,checkpoint=True,inflow_mode='complete_state',mach=.3,xslip=10.,intervals=16,upper_nonreflecting=False,
-            wall_blowing_mode=None):
+            wall_blowing_mode=None,force_fixed=0.):
     case.mkdir(parents=True, exist_ok=False)
     datin = case / 'datin'
     datin.mkdir()
@@ -119,7 +119,7 @@ def prepare(case, label, backend, scheme, diffusion, filtering, restore=None,
         'initialization': dict(limmbou=False, lrestart=False, ninit=3),
         'sponge': dict(spg_i0=0, spg_im=0, spg_j0=0, spg_jm=0, spg_k0=0, spg_km=0, spg_def='layer'),
         'precision_options': dict(gpu_precision_mode='fp64'),
-        'transport_options': dict(channel_force_mode='fixed', channel_force_fixed=0.),
+        'transport_options': dict(channel_force_mode='fixed', channel_force_fixed=force_fixed),
     }
     if open_x:
         groups['boundary']['pout']=1.

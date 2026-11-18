@@ -3,7 +3,15 @@ program halo_probe
   use mpi
   use device_state
   use halo_transport
+  use astr_precision, only: real_kind,real_bytes,real_to_word
+  use astr_precision_mpi, only: mpi_real_type
   implicit none
+  interface
+    subroutine wire_counts(values) bind(C,name='astr_halo_wire_counts')
+      import c_int64_t
+      integer(c_int64_t),intent(out) :: values(5)
+    end subroutine
+  end interface
   integer,parameter :: dims_local(3)=[9,7,6]
   integer :: ierr,rank,local_rank,status,axis,hm,debug,a,cart,nranks,iteration,side
   integer :: topology(3),coordinates(3),low(3),high(3)
@@ -12,7 +20,8 @@ program halo_probe
   character(40) :: value
   type(c_ptr) :: state
   type(device_view) :: before,after
-  real(c_double),allocatable :: initial(:,:,:,:),expected(:,:,:,:),actual(:,:,:,:)
+  integer(c_int64_t) :: wire(5)
+  real(real_kind),allocatable :: initial(:,:,:,:),expected(:,:,:,:),actual(:,:,:,:)
   integer :: i,j,k,c
   call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',value,status=status)
   if(status/=0) error stop 'halo probe requires Open MPI local rank'
@@ -35,6 +44,12 @@ program halo_probe
     call fail('transport must be pinned or device')
   end select
   topology=1;topology(axis+1)=nranks;periodic=.true.
+  call get_command_argument(3,value)
+  select case(trim(value))
+  case('','periodic')
+  case('physical');periodic(axis+1)=.false.
+  case default;call fail('layout must be periodic or physical')
+  end select
   call MPI_Cart_create(MPI_COMM_WORLD,3,topology,periodic,.false.,cart,ierr)
   call check(ierr,'Cartesian communicator')
   call MPI_Cart_coords(cart,rank,3,coordinates,ierr)
@@ -51,7 +66,7 @@ program halo_probe
     do k=-hm,6+hm
     do j=-hm,7+hm
     do i=-hm,9+hm
-      initial(i,j,k,c)=8192.d0*c+1024.d0*rank+8.d0*i+.5d0*j+.03125d0*k
+      initial(i,j,k,c)=8192._real_kind*c+1024._real_kind*rank+8._real_kind*i+.5_real_kind*j+.03125_real_kind*k
     enddo
     enddo
     enddo
@@ -60,9 +75,11 @@ program halo_probe
     call check(device_state_create(int(local_rank,c_int),9_c_int,7_c_int,6_c_int,int(hm,c_int), &
       int(debug,c_int),state),'create state')
     call check(device_transport_prepare(state,int(cart,c_int),int(low,c_int),int(high,c_int), &
-      int(topology,c_int),5_c_int,transport_mode,0_c_int),'prepare fixed halo transport')
+      int(topology,c_int),5_c_int,transport_mode,0_c_int, &
+      merge(1_c_int,0_c_int,periodic)),'prepare fixed halo transport')
     call check(device_state_view(state,device_q,before),'initial q view')
-    call check(device_state_upload(state,device_q,initial,int(size(initial),c_size_t)*8_c_size_t),'upload')
+    if(before%element_bytes/=real_bytes) call fail('native q storage width')
+    call check(device_state_upload(state,device_q,initial,int(size(initial),c_size_t)*real_bytes),'upload')
     do iteration=1,2
       do a=0,2
         if(iteration==1) then
@@ -76,8 +93,8 @@ program halo_probe
           call check(device_exchange_axis(state,device_q,int(a,c_int),0_c_int),'halo-only exchange')
         endif
         call reference_exchange(a+1,iteration==1)
-        call check(device_state_download(state,device_q,actual,int(size(actual),c_size_t)*8_c_size_t),'download')
-        if(any(transfer(actual,[0_c_int64_t],size(actual))/=transfer(expected,[0_c_int64_t],size(expected)))) &
+        call check(device_state_download(state,device_q,actual,int(size(actual),c_size_t)*real_bytes),'download')
+        if(any(real_to_word(actual)/=real_to_word(expected))) &
           call fail('physical/shared/halo/corner bits differ')
       enddo
     enddo
@@ -89,6 +106,10 @@ program halo_probe
     deallocate(initial,expected,actual)
   enddo
   enddo
+  call wire_counts(wire)
+  write(*,'(a,i0,a,i0,a,5(1x,i0))') 'HALO_WIRE rank=',rank,' element_bytes=',real_bytes,' calls_send_recv_bytes_send_recv_badtypes=',wire
+  if(wire(5)/=0) call fail('MPI packet datatype differs from native numerical precision')
+  if(nranks>1.and.(wire(1)<=0.or.wire(2)<=0.or.wire(3)<=0.or.wire(4)<=0)) call fail('missing actual native MPI packet observation')
   call MPI_Comm_free(cart,ierr)
   call check(ierr,'release Cartesian communicator')
   call MPI_Finalize(ierr)
@@ -111,7 +132,7 @@ contains
     integer,intent(in) :: direction
     logical,intent(in) :: reconcile
     integer :: shape(3),count,mpi_status(MPI_STATUS_SIZE)
-    real(c_double),allocatable :: sl(:,:,:,:),sr(:,:,:,:),rl(:,:,:,:),rr(:,:,:,:)
+    real(real_kind),allocatable :: sl(:,:,:,:),sr(:,:,:,:),rl(:,:,:,:),rr(:,:,:,:)
     shape=dims_local;shape(direction)=hm
     allocate(sl(0:shape(1),0:shape(2),0:shape(3),5),sr(0:shape(1),0:shape(2),0:shape(3),5), &
       rl(0:shape(1),0:shape(2),0:shape(3),5),rr(0:shape(1),0:shape(2),0:shape(3),5))
@@ -124,33 +145,39 @@ contains
       sl=expected(0:9,0:7,0:hm,:);sr=expected(0:9,0:7,6-hm:6,:)
     end select
     count=size(sl)
-    call MPI_Sendrecv(sl,count,MPI_DOUBLE_PRECISION,low(direction),901, &
-      rr,count,MPI_DOUBLE_PRECISION,high(direction),901,cart,mpi_status,ierr)
+    call MPI_Sendrecv(sl,count,mpi_real_type,low(direction),901, &
+      rr,count,mpi_real_type,high(direction),901,cart,mpi_status,ierr)
     call check(ierr,'Fortran reference low packet')
-    call MPI_Sendrecv(sr,count,MPI_DOUBLE_PRECISION,high(direction),902, &
-      rl,count,MPI_DOUBLE_PRECISION,low(direction),902,cart,mpi_status,ierr)
+    call MPI_Sendrecv(sr,count,mpi_real_type,high(direction),902, &
+      rl,count,mpi_real_type,low(direction),902,cart,mpi_status,ierr)
     call check(ierr,'Fortran reference high packet')
     select case(direction)
     case(1)
-      expected(-hm:-1,0:7,0:6,:)=rl(0:hm-1,:,:,:)
-      expected(10:9+hm,0:7,0:6,:)=rr(1:hm,:,:,:)
-      if(reconcile) then
-        expected(0,0:7,0:6,:)=.5d0*(expected(0,0:7,0:6,:)+rl(hm,:,:,:))
-        expected(9,0:7,0:6,:)=.5d0*(expected(9,0:7,0:6,:)+rr(0,:,:,:))
+      if(low(direction)/=MPI_PROC_NULL) then
+        expected(-hm:-1,0:7,0:6,:)=rl(0:hm-1,:,:,:)
+        if(reconcile) expected(0,0:7,0:6,:)=.5_real_kind*(expected(0,0:7,0:6,:)+rl(hm,:,:,:))
+      endif
+      if(high(direction)/=MPI_PROC_NULL) then
+        expected(10:9+hm,0:7,0:6,:)=rr(1:hm,:,:,:)
+        if(reconcile) expected(9,0:7,0:6,:)=.5_real_kind*(expected(9,0:7,0:6,:)+rr(0,:,:,:))
       endif
     case(2)
-      expected(0:9,-hm:-1,0:6,:)=rl(:,0:hm-1,:,:)
-      expected(0:9,8:7+hm,0:6,:)=rr(:,1:hm,:,:)
-      if(reconcile) then
-        expected(0:9,0,0:6,:)=.5d0*(expected(0:9,0,0:6,:)+rl(:,hm,:,:))
-        expected(0:9,7,0:6,:)=.5d0*(expected(0:9,7,0:6,:)+rr(:,0,:,:))
+      if(low(direction)/=MPI_PROC_NULL) then
+        expected(0:9,-hm:-1,0:6,:)=rl(:,0:hm-1,:,:)
+        if(reconcile) expected(0:9,0,0:6,:)=.5_real_kind*(expected(0:9,0,0:6,:)+rl(:,hm,:,:))
+      endif
+      if(high(direction)/=MPI_PROC_NULL) then
+        expected(0:9,8:7+hm,0:6,:)=rr(:,1:hm,:,:)
+        if(reconcile) expected(0:9,7,0:6,:)=.5_real_kind*(expected(0:9,7,0:6,:)+rr(:,0,:,:))
       endif
     case(3)
-      expected(0:9,0:7,-hm:-1,:)=rl(:,:,0:hm-1,:)
-      expected(0:9,0:7,7:6+hm,:)=rr(:,:,1:hm,:)
-      if(reconcile) then
-        expected(0:9,0:7,0,:)=.5d0*(expected(0:9,0:7,0,:)+rl(:,:,hm,:))
-        expected(0:9,0:7,6,:)=.5d0*(expected(0:9,0:7,6,:)+rr(:,:,0,:))
+      if(low(direction)/=MPI_PROC_NULL) then
+        expected(0:9,0:7,-hm:-1,:)=rl(:,:,0:hm-1,:)
+        if(reconcile) expected(0:9,0:7,0,:)=.5_real_kind*(expected(0:9,0:7,0,:)+rl(:,:,hm,:))
+      endif
+      if(high(direction)/=MPI_PROC_NULL) then
+        expected(0:9,0:7,7:6+hm,:)=rr(:,:,1:hm,:)
+        if(reconcile) expected(0:9,0:7,6,:)=.5_real_kind*(expected(0:9,0:7,6,:)+rr(:,:,0,:))
       endif
     end select
     deallocate(sl,sr,rl,rr)

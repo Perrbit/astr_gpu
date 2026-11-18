@@ -397,6 +397,9 @@ module mainloop
     use comsolver, only: gradcal
     use run_control_runtime, only: active_run,poll_mean_statistics
     use validation_io, only: write_compact_statistics_validation_snapshot
+#ifdef ASTR_GPU_CPP
+    use production_statistics_runtime, only: accumulate_compact_statistics_cpp,reset_compact_statistics_cpp
+#endif
 #ifdef _CUDA
     use halo_exchange_gpu, only: exchange_field_halo_gpu
     use commarray_gpu, only: vel_d,tmp_d
@@ -424,6 +427,9 @@ module mainloop
       ' write_steps=',active_run%statistics%write_steps,' write_time=',active_run%statistics%write_time
     if(new_window) then
       call reset_mean_statistics_window()
+#ifdef ASTR_GPU_CPP
+      if(use_gpu) call reset_compact_statistics_cpp()
+#endif
 #ifdef _CUDA
       if(use_gpu) then
 #ifdef ASTR_AIR5_CHEMISTRY
@@ -440,6 +446,11 @@ module mainloop
     endif
     if(sample) then
       started=ptime()
+#ifdef ASTR_GPU_CPP
+      if(use_gpu) then
+        call accumulate_compact_statistics_cpp()
+      else
+#endif
 #ifdef _CUDA
       if(use_gpu) then
         ! Explicit-shape sequence association presents the scalar as one field.
@@ -469,6 +480,9 @@ module mainloop
         call meanflowcal()
         call write_compact_statistics_validation_snapshot()
 #ifdef _CUDA
+      endif
+#endif
+#ifdef ASTR_GPU_CPP
       endif
 #endif
       mean_sampling_seconds=mean_sampling_seconds+ptime()-started
@@ -832,7 +846,7 @@ module mainloop
       
       if(lfilter) then
 #ifdef ASTR_BUILD_TESTING
-        if((high_order_wall_enabled.or.convection_form=='keep').and.rhs_validation_requested()) &
+        if(.not.lcomb.and.rhs_validation_requested()) &
           call write_q_validation_snapshot('pre_filter')
 #endif
 #ifdef ASTR_AIR5_CHEMISTRY
@@ -850,7 +864,7 @@ module mainloop
 #endif
         call filterq(timerept=ltimrpt)
 #ifdef ASTR_BUILD_TESTING
-        if((high_order_wall_enabled.or.convection_form=='keep').and.rhs_validation_requested()) &
+        if(.not.lcomb.and.rhs_validation_requested()) &
           call write_q_validation_snapshot('post_filter')
 #endif
         ! Derivatives and fluxes must use the filtered state at every physical node.
@@ -950,9 +964,7 @@ module mainloop
           call write_h1_outlet_filter_validation()
         end block
 #endif
-        if(conservative_case.or.lcomb.or.difschm=='643c'.or.flowtype=='tgv'.or.flowtype=='bl'.or. &
-          convection_form=='keep'.or.viscous_form=='me6_opti') &
-          call write_primitive_validation_snapshot('pre_rhs_primitives')
+        call write_primitive_validation_snapshot('pre_rhs_primitives')
         call write_gradient_validation_snapshot(dvel,dtmp,lower_normal=bnorm_j0,upper_normal=bnorm_jm)
       endif
 
@@ -1680,7 +1692,7 @@ module mainloop
     !
     use commvar,   only : numq,lreport,nondimen,spcinf,lcomb
     use commarray, only : q,rho,tmp,vel,prs,spc,x,nodestat,qrhs,jacob
-    use parallel,  only : por,ig0,jg0,kg0,psum,ptime
+    use parallel,  only : por,ig0,jg0,kg0,psum,ptime,reconcile_crashfix_history
     use fludyna,   only : q2fvar,thermal
     use mpi, only: MPI_Abort,MPI_COMM_WORLD
     use iso_fortran_env, only: output_unit
@@ -1872,6 +1884,7 @@ module mainloop
       !
     endif
     !
+    if(.not.lcomb.and.numq==5) call reconcile_crashfix_history(crinod)
     if(present(subtime)) subtime=subtime+ptime()-time_beg
     !
     return

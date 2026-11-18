@@ -684,12 +684,13 @@ module initialisation
     use comsolver,only: grad
     use parallel, only: psum,pmax,pmin,dataswap
     use hdf5io
+    use output_runtime, only: output_resource_path
     !
     ! local data
     integer :: i,j,k,jspc
     real(real_kind) :: div,div_min,div_max,div_avg
     !
-    call h5io_init(filename='datin/velocity.h5',mode='read')
+    call h5io_init(filename=trim(output_resource_path('velocity.h5','datin/velocity.h5')),mode='read')
     ! 
     call h5read(varname='u1', var=vel(0:im,0:jm,0:km,1),mode='h')
     call h5read(varname='u2', var=vel(0:im,0:jm,0:km,2),mode='h')

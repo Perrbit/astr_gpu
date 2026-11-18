@@ -603,17 +603,18 @@ contains
     use keep_sbp63_runtime_gpu, only: keep_sbp63_gradient_gpu
     use compact_operator_gpu, only: compact_gradient_enabled,compact_gradcal_gpu
     use mpi, only: MPI_PROC_NULL
-    use commvar, only: im,jm,km,hm
+    use commvar, only: im,jm,km,hm,lihomo,ljhomo,lkhomo
 #ifdef ASTR_AIR5_CHEMISTRY
     use commvar, only: flowtype,lcomb
     use chemistry_flow_runtime, only: air5_hbl_flowtype
 #endif
-    use boundary_gpu, only: gpu_physical_boundary_axis,gpu_s1_flatplate_boundary_case_pending,gpu_ldc_boundary_case_pending
+    use boundary_gpu, only: gpu_s1_flatplate_boundary_case_pending,gpu_ldc_boundary_case_pending
     use commarray_gpu, only: gpu_mixed_derivative_workspace_enabled
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
     implicit none
     type(dim3) :: block3,grid3
+    integer :: gradient_axis
     logical :: mixed_derivative,xyphysical
 
     if(keep_sbp63_enabled) then
@@ -648,7 +649,12 @@ contains
       endif
       return
     endif
-    select case(gpu_physical_boundary_axis())
+    ! A single physical axis need not use the same BC at its two ends.
+    gradient_axis=0
+    if(.not.lihomo.and.ljhomo.and.lkhomo) gradient_axis=1
+    if(lihomo.and..not.ljhomo.and.lkhomo) gradient_axis=2
+    if(lihomo.and.ljhomo.and..not.lkhomo) gradient_axis=3
+    select case(gradient_axis)
     case(1)
       if(mixed_derivative) then
         call gradcal_dvel_xphysical_sp_kernel<<<grid3,block3>>>(im,jm,km,hm, &

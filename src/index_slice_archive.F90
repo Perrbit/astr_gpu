@@ -128,22 +128,6 @@ contains
     control_changed=.false.
     phase_started=insitu_clock()
     call poll_catalog_watch(identity%step,real(identity%time,real64),[ia,ja,ka],numq,MPI_COMM_WORLD,changed,update_message)
-#ifdef ASTR_GPU_CPP
-    block
-      use commvar, only: use_gpu
-      if(use_gpu.and.runtime_catalog_count()>0) then
-        do p=1,runtime_catalog_count()
-          call runtime_catalog_state(p,state)
-          if(state%status/=runtime_active.and.state%status/=runtime_waiting) cycle
-          if(state%definition%source/='instantaneous'.or.state%definition%view%channel/='data'.or. &
-             state%definition%view%kind/='slice') then
-            if(rank==0) write(*,'(a)') 'C++ mean/render product field providers are not implemented'
-            call MPI_Abort(MPI_COMM_WORLD,1,err)
-          endif
-        enddo
-      endif
-    end block
-#endif
     call report_insitu_timing('index_slice_catalog',phase_started,identity%step)
     dirty=changed.or.len(update_message)>0
     control_changed=changed
@@ -319,7 +303,13 @@ contains
   subroutine sample_selected_wall_group(group,weights,previous,ok)
     use commvar, only: use_gpu,lihomo,ljhomo,lkhomo,im,jm,km
     use parallel, only: ig0,jg0,kg0
-#ifdef _CUDA
+#ifdef ASTR_GPU_CPP
+    use iso_c_binding, only: c_devptr=>c_ptr
+    use index_slice_cpp, only: index_slice_device_view=>index_slice_device_view_cpp, &
+      release_index_slice_gpu=>release_index_slice_cpp
+    use insitu_selected_device_cpp, only: push_scattered_moments_gpu=>push_scattered_moments_cpp, &
+      selected_external_workspace_bytes_cpp
+#elif defined(_CUDA)
     use cudafor, only: c_devptr
     use index_slice_gpu, only: index_slice_device_view,release_index_slice_gpu
     use insitu_sample_moments_gpu, only: push_scattered_moments_gpu
@@ -338,7 +328,7 @@ contains
     logical :: ready,periodic(3),node_ok,gradient_needed
     character(512) :: message
     character(16) :: transport
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     type(c_devptr) :: data_pointer
 #endif
     n=size(group%keys);nf=group%nfields
@@ -355,7 +345,8 @@ contains
     ! Split periodic aliases without sampling the unrequested gaps between them.
     call canonical_node_intervals(group%bounds(1,1),group%bounds(2,1),ia,periodic(1),xranges,nx)
     call canonical_node_intervals(group%bounds(1,3),group%bounds(2,3),ka,periodic(3),zranges,nz)
-    nraw=1;nn=0;maximum_rows=0
+    ! Every molecular wall packet needs rho plus T, including viscosity-only.
+    nraw=2;nn=0;maximum_rows=0
     gradient_needed=any(group%field_ids>=31.and.group%field_ids<=33)
     if(any(group%field_ids==31.or.group%field_ids==32)) nraw=nraw+3
     do zi=1,nz
@@ -380,7 +371,10 @@ contains
       transport='device-aware'
       extra_device=((nn+2*capacity)*nraw+int(maximum_rows,int64)*(nf+1)+49)*real_bytes+ &
         (8*capacity+68)*storage_size(0)/8
-#ifdef _CUDA
+#ifdef ASTR_GPU_CPP
+      if(selected_external_workspace_bytes_cpp(group%device)==0) &
+        extra_device=extra_device+int(max(1,n),int64)*storage_size(0)/8
+#elif defined(_CUDA)
       if(.not.associated(group%device%external_positions)) extra_device=extra_device+int(max(1,n),int64)*storage_size(0)/8
 #endif
     else
@@ -414,7 +408,7 @@ contains
       enddo
       call agree_wall(ok)
       if(ok) then
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
         if(use_gpu) then
           call index_slice_device_view(data_pointer)
           call push_scattered_moments_gpu(group%device,data_pointer,positions,nf,weights,previous,ok)
@@ -426,7 +420,7 @@ contains
             call push_sample_moments(group%states(positions(p),:),fields(:nf),values(p,1),weights,previous,[0,0,0],node_ok)
             ok=ok.and.node_ok
           enddo
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
         endif
 #endif
       endif
@@ -434,13 +428,13 @@ contains
       call agree_wall(ok)
       if(.not.ok) exit
       sampled=sampled+m
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       if(use_gpu) call release_index_slice_gpu()
 #endif
     enddo
       if(.not.ok) exit
     enddo
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(use_gpu) call release_index_slice_gpu()
 #endif
     ok=ok.and.sampled==n;call agree_wall(ok)

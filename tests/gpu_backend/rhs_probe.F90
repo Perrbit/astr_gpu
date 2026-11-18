@@ -74,7 +74,8 @@ program rhs_probe
     call check(fluid_prepare(handle,1_c_int),'prepare primitives and gradients')
     call check(fluid_rhs_prepare(handle,1_c_int),'prepare RHS')
     call check(device_transport_prepare(handle,int(MPI_COMM_SELF,c_int),[0_c_int,0_c_int,0_c_int], &
-      [0_c_int,0_c_int,0_c_int],[1_c_int,1_c_int,1_c_int],6_c_int,halo_pinned,0_c_int),'prepare local transport')
+      [0_c_int,0_c_int,0_c_int],[1_c_int,1_c_int,1_c_int],6_c_int,halo_pinned,0_c_int, &
+      [1_c_int,1_c_int,1_c_int]),'prepare local transport')
     call local_halo_check()
     call upload(device_q,q)
     call check(device_state_upload(handle,device_rho,primitives(:,:,:,1),bytes(size(jac))),'rho upload')
@@ -320,7 +321,8 @@ contains
       enddo
       enddo
       enddo
-      call check(device_state_snapshot_axis(handle,device_stress,int(a,c_int),scratch,bytes(size(scratch))), &
+      call check(device_state_snapshot_axis(handle,device_stress,int(a,c_int),[0_c_int,0_c_int,0_c_int], &
+        [0_c_int,0_c_int,0_c_int],scratch,bytes(size(scratch))), &
         'six-component observation copy')
       if(any(transfer(scratch,[0_c_int64_t],size(scratch))/=transfer(masked,[0_c_int64_t],size(masked)))) &
         call fail('observation values, signed zero or padding bits differ')

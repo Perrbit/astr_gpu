@@ -51,7 +51,7 @@ def test_display_resources_do_not_grow_per_frame():
 
 def test_trace_endpoint_domain_guard(tmp_path):
     executable=tmp_path/'trace_endpoint'
-    subprocess.run(['c++','-std=c++11','-I',str(ROOT/'src_gpu'),
+    subprocess.run(['c++','-std=c++11','-I',str(ROOT/'src_gpu'),'-I',str(ROOT/'src'),
         str(ROOT/'tests/gpu_validation/insitu_trace_endpoint_probe.cpp'),'-o',str(executable)],
         check=True,timeout=30)
     result=subprocess.run([str(executable)],capture_output=True,text=True,timeout=10)

@@ -319,7 +319,8 @@ contains
     if(err==0) read(line,*,iostat=err) bytes,download
     close(unit,iostat=closed)
     if(err/=0.or.closed/=0) return
-    ok=bytes>=0.and.(download==0.or.download==bytes)
+    ! Download measures the producer's actual transfer, not the file payload.
+    ok=bytes>=0.and.download>=0
   end subroutine
 
   integer function words(line) result(n)

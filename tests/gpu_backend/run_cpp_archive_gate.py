@@ -4,12 +4,14 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 import numpy as np
 
 from run_cpp_tgv_gate import prepare_case, namelist, compare, snapshot
 from run_cpp_restart_gate import datasets
+from run_cpp_multi_tgv_gate import layouts
 
 
 def main():
@@ -21,6 +23,12 @@ def main():
     parser.add_argument('--ranks', type=int, choices=[1, 2, 4], default=1)
     parser.add_argument('--analyze-only', action='store_true')
     parser.add_argument('--workspace', choices=['full', 'scalar'], default='full')
+    parser.add_argument('--compact-form', choices=['compact_explicit', 'explicit_compact', 'compact_compact'])
+    parser.add_argument('--primitive-only', action='store_true')
+    parser.add_argument('--physical-fixture',type=Path)
+    parser.add_argument('--profile-fixture',type=Path)
+    parser.add_argument('--wall-axis',choices=['x','y','z'],default='y')
+    parser.add_argument('--axis',choices=['x','y','z'],default='x')
     args = parser.parse_args()
     root = args.output.resolve()
     if not args.analyze_only:
@@ -35,12 +43,29 @@ def main():
 
     def run(name, binary, gpu, ranks, products):
         directory = root/name
-        prepare_case(directory, original, gpu, True, False)
+        if args.profile_fixture:
+            source=args.profile_fixture.resolve()/('old_gpu' if gpu else 'cpu')
+            directory.mkdir();shutil.copytree(source/'datin',directory/'datin',copy_function=shutil.copyfile)
+            (directory/'outdat/new').mkdir(parents=True)
+        elif args.physical_fixture:
+            source=args.physical_fixture.resolve()/(('gpu' if gpu else 'cpu')+'_'+args.wall_axis)
+            directory.mkdir();shutil.copytree(source/'datin',directory/'datin')
+            (directory/'outdat/new').mkdir(parents=True)
+        else:
+            numerics = None
+            if args.compact_form:
+                derivative, filtering = args.compact_form.split('_')
+                scheme = '643c' if derivative == 'compact' else '643e'
+                numerics = dict(conschm=scheme, difschm=scheme,
+                                filter_scheme='compact10' if filtering == 'compact' else 'explicit10')
+            prepare_case(directory, original, gpu, True, False, numerics=numerics)
+        volume_derived=not args.primitive_only and args.physical_fixture is None and args.profile_fixture is None
         outputs = dict(output=dict(directory='outdat/new', host_budget_bytes=-1,
                                    device_budget_bytes=-1, device_reserve_bytes=0),
                        checkpoint=dict(enabled=False),
                        volume=dict(enabled=products, mode='steps', interval_steps=2,
-                                   velocity_gradient=True, vorticity=True, qcriterion=True),
+                                   velocity_gradient=volume_derived, vorticity=volume_derived,
+                                   qcriterion=volume_derived),
                        slices=dict(enabled=False))
         (directory/'datin/input.output').write_text(namelist(outputs))
         definitions = []
@@ -49,14 +74,17 @@ def main():
                 for index in (0, 8, 16):
                     definitions.append(dict(id=f'{axis}{index}', kind='slice', enable_request=1,
                         source='instantaneous', fields=['density', 'velocity_x', 'velocity_y', 'velocity_z',
-                            'pressure', 'temperature', 'Q_rs', 'velocity_divergence', 'density_gradient_magnitude'],
+                            'pressure', 'temperature']+([] if args.primitive_only else
+                            ['Q_rs', 'velocity_divergence', 'density_gradient_magnitude']),
                         sampling=dict(mode='grid_index', axis=axis, index=index,
                             index_ranges={a: [0, 16] for a in ('i', 'j', 'k') if a != axis}),
                         output=dict(channel='data', format='hdf5-xdmf'),
                         schedule=dict(mode='steps', interval=2)))
         (directory/'input.products.jsonl').write_text(''.join(json.dumps(p)+'\n' for p in
             [dict(catalog_schema='astr-insitu-products-v1'), *definitions]))
-        selected = env | dict(ASTR_FORCE_MPI_TOPOLOGY={1: '1,1,1', 2: '2,1,1', 4: '2,2,1'}[ranks])
+        topology=[1,1,1];topology['xyz'.index(args.axis)]=ranks
+        if ranks==4:topology=[2,2,1]
+        selected = env | dict(ASTR_FORCE_MPI_TOPOLOGY=','.join(map(str,topology)))
         command = [str(args.mpiexec.resolve()), '--bind-to', 'none', '-n', str(ranks), str(binary), 'run']
         with (directory/'run.log').open('w') as log:
             subprocess.run(command, cwd=directory, env=selected, stdin=subprocess.DEVNULL,
@@ -79,7 +107,10 @@ def main():
     if len(numerical) != 27:
         raise AssertionError('nine numerical slices require initial, step-two and step-four frames')
     frames += [p.relative_to(cpu/'outdat/new') for p in numerical]
-    report = {'frames': {}, 'ranks': args.ranks}
+    report = dict(frames={},ranks=args.ranks,axis=args.axis,
+        physical_fixture=str(args.physical_fixture) if args.physical_fixture else None,
+        profile_fixture=str(args.profile_fixture) if args.profile_fixture else None,
+        volume_derived=not args.primitive_only and args.physical_fixture is None and args.profile_fixture is None)
     def frame_path(directory, relative):
         if relative.parts[0] == 'slice_products':
             # Segment directory suffixes are exclusive-publication identities,
@@ -113,14 +144,19 @@ def main():
                         (cpp/'run.log').read_text())
     if len(copies) != 2*args.ranks:
         raise AssertionError('missing scheduled field publication records')
-    # Initial slices publish once; on later complete steps volume/slices share
-    # one cache readback irrespective of their relative observation order.
+    # Index slices download their selected 2D values, not the volume cache.
     slice_copies = re.findall(r'ASTR_SLICE rank=(\d+).*field_d2h_bytes=(\d+)', (cpp/'run.log').read_text())
     if len(slice_copies) != 27*args.ranks:
         raise AssertionError('missing numerical slice publication records')
-    transfers = [int(n) for _, _, n in copies]+[int(n) for _, n in slice_copies]
-    if sum(n > 0 for n in transfers) != 3*args.ranks:
-        raise AssertionError('completed-step primitive readback was not shared across products')
+    layout=layouts(cpp)
+    expected_volume=2*sum(int(np.prod(np.array(row['upper'])+2*row['halo'][0]+1))*6*8 for row in layout.values())
+    if sum(int(n) for _,_,n in copies)!=expected_volume:
+        raise AssertionError('scheduled volume primitive-cache transfer differs')
+    expected_slices=27*17*17*(6 if args.primitive_only else 9)*8
+    if sum(int(n) for _,n in slice_copies)!=expected_slices:
+        raise AssertionError('numerical slices did not download exactly selected 2D result fields')
+    report['expected_volume_download_bytes']=expected_volume
+    report['expected_slice_result_download_bytes']=expected_slices
     report['publication_download_bytes'] = [list(x) for x in copies]
     report['slice_download_bytes'] = [list(x) for x in slice_copies]
     report['output_toggle_physical_q_identical'] = True

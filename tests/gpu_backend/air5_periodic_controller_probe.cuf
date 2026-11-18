@@ -1,0 +1,65 @@
+program air5_periodic_controller_probe
+  use iso_fortran_env,only:real64,int64
+  use mpi
+  use cudafor
+  use commvar,only:im,jm,km,hm,numq,lihomo,ljhomo,lkhomo,const2,const6
+  use parallel,only:isize,jsize,ksize,mpirank,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+  use commarray_gpu,only:q_d,rho_d,vel_d,prs_d,tmp_d
+  use chemistry_compensation,only:configure_air5_compensation,air5_carry
+  use chemistry_compensation_gpu,only:init_air5_compensation_gpu,release_air5_compensation_gpu,sync_air5_compensation_gpu
+  use halo_exchange_gpu,only:exchange_solution_halo_gpu
+  implicit none
+  integer,parameter :: n=8
+  integer :: mode,keep,i,j,k,c,status,u,ierr
+  real(real64) :: base(11),state(-hm:n+hm,-hm:n+hm,-hm:n+hm,11),after(-hm:n+hm,-hm:n+hm,-hm:n+hm,11)
+  real(real64) :: dens(-hm:n+hm,-hm:n+hm,-hm:n+hm)
+  character(1024) :: input
+  status=cudaSetDevice(0);if(status/=0)error stop 'bind CUDA device'
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,mpirank,ierr)
+  if(mpirank/=0)error stop 'single-rank probe'
+  im=n;jm=n;km=n;isize=1;jsize=1;ksize=1
+  lihomo=.true.;ljhomo=.true.;lkhomo=.true.
+  mpileft=0;mpiright=0;mpidown=0;mpiup=0;mpiback=0;mpifront=0
+  const2=1;const6=1
+  call get_command_argument(1,input)
+  open(newunit=u,file=trim(input),access='stream',form='unformatted',status='old');read(u)base;close(u)
+  allocate(q_d(-hm:n+hm,-hm:n+hm,-hm:n+hm,11),rho_d(-hm:n+hm,-hm:n+hm,-hm:n+hm), &
+    vel_d(-hm:n+hm,-hm:n+hm,-hm:n+hm,3),prs_d(-hm:n+hm,-hm:n+hm,-hm:n+hm),tmp_d(-hm:n+hm,-hm:n+hm,-hm:n+hm))
+  do mode=0,2
+    numq=merge(5,11,mode==0)
+    call configure_air5_compensation(mode==2,n,n,n)
+    do keep=0,1
+      do c=1,11
+        state(:,:,:,c)=base(c)
+      enddo
+      if(mode==2)then
+        do c=1,11;do k=0,n;do j=0,n;do i=0,n
+          air5_carry(i,j,k,c)=scale(1.0_real64,exponent(base(c))-62)*real(endpoint(i)+endpoint(j)+endpoint(k),real64)
+        enddo;enddo;enddo;enddo
+      endif
+      q_d=state;rho_d=-1
+      call init_air5_compensation_gpu()
+      call exchange_solution_halo_gpu(keep==1)
+      after=q_d;dens=rho_d
+      if(any(transfer(after,[0_int64],size(after))/=transfer(state,[0_int64],size(state))))error stop 'q words changed'
+      if(dens(-1,1,1)/=base(1).or.dens(1,n+1,1)/=base(1).or.dens(1,1,-1)/=base(1))error stop 'halo refresh missing'
+      if(keep==1.and.dens(1,1,1)/=-1)error stop 'interior cache should be preserved'
+      if(keep==0.and.dens(1,1,1)/=base(1))error stop 'interior cache refresh missing'
+      if(mode==2)then
+        call sync_air5_compensation_gpu(.true.)
+        if(any(air5_carry/=0))error stop 'periodic endpoint carry not reconciled'
+      endif
+      write(*,'(a,i0,a,i0,a)')'AIR5_PERIODIC_CONTROLLER_PASS mode=',mode,' preserve=',keep,' q=exact'
+      call release_air5_compensation_gpu()
+    enddo
+  enddo
+  call configure_air5_compensation(.false.,n,n,n)
+  deallocate(q_d,rho_d,vel_d,prs_d,tmp_d)
+  call MPI_Finalize(ierr)
+contains
+  pure integer function endpoint(i)
+    integer,intent(in) :: i
+    endpoint=merge(1,0,i==0)-merge(1,0,i==n)
+  end function
+end program

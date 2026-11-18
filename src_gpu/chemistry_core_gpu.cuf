@@ -304,6 +304,7 @@ module chemistry_thermo_gpu
   public :: air5_species_cv_tr_gpu
   public :: air5_species_vibrational_energy_gpu
   public :: air5_species_vibrational_cv_gpu
+  public :: air5_species_vibrational_difference_gpu
   public :: air5_species_vibrational_pair_gpu
   public :: air5_tv_from_ev_gpu
   public :: air5_ev_from_tv_gpu
@@ -357,6 +358,12 @@ contains
       air5_species_vibrational_cv_gpu = 0.0_real64
     end if
   end function air5_species_vibrational_cv_gpu
+
+  attributes(device) real(real64) function air5_species_vibrational_difference_gpu(species,temperature,tv) result(difference)
+#define air5_species_gas_constant air5_species_gas_constant_gpu
+#include "../src/chemistry_vibrational_difference_body.inc"
+#undef air5_species_gas_constant
+  end function air5_species_vibrational_difference_gpu
 
   attributes(device) subroutine air5_species_vibrational_pair_gpu(species,tv,energy,heat_capacity)
     integer, intent(in) :: species

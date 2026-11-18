@@ -540,6 +540,10 @@ contains
     use gradcal_gpu, only: compute_gradcal_gpu
     use statistic_gpu, only: gpu_write_channel_flowstate,gpu_write_s1_bl_flowstate, &
                              gpu_write_generic_flowstate
+#ifdef ASTR_BUILD_TESTING
+    use commarray_gpu, only: copy_flow_from_gpu
+    use validation_io, only: rhs_validation_requested,write_q_validation_snapshot,write_primitive_validation_snapshot
+#endif
     implicit none
 
     if(statistics_interval==0) return
@@ -551,6 +555,13 @@ contains
       call gpu_write_channel_flowstate()
     elseif(trim(flowtype) == 'bl') then
       call compute_gradcal_gpu()
+#ifdef ASTR_BUILD_TESTING
+      if(rhs_validation_requested()) then
+        call copy_flow_from_gpu()
+        call write_q_validation_snapshot('statistics_input',nstep,1)
+        call write_primitive_validation_snapshot('statistics_primitives',nstep,1)
+      endif
+#endif
       call gpu_write_s1_bl_flowstate()
     else
       call gpu_write_generic_flowstate()

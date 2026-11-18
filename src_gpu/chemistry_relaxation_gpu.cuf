@@ -10,6 +10,7 @@ module chemistry_relaxation_gpu
     air5_validate_partial_densities_gpu, air5_pressure_is_in_domain_gpu
   use chemistry_thermo_gpu, only: air5_species_gas_constant_gpu, &
     air5_species_vibrational_energy_gpu, air5_species_vibrational_cv_gpu, &
+    air5_species_vibrational_difference_gpu, &
     air5_pressure_gpu
   implicit none
   private
@@ -29,12 +30,14 @@ contains
 #define air5_pressure_is_in_domain air5_pressure_is_in_domain_gpu
 #define air5_pressure air5_pressure_gpu
 #define air5_species_vibrational_energy air5_species_vibrational_energy_gpu
+#define air5_species_vibrational_difference air5_species_vibrational_difference_gpu
 #include "../src/chemistry_pure_vt_body.inc"
 #undef air5_is_finite
 #undef air5_validate_partial_densities
 #undef air5_pressure_is_in_domain
 #undef air5_pressure
 #undef air5_species_vibrational_energy
+#undef air5_species_vibrational_difference
   end subroutine air5_vt_relaxation_source_gpu
 
   attributes(device) subroutine air5_vt_relaxation_source_derivatives_gpu( &
@@ -49,7 +52,7 @@ contains
     real(real64) :: mw_weight(air5_num_species), density_derivative(air5_num_species)
     real(real64) :: mw_time, sigma, reduced_mass, mean_speed
     real(real64) :: inverse_time, inverse_derivative, dx
-    real(real64) :: equilibrium_energy, current_energy, energy_difference
+    real(real64) :: energy_difference
     real(real64) :: energy_derivative, collision_coefficient, collision_rate, product, denominator
     real(real64) :: dlog_mw, dlog_collision, pair_rate_derivative
     integer :: molecule, partner, variable, local_status
@@ -165,9 +168,7 @@ contains
       do partner=1,air5_num_species
         inverse_time=inverse_time+mole_fraction(partner)*pair_rate(partner)
       end do
-      equilibrium_energy = air5_species_vibrational_energy_gpu(molecule,temperature)
-      current_energy = air5_species_vibrational_energy_gpu(molecule,tv)
-      energy_difference = equilibrium_energy-current_energy
+      energy_difference = air5_species_vibrational_difference_gpu(molecule,temperature,tv)
       source = source+rho_species(molecule)*energy_difference*inverse_time
 
       do variable = 1, 6

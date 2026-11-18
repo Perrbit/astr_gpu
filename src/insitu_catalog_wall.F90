@@ -21,6 +21,12 @@ module insitu_catalog_wall
   use insitu_products_gpu, only: catalog_wall_gpu_supported,begin_catalog_wall_gpu,end_catalog_wall_gpu,catalog_wall_line_gpu
   use insitu_products_gpu, only: catalog_sbli_wall_gpu_supported,capture_catalog_sbli_wall_gpu
   use index_slice_gpu, only: validate_index_slice_transport
+#elif defined(ASTR_GPU_CPP)
+  use insitu_wall_runtime_cpp, only: catalog_wall_gpu_supported=>catalog_wall_cpp_supported, &
+    begin_catalog_wall_gpu=>begin_catalog_wall_cpp,end_catalog_wall_gpu=>end_catalog_wall_cpp, &
+    catalog_wall_line_gpu=>catalog_wall_line_cpp,catalog_sbli_wall_gpu_supported=>catalog_sbli_wall_cpp_supported, &
+    capture_catalog_sbli_wall_gpu=>capture_catalog_sbli_wall_cpp
+  use index_slice_cpp, only: validate_index_slice_transport=>validate_index_slice_transport_cpp
 #endif
   implicit none
   private
@@ -72,7 +78,7 @@ contains
         message='existing SBLI physical-midspan producer requires explicit device processing';return
       endif
       frame%source=0;frame%supplier=2;frame%factor=1;frame%window=0;frame%duration=0;frame%count=0
-#if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_PRODUCTS)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_INSITU_DEVICE_PRODUCTS)
       if(.not.use_gpu.or..not.catalog_sbli_wall_gpu_supported()) then
         message='SBLI midspan producer requires an admitted rectilinear MP7-LD x-slab with a stationary impermeable wall';return
       endif
@@ -97,7 +103,7 @@ contains
     if(.not.catalog_wall_fields_supported()) then
       message='existing wall field producer is not admitted for this flow/layout';return
     endif
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(use_gpu.and..not.host.and..not.catalog_wall_gpu_supported()) then
       message='existing GPU wall field producer is not admitted for this flow/layout';return
     endif
@@ -177,7 +183,7 @@ contains
         elseif(.not.use_gpu) then
           message='runtime wall charts require the existing GPU/EGL renderer binding'
         endif
-#if !defined(_CUDA) || !defined(ASTR_INSITU_DEVICE_RENDERING)
+#if (!defined(_CUDA) && !defined(ASTR_GPU_CPP)) || !defined(ASTR_INSITU_DEVICE_RENDERING)
         message='runtime wall charts require the Catalyst device rendering build'
 #endif
       endif
@@ -207,7 +213,7 @@ contains
         state=frames(p)%state;ok=.true.;message=''
         if(.not.captured) then
           started=insitu_clock()
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
           if(use_gpu.and..not.host) then
             call validate_index_slice_transport(mode,ok,message)
             call agree_error(message)
@@ -225,7 +231,11 @@ contains
               else
                 call begin_catalog_wall_gpu(mode,s==1,frames(p)%duration,options%host_budget_bytes, &
                   options%device_budget_bytes,options%device_reserve_bytes,ok)
+#ifdef ASTR_GPU_CPP
+                if(.not.ok) message='C++ wall field capture or wall-time mean failed'
+#else
                 if(.not.ok) message='optional wall source allocation would exceed its budget or available memory'
+#endif
               endif
             endif
           else
@@ -250,7 +260,7 @@ contains
               endif
               if(allocated(means)) deallocate(means)
             endif
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
           endif
 #endif
           captured=ok
@@ -277,7 +287,7 @@ contains
           if(state%definition%view%side=='lower'.and.jg0==0) w=1
           if(state%definition%view%side=='upper'.and.jg0+jm==ja) w=1+merge(1,0,jg0==0)
           if(k<0.or.k>km.or.(k==km.and.kg0+km<ka)) k=-1
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
           if(use_gpu.and..not.host) then
             call catalog_wall_line_gpu(k,w,local,download,ok)
             if(.not.ok) message='optional wall line device allocation failed'
@@ -293,7 +303,7 @@ contains
                 endif
               enddo
             endif
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
           endif
 #endif
           call agree_error(message)
@@ -332,7 +342,7 @@ contains
         endif
         dirty=.true.
       enddo
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       if(use_gpu.and.captured.and..not.host) call end_catalog_wall_gpu()
 #endif
       if(allocated(coordinates)) deallocate(coordinates)
@@ -357,7 +367,7 @@ contains
     type(insitu_options),intent(in) :: options
     logical,intent(out) :: ok
     character(*),intent(out) :: message
-#if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_INSITU_DEVICE_RENDERING)
     character(32) :: labels(11)
     integer(c_int) :: words(7)
     real(real64) :: settings(31)
@@ -370,8 +380,8 @@ contains
           bind(C,name='astr_insitu_render_wall_product')
         import c_int,c_char,c_int64_t,c_double,c_real_kind
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*),id(*),source(*),definition(*),directory(*),labels(*)
-        integer(c_int),value :: comm,step,nodes,column,nondimensional,provider,host
-        integer(c_int64_t),value :: version,samples,host_budget
+        integer(c_int),value :: comm,nodes,column,nondimensional,provider,host
+        integer(c_int64_t),value :: step,version,samples,host_budget
         integer(c_int),intent(in) :: words(7)
         real(c_double),intent(in) :: settings(31)
         real(c_real_kind),value :: t,factor
@@ -388,7 +398,7 @@ contains
     call pack_catalog_render(state%definition%view,labels,words,settings)
     statistics=[frame%window,frame%duration]
     status=render(trim(options%rendering_pipeline)//c_null_char,trim(options%implementation_path)//c_null_char, &
-      trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int),identity%time, &
+      trim(options%pipeline_file)//c_null_char,int(MPI_COMM_WORLD,c_int),int(identity%step,c_int64_t),identity%time, &
       state%definition%id//c_null_char,state%definition%source//c_null_char,state%definition%record//c_null_char, &
       directory//c_null_char,int(state%version,c_int64_t),labels,words,settings,values,size(values,2), &
       frame%column,frame%factor,merge(1,0,nondimen),frame%source,statistics,frame%count,options%host_budget_bytes, &

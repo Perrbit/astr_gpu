@@ -6,6 +6,11 @@
 完成部署和短时数值对照不等于目标物理工况已经达到统计收敛。
 KEEP／ME6配置与范围于2026-11-12增补，见第9.1节；其余章节保留各自交付口径。
 
+`feature/gpu_dev`另有共用CUDA C++/DTK GPUfusion后端，构建入口与
+限定验证范围见[多后端构建说明](tests/gpu_backend/README.md#current-ordinary-build-entry)
+和[迁移进度](documents/ASTR_MULTI_BACKEND_MIGRATION_PROGRESS.md)。
+下文CUDA Fortran的AIR5或渲染能力不能直接当作新后端已实现的能力。
+
 ## 目录
 
 1. 能力与适用范围

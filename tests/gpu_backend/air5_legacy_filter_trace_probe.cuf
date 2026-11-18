@@ -1,0 +1,114 @@
+! Diagnostic owners only. All numerical procedures below are frozen originals.
+module commarray_gpu
+  use iso_fortran_env,only:real64
+  use cudafor
+  implicit none
+  real(real64),device,allocatable :: q_d(:,:,:,:),qrhs_d(:,:,:,:)
+end module
+module chemistry_compensation_gpu
+  use iso_fortran_env,only:real64
+  use cudafor
+  implicit none
+  logical,device :: air5_compensated_d=.false.
+  real(real64),device,allocatable :: air5_carry_d(:,:,:,:)
+contains
+#include "frozen_projection.inc"
+end module
+module legacy_trace_math
+  use iso_fortran_env,only:real64
+  use cudafor
+  use astr_precision,only:real_kind
+  use constdef,only:num193d256,num105d512,num15d128,num45d1024,num5d512,num1d1024
+  use chemistry_air5_data
+  use chemistry_model
+  use chemistry_state_layout
+  use chemistry_thermo_gpu
+  implicit none
+  integer,device :: air5_flow_status_d
+  real(real64),device :: air5_vibrational_floor_energy_d(5)
+contains
+#include "frozen_legacy_functions.inc"
+  attributes(global) subroutine filter_trace(stencil,result)
+    real(real64),device,intent(in) :: stencil(-5:5)
+    real(real64),device,intent(out) :: result(1)
+    result(1)=filter10_value(stencil(0),stencil(1),stencil(-1),stencil(2),stencil(-2), &
+      stencil(3),stencil(-3),stencil(4),stencil(-4),stencil(5),stencil(-5))
+  end subroutine
+end module
+program legacy_filter_trace_probe
+  use legacy_trace_math
+  use commarray_gpu
+  use chemistry_compensation_gpu
+  use chemistry_flow_state,only:air5_primitive_to_conservative
+  use chemistry_thermo,only:air5_species_vibrational_energy
+  implicit none
+  integer :: exponents(3)=[-30,-60,-100],test,s,status,cpu_status,gpu_status,u,code
+  real(real64) :: rho,base(5),filtered(5),cpu_filtered(5),theta,velocity(3),y(5),state(11),raw(1),stencil(-5:5)
+  real(real64) :: output(5,4),floor(5),gpu_q(0:0,0:0,0:0,11),base_q(0:0,0:0,0:0,11)
+  real(real64),device :: stencil_d(-5:5),raw_d(1)
+  logical :: limited
+  character(1024) :: path,input
+  call get_command_argument(1,path)
+  rho=1.0_real64/16.0_real64
+  base=rho*[.5_real64,.25_real64,.125_real64,.125_real64-15.0_real64/4096.0_real64,15.0_real64/4096.0_real64]
+  velocity=0
+  allocate(q_d(0:0,0:0,0:0,11),qrhs_d(0:0,0:0,0:0,11),air5_carry_d(0:0,0:0,0:0,11));air5_carry_d=0
+  do s=1,5
+    floor(s)=air5_species_vibrational_energy(s,300.0_real64)
+  enddo
+  air5_vibrational_floor_energy_d=floor
+  if(command_argument_count()==2) then
+    call get_command_argument(2,input)
+    call repair_reference(trim(input),trim(path))
+    stop
+  endif
+  do test=1,4
+    if(test<=3) then
+      stencil=0;stencil(0)=base(5);stencil(2)=193.0_real64/131072.0_real64
+      stencil(5)=2.0_real64**exponents(test);stencil_d=stencil
+      call filter_trace<<<1,1>>>(stencil_d,raw_d);code=cudaDeviceSynchronize()
+      if(code/=0)error stop 'original filter diagnostic launch failed'
+      raw=raw_d
+    else
+      raw(1)=-base(5)
+    endif
+    filtered=base;filtered(5)=raw(1);filtered(1)=rho-sum(filtered(2:5));cpu_filtered=filtered
+    call air5_limit_filter_species(rho,base,rho,cpu_filtered,limited,theta,cpu_status)
+    y=base/rho
+    if(test<=3)y=filtered/rho
+    call air5_primitive_to_conservative(rho,velocity,3000.0_real64,y,2000.0_real64,state,status)
+    if(status/=0)error stop 'diagnostic physical state is invalid'
+    state(6:10)=filtered
+    gpu_q(0,0,0,:)=state;base_q=0;base_q(0,0,0,1)=rho;base_q(0,0,0,6:10)=base
+    q_d=gpu_q;qrhs_d=base_q;air5_flow_status_d=0
+    call air5_limit_filtered_state_kernel<<<1,256>>>(0,0,0);code=cudaDeviceSynchronize()
+    if(code/=0)error stop 'original limiter diagnostic launch failed'
+    gpu_q=q_d;gpu_status=air5_flow_status_d
+    output(:,test)=[raw(1),cpu_filtered(5),gpu_q(0,0,0,10),theta,merge(1.0_real64,0.0_real64,limited)]
+    write(*,'(A,I0,A,3ES25.17,A,2I4,A,ES24.16,L2)')'case=',test,' raw/cpu/gpu=', &
+      output(1:3,test),' status=',cpu_status,gpu_status,' theta/limited=',theta,limited
+    if(cpu_status/=0.or.gpu_status/=0)error stop 'unexpected reference diagnostic status'
+  enddo
+  open(newunit=u,file=trim(path),form='unformatted',access='stream',status='new');write(u)output;close(u)
+contains
+  subroutine repair_reference(input,path)
+    character(*),intent(in) :: input,path
+    integer :: in_unit,out_unit,n,row,comp,rc
+    real(real64) :: high(11),pre(11),carry(11),copied(0:0,0:0,0:0,11)
+    open(newunit=in_unit,file=input,form='unformatted',access='stream',status='old')
+    open(newunit=out_unit,file=path,form='unformatted',access='stream',status='new')
+    read(in_unit)n
+    do row=1,n
+      read(in_unit) comp,pre,high,carry
+      gpu_q(0,0,0,:)=high;base_q(0,0,0,:)=pre;copied(0,0,0,:)=carry
+      q_d=gpu_q;qrhs_d=base_q;air5_carry_d=copied
+      air5_compensated_d=comp/=0;air5_flow_status_d=0
+      call air5_limit_filtered_state_kernel<<<1,256>>>(0,0,0)
+      rc=cudaDeviceSynchronize()
+      if(rc/=0)error stop 'original repair reference launch failed'
+      gpu_q=q_d;copied=air5_carry_d;rc=air5_flow_status_d
+      write(out_unit) rc,gpu_q(0,0,0,:),copied(0,0,0,:)
+    enddo
+    close(in_unit);close(out_unit)
+  end subroutine
+end program

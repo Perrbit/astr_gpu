@@ -2,12 +2,13 @@ program state_probe
   use iso_c_binding
   use mpi
   use device_state
+  use astr_precision, only: real_kind,c_real_kind,real_bytes,real_to_word
   implicit none
   interface
     integer(c_int) function consume(handle,reversed,count) bind(C,name='astr_mb1_consume')
-      import c_int,c_ptr,c_double,c_size_t
+      import c_int,c_ptr,c_real_kind,c_size_t
       type(c_ptr),value :: handle
-      real(c_double),intent(out) :: reversed(*)
+      real(c_real_kind),intent(out) :: reversed(*)
       integer(c_size_t),value :: count
     end function
   end interface
@@ -19,7 +20,7 @@ program state_probe
   character(len=32) :: text
   type(c_ptr) :: handle
   type(device_view) :: view
-  real(c_double),allocatable :: q(:,:,:,:),back(:,:,:,:),rhs(:,:,:,:),saved(:,:,:,:),reversed(:),expected(:)
+  real(real_kind),allocatable :: q(:,:,:,:),back(:,:,:,:),rhs(:,:,:,:),saved(:,:,:,:),reversed(:),expected(:)
 
   call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',text,status=status)
   if (status/=0) error stop 'state probe requires Open MPI local rank'
@@ -40,20 +41,20 @@ program state_probe
       do k=-halo,km+halo
         do j=-halo,jm+halo
           do i=-halo,im+halo
-            q(i,j,k,c)=real(rank,c_double)*16777216.d0+real(c,c_double)*1048576.d0 &
-                +real(k+halo,c_double)*16384.d0+real(j+halo,c_double)*128.d0+real(i+halo,c_double)
+            q(i,j,k,c)=real(rank,real_kind)*1048576._real_kind+real(c,real_kind)*65536._real_kind &
+                +real(k+halo,real_kind)*1024._real_kind+real(j+halo,real_kind)*32._real_kind+real(i+halo,real_kind)
           end do
         end do
       end do
     end do
-    q(-halo,-halo,-halo,1)=-0.d0
+    q(-halo,-halo,-halo,1)=-0._real_kind
     saved=-q(0:im,0:jm,0:km,:)
-    qbytes=int(size(q),c_size_t)*c_sizeof(0.d0)
-    pbytes=int(size(rhs),c_size_t)*c_sizeof(0.d0)
+    qbytes=int(size(q),c_size_t)*real_bytes
+    pbytes=int(size(rhs),c_size_t)*real_bytes
     do field=device_q,device_save
       code=device_state_view(handle,field,view)
       call check(code,'view')
-      if (view%rank/=4.or.view%element_bytes/=8) call fail('rank or FP64 type')
+      if (view%rank/=4.or.view%element_bytes/=real_bytes) call fail('rank or native storage type')
       if (.not.c_associated(view%data)) call fail('missing device buffer')
       if (field==device_q) then
         if (any(view%lower/=[-halo,-halo,-halo,1,1])) call fail('q lower bounds')
@@ -91,7 +92,8 @@ program state_probe
     code=device_state_destroy(handle)
     call check(code,'destroy')
     if (c_associated(handle)) call fail('destroy did not invalidate owner handle')
-    write(*,'(a,i0,a,i0,a,i0,a)') 'MB1 rank=',rank,' halo=',halo,' debug=',debug,' exact layout/copy/view PASS'
+    write(*,'(a,i0,a,i0,a,i0,a,i0,a)') 'MB1 rank=',rank,' halo=',halo,' debug=',debug, &
+      ' element_bytes=',real_bytes,' exact layout/copy/view PASS'
     deallocate(q,back,rhs,saved,reversed,expected)
   end do
   call MPI_Finalize(ierr)
@@ -111,9 +113,8 @@ contains
     end if
   end subroutine
   subroutine exact(actual,reference,message)
-    real(c_double),intent(in) :: actual(:),reference(:)
+    real(real_kind),intent(in) :: actual(:),reference(:)
     character(len=*),intent(in) :: message
-    if (any(transfer(actual,[0_c_int64_t],size(actual))/= &
-            transfer(reference,[0_c_int64_t],size(reference)))) call fail(message)
+    if (any(real_to_word(actual)/=real_to_word(reference))) call fail(message)
   end subroutine
 end program

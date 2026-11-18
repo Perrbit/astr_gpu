@@ -12,7 +12,16 @@ module insitu_selected_runtime
     runtime_active,runtime_waiting,runtime_catalog_disable,runtime_catalog_status
   use insitu_temporal_history, only: reset_temporal_histories,temporal_catalog_present, &
     pack_temporal_histories,unpack_temporal_histories
-#ifdef _CUDA
+#ifdef ASTR_GPU_CPP
+  use iso_c_binding, only: c_char,c_int,c_size_t
+  use device_state, only: device_pci_identity,device_memory_info
+  use fluid_runtime, only: cpp_device_context
+  use insitu_selected_device_cpp, only: activate_selected_moments_gpu=>activate_selected_moments_cpp, &
+    selected_moment_transfer_counts_gpu=>selected_moment_transfer_counts_cpp, &
+    reduce_selected_profile_gpu=>reduce_selected_profile_cpp, &
+    selected_profile_workspace_bytes_gpu=>selected_profile_workspace_bytes_cpp, &
+    selected_profile_transfer_counts_gpu=>selected_profile_transfer_counts_cpp
+#elif defined(_CUDA)
   use cudafor
   use iso_c_binding, only: c_char,c_int,c_size_t
   use insitu_sample_moments_gpu, only: activate_selected_moments_gpu,selected_moment_transfer_counts_gpu, &
@@ -91,7 +100,9 @@ contains
     started=insitu_clock();cells=[im,jm,km];intervals=[ia,ja,ka];origin=[ig0,jg0,kg0]
     n=sum(intervals)+3;nlocal=sum(cells)+3
     extra_host=(2_int64*n+nlocal)*real_bytes;extra_device=0;download=0
+#ifdef _CUDA
     if(use_gpu) extra_device=int(nlocal,int64)*real_bytes+storage_size(0)/8
+#endif
     call selected_runtime_workspace(extra_host,extra_device,ok)
     message='Cartesian geometry proof exceeds configured resources'
     if(.not.ok) return
@@ -311,7 +322,7 @@ contains
       int(nk_local+ny_local,int64)*storage_size(0)/8
     if(present(retained_host)) extra_host=extra_host+retained_host
     extra_device=0
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(series%on_device.and.n>0) then
       if(selected_profile_workspace_bytes_gpu(series%groups(g)%device)==0) &
         extra_device=(int(nk_local,int64)+int(nc,int64)*ny_local)*real_bytes
@@ -338,7 +349,7 @@ contains
     call span_node_weights(global_geometry(2+ny:),lo,ka,series%periodic(3),span_nodes,averaged,span_weights,valid)
     message='station span must use finite, strictly monotone Cartesian coordinates'
     if(.not.collective_ok(valid)) return
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(series%on_device) then
       call selected_profile_transfer_counts_gpu(before_calls,before_down,before_up)
       call reduce_selected_profile_gpu(series%groups(g)%device,ny_local,span_weights,nf, &
@@ -362,7 +373,7 @@ contains
         enddo
         enddo
       endif
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     endif
 #endif
     ok=.false.;message='invalid station profile moments'
@@ -535,13 +546,17 @@ contains
       first_observation=.false.
     endif
     call refresh_selected_runtime()
-#ifdef _CUDA
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) then
+      call series%sample_device(step,time,const2,const6,ok)
+    else
+#elif defined(_CUDA)
     if(use_gpu) then
       call series%sample_device(step,time,hm,q_d,const2,const6,ok)
     else
 #endif
       call series%sample_host(step,time,hm,q,const2,const6,ok)
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     endif
 #endif
     if(present(external_sample)) then
@@ -594,7 +609,7 @@ contains
     integer :: node,nr,err,r
     integer(int64),allocatable :: hosts(:)
     integer(int64) :: total_host
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     integer :: device,status
     integer(c_size_t) :: free,total
     character(kind=c_char,len=32) :: pci
@@ -606,12 +621,18 @@ contains
     call MPI_Comm_size(node,nr,err)
     allocate(hosts(nr));call MPI_Allgather(host_bytes,1,MPI_INTEGER8,hosts,1,MPI_INTEGER8,node,err)
     total_host=sum(hosts);ok=total_host<=host_limit
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(series%on_device) then
+#ifdef ASTR_GPU_CPP
+      pci=repeat(achar(0,kind=c_char),32)
+      status=device_pci_identity(cpp_device_context(),pci,32_c_int);ok=ok.and.status==0
+      status=device_memory_info(cpp_device_context(),free,total);ok=ok.and.status==0
+#else
       status=cudaGetDevice(device);ok=ok.and.status==cudaSuccess
       pci=repeat(achar(0,kind=c_char),32)
       status=int(pci_bus_id(pci,32_c_int,int(device,c_int)));ok=ok.and.status==cudaSuccess
       status=cudaMemGetInfo(free,total);ok=ok.and.status==cudaSuccess
+#endif
       allocate(identities(nr),devices(nr),increments(nr),available(nr))
       call MPI_Allgather(pci,32,MPI_CHARACTER,identities,32,MPI_CHARACTER,node,err)
       call MPI_Allgather(device_bytes,1,MPI_INTEGER8,devices,1,MPI_INTEGER8,node,err)
@@ -651,7 +672,7 @@ contains
     source=merge(6,5,definition%source=='favre');selected_group=g
     window=[max(series%window(1),series%groups(g)%first_time),min(series%window(2),series%groups(g)%last_time)]
     measure=series%groups(g)%covered;ready=measure>0;ok=.true.;message=''
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(series%on_device.and.ready) call activate_selected_moments_gpu(series%groups(g)%device, &
       series%groups(g)%field_ids(:series%groups(g)%nfields),series%cells,size(series%groups(g)%keys))
 #endif
@@ -682,7 +703,7 @@ contains
       call MPI_Comm_rank(MPI_COMM_WORLD,rank,err)
       print '(a,i0,a,i0,a,i0,a,i0)', 'ASTR_INSITU_SELECTED rank=',rank, &
         ' histories=',size(series%groups),' host_state_and_index_bytes=',host_bytes,' device_state_and_index_bytes=',device_bytes
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       if(series%on_device) then
         call selected_moment_transfer_counts_gpu(calls,status_bytes,index_bytes)
         print '(a,i0,a,i0,a,i0,a,i0,a)', 'ASTR_INSITU_SELECTED_SAMPLER rank=',rank,' kernel_calls=',calls, &

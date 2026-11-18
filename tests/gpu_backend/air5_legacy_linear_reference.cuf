@@ -1,0 +1,50 @@
+module air5_legacy_linear_reference
+  use cudafor
+  use astr_precision, only: real_kind
+  use constdef
+  implicit none
+contains
+#include "frozen_linear.inc"
+
+  attributes(global) subroutine evaluate(line, values, n)
+    integer, value :: n
+    real(real_kind), intent(in) :: line(11,n)
+    real(real_kind), intent(out) :: values(5,n)
+    integer :: i
+    i=(blockidx%x-1)*blockdim%x+threadidx%x
+    if(i>n) return
+    values(1,i)=filter10_value(line(6,i),line(7,i),line(5,i),line(8,i),line(4,i), &
+      line(9,i),line(3,i),line(10,i),line(2,i),line(11,i),line(1,i))
+    values(2,i)=filter6_value(line(6,i),line(7,i),line(5,i),line(8,i),line(4,i),line(9,i),line(3,i))
+    values(3,i)=filter8_value(line(6,i),line(7,i),line(5,i),line(8,i),line(4,i), &
+      line(9,i),line(3,i),line(10,i),line(2,i))
+    values(4,i)=filter6_boundary_point1(line(1,i),line(2,i),line(3,i),line(4,i),line(5,i),line(6,i),line(7,i))
+    values(5,i)=filter6_boundary_point2(line(1,i),line(2,i),line(3,i),line(4,i),line(5,i),line(6,i),line(7,i))
+  end subroutine
+end module
+
+program probe
+  use air5_legacy_linear_reference
+  implicit none
+  integer :: n, unit, ierr
+  character(4096) :: path
+  real(real_kind), allocatable :: line(:,:), values(:,:)
+  real(real_kind), allocatable, device :: line_d(:,:), values_d(:,:)
+
+  call get_command_argument(1,path)
+  open(newunit=unit,file=trim(path),access='stream',form='unformatted',status='old')
+  read(unit) n
+  allocate(line(11,n),values(5,n),line_d(11,n),values_d(5,n))
+  read(unit) line
+  close(unit)
+  line_d=line
+  call evaluate<<<(n+127)/128,128>>>(line_d,values_d,n)
+  ierr=cudadevicesynchronize()
+  if(ierr/=cudaSuccess) error stop 'legacy linear stencil launch failed'
+  values=values_d
+  call get_command_argument(2,path)
+  open(newunit=unit,file=trim(path),access='stream',form='unformatted',status='new')
+  write(unit) values
+  close(unit)
+  deallocate(line_d,values_d)
+end program

@@ -7,6 +7,10 @@ module insitu_wall_statistics
   use insitu_time_integral, only: clipped_trapezoid
   use insitu_fields, only: nonreacting_wall_candidate,admit_optional_fields
   use ieee_arithmetic, only: ieee_is_finite
+#ifdef ASTR_GPU_CPP
+  use insitu_wall_runtime_cpp, only: prepare_wall_statistics_cpp,capture_and_push_wall_statistics_cpp, &
+    pack_wall_statistics_cpp,restore_wall_statistics_cpp,release_wall_statistics_cpp
+#endif
   implicit none
   private
   public :: accumulate_wall_statistics,wall_statistics_file,finish_wall_statistics,wall_statistics_host_bytes
@@ -134,6 +138,9 @@ contains
       'wall scalar sample identity/window mismatch')
     resident=.false.
     if(present(device_transport)) resident=len_trim(device_transport)>0
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) resident=.true.
+#endif
     download=0
     if(resident) then
       call initialize_device_metadata(window,host_limit)
@@ -171,6 +178,15 @@ contains
         call push_wall_statistics_gpu(fields,weights,samples>0)
       endif
     else
+#elif defined(ASTR_GPU_CPP)
+    if(use_gpu) then
+      call require(.not.separate,'AIR5 separation is outside the nonreacting C++ wall accumulator')
+      if(present(device_transport)) then
+        call capture_and_push_wall_statistics_cpp(device_transport,weights,samples>0,host_limit,device_limit,reserve)
+      else
+        call capture_and_push_wall_statistics_cpp('',weights,samples>0,host_limit,device_limit,reserve)
+      endif
+    else
 #else
     call require(.not.use_gpu,'wall scalar device statistics require CUDA')
 #endif
@@ -203,7 +219,7 @@ contains
       enddo
       enddo
       call require(all_ok,'invalid wall scalar accumulation')
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     endif
 #endif
     previous_time=time; last_step=step; samples=samples+1
@@ -225,6 +241,8 @@ contains
     if(writing.and.use_gpu) then
 #ifdef _CUDA
       call pack_wall_statistics_gpu(values,window_saved,clock)
+#elif defined(ASTR_GPU_CPP)
+      call pack_wall_statistics_cpp(values,window_saved,clock)
 #endif
       return
     endif
@@ -256,6 +274,8 @@ contains
     call require(all_ok,'invalid packed wall scalar state')
 #ifdef _CUDA
     if(.not.writing.and.use_gpu) call restore_wall_statistics_gpu(values)
+#elif defined(ASTR_GPU_CPP)
+    if(.not.writing.and.use_gpu) call restore_wall_statistics_cpp(values)
 #endif
   end subroutine
 
@@ -285,11 +305,23 @@ contains
     if(.not.writing) then
       resident=.false.
       if(present(device_transport)) resident=len_trim(device_transport)>0
+#ifdef ASTR_GPU_CPP
+      if(use_gpu) resident=.true.
+#endif
       if(resident) then
         call initialize_device_metadata(window,host_limit)
       else
         call capture(window,host_limit,device_limit,reserve,fields,download)
       endif
+#ifdef ASTR_GPU_CPP
+      if(use_gpu) then
+        if(present(device_transport)) then
+          call prepare_wall_statistics_cpp(device_transport,host_limit,device_limit,reserve)
+        else
+          call prepare_wall_statistics_cpp('',host_limit,device_limit,reserve)
+        endif
+      endif
+#endif
     endif
     ncomp=34*(nfields/3)
     call require(budget>=2_int64*real_bytes*(im+1)*(jm+1)*(km+1)*ncomp+4096,'wall scalar checkpoint budget')
@@ -612,14 +644,18 @@ contains
     real(real_kind),allocatable :: moments(:,:,:,:)
     character(1200) :: filename
     integer :: unit,status,closed
+    integer(int32) :: header(11)
     if(samples==0) return
     call read_wall_moments(moments)
     write(filename,'(A,".wall_statistics.step",I8.8,".rank",I8.8,".bin")') trim(prefix),last_step,mpirank
     open(newunit=unit,file=trim(filename),status='new',access='stream',form='unformatted', &
       action='write',convert='little_endian',iostat=status)
     call require(status==0,'cannot create wall scalar output')
-    write(unit,iostat=status) 'ASTRWS01',int([integer(int64) :: merge(2,1,real_bytes==4),last_step,mpirank,shape(owned), &
-      ig0,jg0,kg0,nfields,profile],int32), &
+    header(1)=int(merge(2,1,real_bytes==4),int32);header(2)=int(last_step,int32);header(3)=int(mpirank,int32)
+    header(4:6)=int(shape(owned),int32)
+    header(7)=int(ig0,int32);header(8)=int(jg0,int32);header(9)=int(kg0,int32)
+    header(10)=int(nfields,int32);header(11)=int(profile,int32)
+    write(unit,iostat=status) 'ASTRWS01',header, &
       [previous_time,window_saved,covered_duration],samples,xyz,moments,int(merge(1,0,owned),int32)
     close(unit,iostat=closed)
     call require(status==0.and.closed==0,'cannot write wall scalar output')
@@ -627,6 +663,8 @@ contains
     deallocate(xyz,owned)
 #ifdef _CUDA
     if(use_gpu) call release_wall_statistics_gpu()
+#elif defined(ASTR_GPU_CPP)
+    if(use_gpu) call release_wall_statistics_cpp()
 #endif
     samples=0; last_step=-1; covered_duration=0.e0_real_kind
   end subroutine

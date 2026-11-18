@@ -114,26 +114,33 @@ def exact_file(a,b):
                 raise AssertionError(f'exact statistics differ: {name}')
 
 
-def compare_plane(cpu_case,gpu_case,final):
+def compare_plane(cpu_case,gpu_case,final,limit=2e-10):
     with h5py.File(cpu_case/'datin/grid.flatplate.h5') as grid:
         xyz=np.stack([grid[name][:] for name in ('x','y','z')])
-    ds=np.sqrt(np.sum(np.diff(xyz,axis=1)**2,axis=0))
     errors={}
     with h5py.File(cpu_case/final/'statistics.h5') as cpu,h5py.File(gpu_case/final/'statistics.h5') as gpu:
+        # Use the coordinates representable by the source solver, then do
+        # offline quadrature and normalization in FP64 for both kinds.
+        xyz=xyz.astype(cpu['q0001'].dtype).astype(np.float64)
+        ds=np.sqrt(np.sum(np.diff(xyz,axis=1)**2,axis=0))
         cpu_moments=[];gpu_moments=[]
         for gpu_slot,cpu_slot in enumerate([1,2,3,4,6,5,7,8,9,10,11,12],start=2):
-            values=cpu[f'q{cpu_slot:04d}'][:]
+            values=cpu[f'q{cpu_slot:04d}'][:].astype(np.float64)
             expected=np.sum(0.5*(values[:-1]+values[1:])*ds,axis=0)
-            observed=np.sum(gpu[f'q{gpu_slot:04d}'][:],axis=0)
+            observed=np.sum(gpu[f'q{gpu_slot:04d}'][:].astype(np.float64),axis=0)
             if 'inherited' in gpu:
-                observed+=np.sum(gpu['inherited'][f'q{gpu_slot:04d}'][:],axis=0)
+                observed+=np.sum(gpu['inherited'][f'q{gpu_slot:04d}'][:].astype(np.float64),axis=0)
             error=float(np.max(abs(observed-expected)))/max(1,float(np.max(abs(expected))))
-            if error>2e-10:
+            if limit is not None and error>limit:
                 raise AssertionError(f'CPU/GPU time and z-integrated moment {gpu_slot}: {error}')
             errors[f'gpu_q{gpu_slot:04d}']=error
             cpu_moments.append(expected);gpu_moments.append(observed)
-        cpu_duration=np.asarray(cpu['metadata'][8],dtype=np.int64).view(np.float64).item()
-        gpu_duration=np.asarray(gpu['metadata'][13],dtype=np.int64).view(np.float64).item()
+        def duration(source,index):
+            width=source['q0001'].dtype.itemsize
+            word=np.asarray(source['metadata'][index:index+1],dtype=np.int64)
+            return (word.astype(np.int32).view(np.float32) if width==4 else word.view(np.float64)).item()
+        cpu_duration=duration(cpu,8)
+        gpu_duration=duration(gpu,13)
         if cpu_duration!=gpu_duration or cpu_duration<=0:
             raise AssertionError('CPU/GPU integration durations differ or lack coverage')
         measure=np.sum(ds,axis=0)*cpu_duration
@@ -145,7 +152,7 @@ def compare_plane(cpu_case,gpu_case,final):
         for name,a,b in zip(('rho','u','v','w','T','p','uu','vv','ww','uv','uw','vw'),
                             derived(cpu_moments),derived(gpu_moments)):
             error=float(np.max(abs(a-b)))/max(1,float(np.max(abs(a))))
-            if error>2e-10:
+            if limit is not None and error>limit:
                 raise AssertionError(f'CPU/GPU normalized mean/stress {name}: {error}')
             errors['normalized_'+name]=error
     return errors

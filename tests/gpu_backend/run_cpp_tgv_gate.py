@@ -18,13 +18,13 @@ sys.path.insert(0, str(ROOT / 'scripts/input'))
 from convert_legacy_input import convert_case, convert_controller, namelist
 
 
-def compare(actual, reference):
+def compare(actual, reference, limit=2e-10):
     if actual.shape != reference.shape or not np.isfinite(actual).all() or not np.isfinite(reference).all():
         raise AssertionError('field/statistic layout or finiteness')
     errors = [float(np.max(abs(actual[..., n]-reference[..., n])) /
                     max(1., float(np.max(abs(reference[..., n]))))) for n in range(actual.shape[-1])]
-    if max(errors) > 2e-10:
-        raise AssertionError(f'scaled comparison exceeds 2e-10: {errors}')
+    if limit is not None and max(errors) > limit:
+        raise AssertionError(f'scaled comparison exceeds {limit}: {errors}')
     return errors
 
 
@@ -61,15 +61,25 @@ def cfl_log(directory, count=4):
     return np.asarray(rows)
 
 
-def prepare_case(directory, original, gpu, cpp, automatic, grid=16, steps=4, dt=.001, max_dt=.002):
+def prepare_case(directory, original, gpu, cpp, automatic, grid=16, steps=4, dt=.001, max_dt=.002, numerics=None, mesh=None, physics=None, case_options=None, precision_options=None):
     (directory/'datin').mkdir(parents=True, exist_ok=False)
     (directory/'outdat/new').mkdir(parents=True)
     groups = convert_case((original/'input.tgv').read_text())
     groups['case_options']['use_gpu'] = gpu
+    if case_options is not None:
+        groups['case_options'].update(case_options)
     dimensions = (grid, grid, grid) if isinstance(grid, int) else grid
     groups['mesh'].update(zip(('ia', 'ja', 'ka'), dimensions))
+    if mesh is not None:
+        groups['mesh'].update(mesh)
     groups['numerics'].update(convection_form='standard', viscous_form='standard', filter_scheme='explicit10')
+    if numerics is not None:
+        groups['numerics'].update(numerics)
+    if physics is not None:
+        groups['physics'].update(physics)
     groups['precision_options'] = {'gpu_precision_mode': 'fp64'}
+    if precision_options is not None:
+        groups['precision_options'].update(precision_options)
     (directory/'datin/input.case').write_text(namelist(groups))
     controls = convert_controller((original/'controller').read_text())
     controls['run_control']['max_steps'] = steps

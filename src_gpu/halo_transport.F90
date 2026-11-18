@@ -7,12 +7,12 @@ module halo_transport
   public :: device_transport_metrics
   integer(c_int),parameter :: halo_pinned=0,halo_device=1
   interface
-    integer(c_int) function device_transport_prepare(handle,communicator,lower,upper,sizes,max_components,mode,timing) &
+    integer(c_int) function device_transport_prepare(handle,communicator,lower,upper,sizes,max_components,mode,timing,periodic) &
         bind(C,name='astr_device_transport_prepare')
       import c_int,c_ptr
       type(c_ptr),value :: handle
       integer(c_int),value :: communicator,max_components,mode,timing
-      integer(c_int),intent(in) :: lower(3),upper(3),sizes(3)
+      integer(c_int),intent(in) :: lower(3),upper(3),sizes(3),periodic(3)
     end function
     integer(c_int) function device_transport_metrics(handle,values,reset) bind(C,name='astr_device_transport_metrics')
       import c_int,c_ptr,c_double

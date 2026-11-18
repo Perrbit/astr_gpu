@@ -45,7 +45,8 @@ std::map<int,Layout> layouts(const fs::path &directory)
     return result;
 }
 
-void field(const fs::path &reference,const fs::path &directory)
+template<class Real>
+void field(const fs::path &reference,const fs::path &directory,int step)
 {
     const auto layout=layouts(directory);
     const hid_t file=H5Fopen(reference.c_str(),H5F_ACC_RDONLY,H5P_DEFAULT);
@@ -55,6 +56,9 @@ void field(const fs::path &reference,const fs::path &directory)
     for (int c=0;c<5;++c) {
         const std::string name="q000"+std::to_string(c+1);
         const hid_t dataset=H5Dopen2(file,name.c_str(),H5P_DEFAULT),space=H5Dget_space(dataset);
+        const hid_t type=H5Dget_type(dataset);
+        require(type>=0 && H5Tget_class(type)==H5T_FLOAT && H5Tget_size(type)==sizeof(Real),"reference numerical kind");
+        H5Tclose(type);
         hsize_t dims[3]{};
         require(space>=0 && H5Sget_simple_extent_ndims(space)==3,"reference dimensions");
         require(H5Sget_simple_extent_dims(space,dims,nullptr)==3,"read reference dimensions");
@@ -66,7 +70,7 @@ void field(const fs::path &reference,const fs::path &directory)
     require(H5Fclose(file)>=0,"close reference");
     for (const auto &[rank,l]:layout) {
         char filename[128];
-        std::snprintf(filename,sizeof(filename),"rhs.cpp_final.step00000004.rk01.rank%08d.bin",rank);
+        std::snprintf(filename,sizeof(filename),"rhs.cpp_final.step%08d.rk01.rank%08d.bin",step,rank);
         std::ifstream input(directory/"outdat"/filename,std::ios::binary);
         std::array<int32_t,5> header{};
         input.read(reinterpret_cast<char *>(header.data()),sizeof(header));
@@ -76,8 +80,8 @@ void field(const fs::path &reference,const fs::path &directory)
             require(header[a]==l.upper[a] && l.origin[a]>=0 && l.origin[a]+l.upper[a]<=global[a],"snapshot layout");
             n[a]=l.upper[a]+2*l.halo+1;
         }
-        std::vector<double> actual(n[0]*n[1]*n[2]*5);
-        input.read(reinterpret_cast<char *>(actual.data()),actual.size()*sizeof(double));
+        std::vector<Real> actual(n[0]*n[1]*n[2]*5);
+        input.read(reinterpret_cast<char *>(actual.data()),actual.size()*sizeof(Real));
         require(input.good() && input.peek()==std::char_traits<char>::eof(),"snapshot payload length");
         for (int c=0;c<5;++c) {
             double error=0,scale=1;
@@ -89,8 +93,30 @@ void field(const fs::path &reference,const fs::path &directory)
                 error=std::max(error,std::abs(value-ref));scale=std::max(scale,std::abs(ref));
             }
             std::cout<<"FIELD rank="<<rank<<" component="<<c+1<<" scaled_error="<<error/scale<<'\n';
-            require(error/scale<=2e-10,"scaled field difference exceeds 2e-10");
+            if constexpr(sizeof(Real)==sizeof(double))
+                require(error/scale<=2e-10,"scaled field difference exceeds 2e-10");
         }
+    }
+}
+
+void checkpoint_objects(hid_t group,const std::string &prefix,std::map<std::string,H5I_type_t> &objects)
+{
+    H5G_info_t info{};
+    require(H5Gget_info(group,&info)>=0,"checkpoint group links");
+    for(hsize_t item=0;item<info.nlinks;++item) {
+        const ssize_t length=H5Lget_name_by_idx(group,".",H5_INDEX_NAME,H5_ITER_INC,item,nullptr,0,H5P_DEFAULT);
+        require(length>=0,"checkpoint object name length");
+        std::vector<char> name(length+1);
+        require(H5Lget_name_by_idx(group,".",H5_INDEX_NAME,H5_ITER_INC,item,name.data(),name.size(),H5P_DEFAULT)==length,
+            "checkpoint object name");
+        const hid_t object=H5Oopen(group,name.data(),H5P_DEFAULT);
+        require(object>=0,"open checkpoint object");
+        const H5I_type_t type=H5Iget_type(object);
+        require(type==H5I_GROUP || type==H5I_DATASET,"checkpoint object type");
+        const std::string path=prefix+name.data();
+        objects.emplace(path,type);
+        if(type==H5I_GROUP) checkpoint_objects(object,path+"/",objects);
+        require(H5Oclose(object)>=0,"close checkpoint object");
     }
 }
 
@@ -98,15 +124,14 @@ void exact(const fs::path &a,const fs::path &b)
 {
     const hid_t fa=H5Fopen(a.c_str(),H5F_ACC_RDONLY,H5P_DEFAULT),fb=H5Fopen(b.c_str(),H5F_ACC_RDONLY,H5P_DEFAULT);
     require(fa>=0 && fb>=0,"open checkpoint pair");
-    H5G_info_t ga{},gb{};
-    require(H5Gget_info(fa,&ga)>=0 && H5Gget_info(fb,&gb)>=0 && ga.nlinks==gb.nlinks,"dataset count");
-    for (hsize_t item=0;item<ga.nlinks;++item) {
-        const ssize_t length=H5Lget_name_by_idx(fa,".",H5_INDEX_NAME,H5_ITER_INC,item,nullptr,0,H5P_DEFAULT);
-        require(length>=0,"dataset name length");
-        std::vector<char> name(length+1);
-        require(H5Lget_name_by_idx(fa,".",H5_INDEX_NAME,H5_ITER_INC,item,name.data(),name.size(),H5P_DEFAULT)==length,
-                "dataset name");
-        const hid_t da=H5Dopen2(fa,name.data(),H5P_DEFAULT),db=H5Dopen2(fb,name.data(),H5P_DEFAULT);
+    std::map<std::string,H5I_type_t> left_objects,right_objects;
+    checkpoint_objects(fa,"",left_objects);checkpoint_objects(fb,"",right_objects);
+    require(left_objects==right_objects,"checkpoint object identities/types");
+    size_t datasets=0;
+    for (const auto &[name,type]:left_objects) {
+        if(type!=H5I_DATASET) continue;
+        ++datasets;
+        const hid_t da=H5Dopen2(fa,name.c_str(),H5P_DEFAULT),db=H5Dopen2(fb,name.c_str(),H5P_DEFAULT);
         require(da>=0 && db>=0,"checkpoint dataset identity");
         const hid_t sa=H5Dget_space(da),sb=H5Dget_space(db),ta=H5Dget_type(da),tb=H5Dget_type(db);
         require(H5Sextent_equal(sa,sb)>0 && H5Tequal(ta,tb)>0,"checkpoint dataset shape/type");
@@ -116,12 +141,12 @@ void exact(const fs::path &a,const fs::path &b)
         if (points>0) {
             require(H5Dread(da,ta,H5S_ALL,H5S_ALL,H5P_DEFAULT,left.data())>=0 &&
                     H5Dread(db,tb,H5S_ALL,H5S_ALL,H5P_DEFAULT,right.data())>=0,"read checkpoint data");
-            require(left==right,std::string("checkpoint words differ: ")+name.data());
+            require(left==right,std::string("checkpoint words differ: ")+name);
         }
         H5Sclose(sa);H5Sclose(sb);H5Tclose(ta);H5Tclose(tb);H5Dclose(da);H5Dclose(db);
     }
     require(H5Fclose(fa)>=0 && H5Fclose(fb)>=0,"close checkpoint pair");
-    std::cout<<"EXACT datasets="<<ga.nlinks<<" all words equal\n";
+    std::cout<<"EXACT datasets="<<datasets<<" all words equal\n";
 }
 
 void physical(const fs::path &a,const fs::path &b)
@@ -155,12 +180,20 @@ void physical(const fs::path &a,const fs::path &b)
 int main(int argc,char **argv)
 {
     try {
-        require(argc==4,"usage: astr_backend_compare field REFERENCE_H5 RUN_DIRECTORY | exact|physical STATE_A STATE_B");
+        require(argc==4 || argc==5,"usage: astr_backend_compare field|field32 REFERENCE_H5 RUN_DIRECTORY [STEP] | exact|physical STATE_A STATE_B");
         const std::string mode=argv[1];
-        if (mode=="field") field(argv[2],argv[3]);
+        int step=4;
+        if(argc==5) {
+            require(mode=="field" || mode=="field32","STEP applies only to field comparison");
+            size_t end=0;
+            step=std::stoi(argv[4],&end);
+            require(end==std::string(argv[4]).size() && step>=0,"invalid complete step");
+        }
+        if (mode=="field") field<double>(argv[2],argv[3],step);
+        else if (mode=="field32") field<float>(argv[2],argv[3],step);
         else if (mode=="exact") exact(argv[2],argv[3]);
         else if (mode=="physical") physical(argv[2],argv[3]);
-        else throw std::runtime_error("mode must be field, exact or physical");
+        else throw std::runtime_error("mode must be field, field32, exact or physical");
         return 0;
     } catch (const std::exception &error) {
         std::cerr<<"COMPARE FAILED: "<<error.what()<<'\n';return 1;

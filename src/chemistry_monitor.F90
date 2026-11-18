@@ -1,5 +1,6 @@
 module chemistry_monitor
   use iso_fortran_env, only: real64
+  use iso_c_binding, only: c_ptr
   use mpi
   implicit none
   private
@@ -19,7 +20,7 @@ contains
     values=[rho,velocity,temperature,tv,pressure,ys]
   end subroutine
 
-  subroutine write_air5_flow_monitor(sample_time)
+  subroutine write_air5_flow_monitor(sample_time,device_handle)
     use commvar, only: ia,ja,ka,im,jm,km,nstep,use_gpu,flowtype,lreadgrid,nmonitor,imon
     use commarray, only: q,x
     use parallel, only: ig0,jg0,kg0,mpirank
@@ -28,8 +29,16 @@ contains
 #ifdef _CUDA
     use chemistry_monitor_gpu, only: collect_air5_monitor_gpu
 #endif
+#ifdef ASTR_GPU_CPP
+    use iso_c_binding, only: c_int,c_size_t
+    use chemistry_device_statistics, only: air5_monitor_prepare,air5_monitor_collect
+#endif
     use ieee_arithmetic, only: ieee_is_finite
     real(real64),intent(in) :: sample_time
+    type(c_ptr),optional,intent(in) :: device_handle
+#ifdef ASTR_GPU_CPP
+    real(real64),allocatable :: probe_coordinates(:,:)
+#endif
     character(len=64) :: value
     integer :: status,lo,hi,ierr,n,s,i,j,k,a,b,station
     real(real64) :: rho,vel(3),temp,tv,pressure,ys(5),mu,kt,kv,smu(5),bd(5,5),md(5)
@@ -83,6 +92,21 @@ contains
       do s=1,nmonitor
         nodes(:,profile_count+imon(s,4))=imon(s,1:3)
       enddo
+#ifdef ASTR_GPU_CPP
+      if(use_gpu)then
+        if(.not.present(device_handle))call MPI_Abort(MPI_COMM_WORLD,94,ierr)
+        allocate(probe_coordinates(3,n));probe_coordinates=0.d0
+        do s=1,n
+          i=nodes(1,s);j=nodes(2,s);k=nodes(3,s)
+          if(i<0)cycle
+          probe_coordinates(:,s)=x(i,j,k,:)
+        enddo
+        ! ASTR's static grid stays on the host; only selected xyz are uploaded.
+        status=air5_monitor_prepare(device_handle,int(n,c_int),nodes,probe_coordinates)
+        if(status/=0)call MPI_Abort(MPI_COMM_WORLD,status,ierr)
+        deallocate(probe_coordinates)
+      endif
+#endif
       if(mpirank==0) then
         if(stride>0) then
         open(newunit=profile_unit,file='monitor/air5_profiles.dat',status='new')
@@ -103,6 +127,12 @@ contains
     endif
     n=size(nodes,2)
     local=0.d0
+#ifdef ASTR_GPU_CPP
+    if(use_gpu)then
+      status=air5_monitor_collect(device_handle,local,int(size(local),c_size_t)*8_c_size_t)
+      if(status/=0)call MPI_Abort(MPI_COMM_WORLD,status,ierr)
+    else
+#endif
 #ifdef _CUDA
     if(use_gpu) then
       call collect_air5_monitor_gpu(nodes,local)
@@ -114,6 +144,9 @@ contains
         local(1:3,s)=x(i,j,k,:); local(4:14,s)=q(i,j,k,1:11); local(15,s)=1.d0
       enddo
 #ifdef _CUDA
+    endif
+#endif
+#ifdef ASTR_GPU_CPP
     endif
 #endif
     call MPI_Reduce(local,total,15*n,MPI_DOUBLE_PRECISION,MPI_SUM,0,MPI_COMM_WORLD,ierr)

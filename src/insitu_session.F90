@@ -25,6 +25,13 @@ module insitu_session
     product_scene_due,product_state_file,product_results_complete,product_failures_present
   use insitu_config_collective, only: read_insitu_options_collective
   use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t
+#ifdef ASTR_GPU_CPP
+  use insitu_statistics_cpp, only: configure_statistics_device_budget=>configure_statistics_cpp_budget, &
+    accumulate_statistics_gpu=>accumulate_statistics_cpp,spatial_statistics_gpu=>spatial_statistics_cpp, &
+    pack_statistics_gpu_state=>pack_statistics_cpp_state,unpack_statistics_gpu_state=>unpack_statistics_cpp_state, &
+    download_statistics_gpu_output=>download_statistics_cpp_output,release_statistics_gpu=>release_statistics_cpp, &
+    statistics_transfer_counts=>statistics_cpp_transfer_counts
+#endif
 #ifdef _CUDA
   use insitu_m12_gpu, only: begin_m12_completed_gpu,sample_m12_completed_gpu,m12_diagnostic_layout_supported, &
     finish_m12_completed_gpu
@@ -80,7 +87,7 @@ module insitu_session
   logical,save :: statistics_segment_known=.true.
   character(64),parameter :: statistics_geometry_code=ASTR_STATISTICS_GEOMETRY_ID
   character(1024),save :: restore_batch=''
-#if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
+#if defined(ASTR_WITH_CATALYST) && defined(ASTR_INSITU_NATIVE_CUDA)
   interface
     integer(c_int) function resource_begin(comm,host,device,reserve,shared_fixture,output) &
         bind(C,name='astr_insitu_resource_begin')
@@ -222,6 +229,9 @@ contains
 
   subroutine render_preview_insitu(step,t)
     use commvar, only: flowtype
+#if defined(ASTR_GPU_CPP) && defined(ASTR_WITH_CATALYST) && defined(ASTR_INSITU_DEVICE_PRODUCTS)
+    use insitu_preview_cpp, only: render_preview_device_cpp
+#endif
 #if defined(_CUDA) && defined(ASTR_WITH_CATALYST)
     use insitu_products_gpu, only: render_device_sample_gpu
 #ifdef ASTR_BUILD_TESTING
@@ -255,6 +265,16 @@ contains
 #ifdef ASTR_BUILD_TESTING
     if(isolation=='1') call end_preview_state_check()
 #endif
+#elif defined(ASTR_GPU_CPP) && defined(ASTR_WITH_CATALYST) && defined(ASTR_INSITU_DEVICE_PRODUCTS)
+    status=mesh_configure(trim(directory)//c_null_char,int(MPI_COMM_WORLD,c_int))
+    call require_sample(status==0,'cannot configure C++ preview device renderer')
+    native_bridge_configured=.true.
+    call read_consistent_env('ASTR_INSITU_TEST_PREVIEW_ISOLATION',isolation)
+    call require_sample(isolation==''.or.isolation=='1','preview isolation oracle expects 1 or unset')
+#ifndef ASTR_BUILD_TESTING
+    call require_sample(isolation=='','preview isolation oracle requires BUILD_TESTING')
+#endif
+    call render_preview_device_cpp(options,step,t,isolation=='1')
 #else
     call require_sample(.false.,'preview requires CUDA and Catalyst; no host fallback')
 #endif
@@ -308,7 +328,7 @@ contains
   subroutine begin_output_insitu()
     integer :: status
     if(.not.native_output.or..not.formal.or..not.enabled.or..not.options%render) return
-#if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
+#if defined(ASTR_WITH_CATALYST) && defined(ASTR_INSITU_NATIVE_CUDA)
     if(resource_observer_started) return
     status=resource_begin(int(MPI_COMM_WORLD,c_int), &
       int(options%host_budget_bytes,c_int64_t),int(options%device_budget_bytes,c_int64_t), &
@@ -667,7 +687,7 @@ contains
       enddo
       values=0.e0_real_kind
       if(native) then
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
         allocate(native_values(extent(1),extent(2),extent(3),34),stat=status)
         call require_sample(status==0,'cannot allocate contiguous native statistics download')
         call pack_statistics_gpu_state(native_values,ok)
@@ -721,7 +741,7 @@ contains
     call unpack_velocity_state(regional_values,region,identity%time,statistics_window(1),statistics_window(2),ok)
     call require_sample(ok,'cannot restore regional statistics')
     if(native) then
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       allocate(native_values(extent(1),extent(2),extent(3),34),stat=status)
       call require_sample(status==0,'cannot allocate contiguous native statistics restore')
       native_values=values(1:extent(1),1:extent(2),1:extent(3),:)
@@ -755,7 +775,7 @@ contains
   end subroutine
 
   logical function native_device_statistics()
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     use commvar, only: use_gpu
     native_device_statistics=formal.and.enabled.and.statistics_enabled.and.use_gpu.and. &
       options%products/='air5_walls'.and.options%products/='catalog_stats'
@@ -781,9 +801,13 @@ contains
       numq,num_species,nondimen,jm
     use bc, only: bctype
     use parallel, only: mpirank,mpisize,isize,jsize,ksize
+    use boundary_high_order, only: high_order_wall_enabled
 #ifdef _CUDA
     use insitu_statistics_gpu, only: configure_statistics_device_budget
     use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported,gpu_sbli_insitu_supported
+#elif defined(ASTR_GPU_CPP)
+    use insitu_wall_runtime_cpp, only: sbli_insitu_cpp_supported
+    use insitu_m12_cpp, only: profile_insitu_cpp_supported,m12_diagnostic_layout_supported
 #endif
     character(1024) :: filename,message
     character(16) :: entry_command
@@ -791,6 +815,7 @@ contains
     integer(int64) :: view_signature(2)
     real(c_real_kind) :: view_values(19)
     logical :: ok,channel_wall,air5_wall,curve_tgv,device_demo,device_wall,device_plane,device_curve_q,device_air5_wall
+    logical :: cartesian_high_wall
     logical :: device_curve_trace,device_curve_demo,device_boundary_layer,device_m12_hd,device_preview_bl,device_sbli
 #ifdef ASTR_WITH_CATALYST
     interface
@@ -813,9 +838,6 @@ contains
       call require_sample(ok,trim(message))
       formal=.true.
       enabled=options%enabled
-#ifdef ASTR_GPU_CPP
-      call require_sample(.not.(enabled.and.use_gpu),'C++ device in-situ field providers are not implemented')
-#endif
       configured=.true.
       statistics_configured=.true.
       oracle_io=.false.
@@ -923,6 +945,22 @@ contains
                 all([ia,ja,ka]==[64,32,24]).and.mpisize<=4.and..not.options%statistics, &
                 'boundary_layer products require the approved 64x32x24 MP-LD profile short fixture')
             endif
+#elif defined(ASTR_GPU_CPP)
+            if(device_sbli) then
+              call require_sample(sbli_insitu_cpp_supported().and..not.options%statistics, &
+                'C++ SBLI products require the existing FP64 MP7-LD joint-NSCBC x-slab layout')
+            elseif(device_m12_hd) then
+              call require_sample(profile_insitu_cpp_supported().and.m12_diagnostic_layout_supported().and. &
+                .not.options%statistics,'C++ M12 products require the existing MP7-LD x-slab diagnostic layout without means')
+            elseif(device_preview_bl) then
+              call require_sample(profile_insitu_cpp_supported().and. &
+                all(bctype==[11,21,41,50,1,1]).and.mpisize==2.and.all([isize,jsize,ksize]==[2,1,1]).and. &
+                options%rendering_pipeline=='standard-device'.and.options%postprocess_transport=='pinned'.and. &
+                .not.options%statistics,'C++ M12 preview requires original NP=2 x, pinned standard-device and no means')
+            else
+              call require_sample(profile_insitu_cpp_supported().and.all([ia,ja,ka]==[64,32,24]).and. &
+                mpisize<=4.and..not.options%statistics,'C++ boundary-layer products require the existing 64x32x24 profile fixture')
+            endif
 #else
             call require_sample(.false.,'boundary_layer products require CUDA; no fallback')
 #endif
@@ -952,13 +990,14 @@ contains
 #endif
         endif
         channel_wall=nonreacting_wall_candidate().and.options%products=='channel_walls'
+        cartesian_high_wall=channel_wall.and.trim(flowtype)=='channel'.and.high_order_wall_enabled
         air5_wall=trim(flowtype)=='air5hbl'.and.options%products=='air5_walls'
         curve_tgv=lreadgrid.and.trim(flowtype)=='tgv'.and.numq==5.and.num_species==0.and. &
           nondimen.and.(all([ia,ja,ka]==32).or.device_curve_demo).and. &
           (all(bctype==1).or.channel_wall.or.device_curve_trace.or.device_curve_q).and.mpisize<=2.and. &
           hm>=3.and.trim(difschm)=='643e'
         call require_sample((trim(flowtype)=='tgv'.or.channel_wall.or.air5_wall.or.device_boundary_layer).and.ndims==3.and. &
-          (.not.lreadgrid.or.curve_tgv.or.device_boundary_layer), &
+          (.not.lreadgrid.or.curve_tgv.or.device_boundary_layer.or.cartesian_high_wall), &
           'formal in situ requires a supported Cartesian candidate or 32^3 periodic CURVE TGV NP=1/2')
         if(channel_wall) call require_sample( &
           (options%derivative_backend=='cpu'.or.device_wall).and.numq==5.and.num_species==0.and.nondimen.and. &
@@ -1013,7 +1052,7 @@ contains
         prefix=trim(options%output_directory)//'/sample'
         if(use_gpu) then
           call require_sample(options%device_budget_bytes>0,'GPU statistics require an explicit device budget')
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
           call configure_statistics_device_budget(options%device_budget_bytes,options%device_reserve_bytes,ok)
           call require_sample(ok,'invalid statistics device budget')
 #endif
@@ -1405,7 +1444,7 @@ contains
     if(len_trim(text)>0) then
       read(text,*,iostat=status) limit,headroom
       call require_sample(status==0,'device budget requires limit and headroom bytes')
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       call configure_statistics_device_budget(limit,headroom,ok)
       call require_sample(ok,'invalid statistics device budget')
 #else
@@ -1740,9 +1779,11 @@ contains
   end subroutine
 
   subroutine accumulate_native_device(step,t)
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     use commvar, only: lreadgrid
+#ifdef _CUDA
     use insitu_statistics_gpu, only: accumulate_statistics_gpu,spatial_statistics_gpu
+#endif
     use commarray, only: x
     integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t
@@ -1776,10 +1817,12 @@ contains
   end subroutine
 
   subroutine export_native_statistics()
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     use commvar, only: im,jm,km,lreadgrid
     use commarray, only: x
+#ifdef _CUDA
     use insitu_statistics_gpu, only: download_statistics_gpu_output,spatial_statistics_gpu
+#endif
     type(velocity_statistics_result) :: regional
     real(real_kind) :: cell_volume,volume,mean(3),variance(3)
     integer :: status,extent(3)
@@ -2163,7 +2206,7 @@ contains
 #ifdef _CUDA
     if(formal.and.options%products=='m12_diagnostics'.and..not.native_output) call begin_m12_completed_gpu(step)
 #endif
-#if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
+#if defined(ASTR_WITH_CATALYST) && defined(ASTR_INSITU_NATIVE_CUDA)
     if(formal.and.enabled.and.options%render) then
       if(.not.resource_observer_started) then
       resource_status=resource_begin(int(MPI_COMM_WORLD,c_int), &
@@ -2251,9 +2294,11 @@ contains
     render_configured=.true.
   end subroutine
   subroutine finish_insitu(read_only)
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
 #ifdef _CUDA
     use insitu_statistics_gpu, only: release_statistics_gpu,statistics_transfer_counts
     use insitu_sample_gpu, only: release_device_sampling_gpu
+#endif
     use commvar, only: use_gpu
     use parallel, only: mpirank
     integer(int64) :: samples,downloads
@@ -2275,7 +2320,7 @@ contains
     status=mesh_finish()
     call require_sample(status==0,'Catalyst mesh finalization failed')
 #endif
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(native_device_statistics().and..not.preview) call export_native_statistics()
     if(native_device_statistics()) then
       call statistics_transfer_counts(samples,downloads)
@@ -2286,6 +2331,8 @@ contains
       write(*,'(A,I0,A,I0)') 'ASTR_INSITU_GPU_FLOW rank=',mpirank,' frame_downloads=',native_flow_downloads
     endif
     call release_statistics_gpu()
+#endif
+#ifdef _CUDA
     call release_device_sampling_gpu()
     call finish_m12_completed_gpu()
 #endif
@@ -2298,7 +2345,7 @@ contains
     if(allocated(final_statistics)) deallocate(final_statistics)
     call release_selected_runtime()
     call release_insitu_geometry()
-#if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
+#if defined(ASTR_WITH_CATALYST) && defined(ASTR_INSITU_NATIVE_CUDA)
     status=resource_finish()
     call require_sample(status==0,'cannot finalize native resource observer')
 #endif
@@ -2482,6 +2529,11 @@ contains
   subroutine write_channel_wall_sample(step,t,dt)
     use insitu_fields, only: capture_channel_walls
     use parallel, only: mpirank,ig0,jg0,kg0
+#ifdef ASTR_GPU_CPP
+    use commvar, only: use_gpu
+    use insitu_fields, only: catalog_wall_fields_supported
+    use insitu_wall_runtime_cpp, only: capture_wall_packet_cpp
+#endif
     integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: t,dt
     real(real_kind),allocatable :: coordinates(:,:,:,:),fields(:,:,:,:)
@@ -2489,18 +2541,35 @@ contains
     character(1200) :: path
     integer :: unit,status,closed
     integer(int64) :: download_bytes
+    integer(int32) :: header(9)
+#ifdef ASTR_GPU_CPP
+    character(16) :: transport
+#endif
     call require_sample(step>=0.and.all(ieee_is_finite([t,dt])).and. &
       ((step==0.and.t==0.e0_real_kind.and.dt==0.e0_real_kind).or.(step>0.and.dt>0.e0_real_kind)), &
       'invalid complete-step wall clock')
-    call capture_channel_walls(coordinates,fields,owned,4294967296_int64,2147483648_int64, &
-      1073741824_int64,download_bytes)
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) then
+      call require_sample(catalog_wall_fields_supported(),'wall sample requires an admitted nonreacting wall provider')
+      call read_consistent_env('ASTR_INSITU_TEST_DEVICE_TRANSPORT',transport)
+      call capture_wall_packet_cpp(transport,4294967296_int64,2147483648_int64,1073741824_int64, &
+        coordinates,fields,owned,download_bytes)
+    else
+#endif
+      call capture_channel_walls(coordinates,fields,owned,4294967296_int64,2147483648_int64, &
+        1073741824_int64,download_bytes)
+#ifdef ASTR_GPU_CPP
+    endif
+#endif
     if(oracle_io) then
       write(path,'(A,".wall.step",I8.8,".rank",I8.8,".bin")') trim(prefix),step,mpirank
       open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted', &
         convert='little_endian',action='write',iostat=status)
       call require_sample(status==0,'cannot create wall sample')
-      write(unit,iostat=status) 'ASTRIW01', &
-        int([integer(int64) :: 1,step,mpirank,shape(owned),ig0,jg0,kg0],int32),t,dt,coordinates,fields, &
+      header(1)=1_int32;header(2)=int(step,int32);header(3)=int(mpirank,int32)
+      header(4:6)=int(shape(owned),int32)
+      header(7)=int(ig0,int32);header(8)=int(jg0,int32);header(9)=int(kg0,int32)
+      write(unit,iostat=status) 'ASTRIW01',header,t,dt,coordinates,fields, &
         merge(1_int32,0_int32,owned)
       close(unit,iostat=closed)
       call require_sample(status==0.and.closed==0,'cannot write wall sample')
@@ -2611,8 +2680,10 @@ contains
       return
     endif
     if(formal.and.options%products=='m12_diagnostics') then
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
 #ifdef _CUDA
       if(.not.native_output) call sample_m12_completed_gpu(trim(options%output_directory),step,time_end)
+#endif
       call render_native_if_due(step,time_end,.false.)
       return
 #else

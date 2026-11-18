@@ -48,32 +48,33 @@ def read_profile(path):
     return data, "\n".join(line for line in lines if line.startswith("#"))
 
 
-def endpoint_weights(steps, dt, window):
+def endpoint_weights(steps, dt, window, sample_times=None):
     weights = np.zeros(steps + 1)
     for right in range(1, steps + 1):
-        t0, t1 = (right-1)*dt, right*dt
+        t0, t1 = ((right-1)*dt, right*dt) if sample_times is None else sample_times[right-1:right+1]
         a, b = max(t0, window[0]), min(t1, window[1])
         if b <= a:
             continue
-        fraction = .5*((a-t0)/dt + (b-t0)/dt)
+        fraction = .5*((a-t0)/(t1-t0) + (b-t0)/(t1-t0))
         weights[right-1] += (b-a)*(1-fraction)
         weights[right] += (b-a)*fraction
     return weights
 
 
-def check_profiles(case, records, record_property, steps=12, dt=.001, window=(.0005, .0115), ny=17, nk=16):
+def check_profiles(case, records, record_property, steps=12, dt=.001, window=(.0005, .0115), ny=17, nk=16,
+                   limit=2e-10, sample_times=None):
     raw = next(path for path in segments(case) if path.parent.parent.name == "raw")
     samples = []
     for path in frames(raw):
         with h5py.File(path) as data:
             samples.append(np.stack([data[name][...] for name in FIELDS]))
-    values = np.stack(samples)
+    values = np.stack(samples).astype(np.float64)
     assert values.shape == (steps+1, 6, nk+1, ny)
     with h5py.File(raw / "geometry.h5") as data:
         xyz = data["coordinates"][...]
     # Native HDF5 ordering for an i-station is (k,j), with physical coordinates last.
     assert np.all(np.diff(xyz[0, :, 1]) > 0) and np.all(np.diff(xyz[:, 0, 2]) > 0)
-    time = endpoint_weights(steps, dt, window)
+    time = endpoint_weights(steps, dt, window, sample_times)
     rho = values[:, 0]
     primitive = values[:, 1:]
     mass = np.einsum("t,tkj->kj", time, rho)
@@ -132,13 +133,17 @@ def check_profiles(case, records, record_property, steps=12, dt=.001, window=(.0
                 observed = data[name]
                 raw_rms = max(raw_rms, float(np.max(np.abs(observed-np.sqrt(covariance)))))
                 difference = np.abs(observed**2-covariance)
-                assert np.max(difference/np.maximum(1, np.maximum(observed**2, np.abs(covariance)))) <= 2e-10
+                assert np.isfinite(observed).all() and np.isfinite(covariance).all()
+                if limit is not None:
+                    assert np.max(difference/np.maximum(1, np.maximum(observed**2, np.abs(covariance)))) <= limit
         for name, target in expected.items():
             observed = data[name]
             error = np.abs(observed-target)
             scaled = error/np.maximum(1, np.maximum(np.abs(observed), np.abs(target)))
+            assert np.isfinite(scaled).all(), (item['id'], name)
             worst, absolute = max(worst, float(scaled.max())), max(absolute, float(error.max()))
-            assert scaled.max() <= 2e-10, (item["id"], name, scaled.max())
+            if limit is not None:
+                assert scaled.max() <= limit, (item["id"], name, scaled.max())
         np.testing.assert_array_equal(data["global_j"], np.arange(ny))
         assert set(data.dtype.names) == {'global_j', *expected, *(
             ('rms_velocity_x', 'rms_velocity_y', 'rms_velocity_z') if covariance_requested else ())}

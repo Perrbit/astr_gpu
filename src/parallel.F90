@@ -5017,20 +5017,66 @@ module parallel
   !| -------------                                                     |
   !| 08-Feb-2021 | Created by J. Fang @ Warringon.                     |
   !+-------------------------------------------------------------------+
+  subroutine reconcile_crashfix_history(var)
+    logical,intent(inout) :: var(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    integer :: axis,n,counts(3)
+    integer(1),allocatable :: send(:,:),receive(:,:)
+    counts=[(jm+1)*(km+1),(im+1)*(km+1),(im+1)*(jm+1)]
+    allocate(send(maxval(counts),2),receive(maxval(counts),2))
+    ! Sequential face unions also propagate shared-edge/corner ownership.
+    do axis=1,3
+      n=counts(axis)
+      select case(axis)
+      case(1)
+        send(:n,1)=reshape(merge(1_1,0_1,var(0,0:jm,0:km)),[n])
+        send(:n,2)=reshape(merge(1_1,0_1,var(im,0:jm,0:km)),[n])
+      case(2)
+        send(:n,1)=reshape(merge(1_1,0_1,var(0:im,0,0:km)),[n])
+        send(:n,2)=reshape(merge(1_1,0_1,var(0:im,jm,0:km)),[n])
+      case(3)
+        send(:n,1)=reshape(merge(1_1,0_1,var(0:im,0:jm,0)),[n])
+        send(:n,2)=reshape(merge(1_1,0_1,var(0:im,0:jm,km)),[n])
+      end select
+      call exchange_shock_mask_faces(send(:n,:),receive(:n,:),n,axis)
+      select case(axis)
+      case(1)
+        var(0,0:jm,0:km)=var(0,0:jm,0:km).or.reshape(receive(:n,1)/=0_1,[jm+1,km+1])
+        var(im,0:jm,0:km)=var(im,0:jm,0:km).or.reshape(receive(:n,2)/=0_1,[jm+1,km+1])
+      case(2)
+        var(0:im,0,0:km)=var(0:im,0,0:km).or.reshape(receive(:n,1)/=0_1,[im+1,km+1])
+        var(0:im,jm,0:km)=var(0:im,jm,0:km).or.reshape(receive(:n,2)/=0_1,[im+1,km+1])
+      case(3)
+        var(0:im,0:jm,0)=var(0:im,0:jm,0).or.reshape(receive(:n,1)/=0_1,[im+1,jm+1])
+        var(0:im,0:jm,km)=var(0:im,0:jm,km).or.reshape(receive(:n,2)/=0_1,[im+1,jm+1])
+      end select
+    enddo
+    ! Refresh only after every physical shared node has its final union.
+    call dataswap(var)
+  end subroutine reconcile_crashfix_history
+
   subroutine exchange_shock_mask_faces(sendbuf,recvbuf,n,axis)
     integer,intent(in) :: n,axis
     integer(1),intent(in) :: sendbuf(n,2)
     integer(1),intent(out) :: recvbuf(n,2)
     integer :: lower,upper,ierr,status(MPI_STATUS_SIZE)
+    logical :: local_periodic
 
     select case(axis)
     case(1)
       lower=mpileft; upper=mpiright
+      local_periodic=lihomo.and.isize==1
     case(2)
       lower=mpidown; upper=mpiup
+      local_periodic=ljhomo.and.jsize==1
     case(3)
       lower=mpiback; upper=mpifront
+      local_periodic=lkhomo.and.ksize==1
     end select
+    if(local_periodic) then
+      recvbuf(:,1)=sendbuf(:,2)
+      recvbuf(:,2)=sendbuf(:,1)
+      return
+    endif
     recvbuf=0_1
     ! One expanded-mask layer, excluding the duplicated shared node.
     call MPI_Sendrecv(sendbuf(:,1),n,MPI_BYTE,lower,24401, &

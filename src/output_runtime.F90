@@ -49,7 +49,11 @@ module output_runtime
   use statistic, only: channel_driver_state,complete_mean_statistics_file,nsamples
   use benchmark_runtime, only: benchmark_field_io_disabled,insitu_clock,report_insitu_timing
 #ifdef ASTR_GPU_CPP
-  use fluid_runtime, only: cpp_export_host_state,cpp_import_host_state
+  use fluid_runtime, only: cpp_export_host_state,cpp_import_host_state,cpp_crashfix_supported,cpp_adaptive_energy_sum
+  use inflow_timeseries_cpp, only: complete_inflow_cpp_file
+  use production_statistics_runtime, only: complete_compact_statistics_file,compact_statistics_host_bytes, &
+    compact_statistics_requested,compact_statistics_supported, &
+    initialize_compact_statistics_gpu=>initialize_compact_statistics_cpp
 #endif
 #ifdef ASTR_AIR5_CHEMISTRY
   use commarray, only: tve,spc
@@ -59,7 +63,7 @@ module output_runtime
   use chemistry_hbl_boundary, only: complete_air5_top_contract
 #endif
 #ifdef _CUDA
-  use crashfix_gpu, only: crashfix_support_status_gpu
+  use crashfix_gpu, only: crashfix_support_status_gpu,reconcile_crashfix_history_gpu
   use statistic_gpu, only: gpu_adaptive_energy_sum
   use checkpoint_state_gpu, only: checkpoint_perfect_gas_gpu,checkpoint_crashfix_gpu, &
     checkpoint_lean_perfect_gas_gpu,rebuild_checkpoint_primitives_gpu
@@ -167,6 +171,8 @@ contains
     use iso_c_binding, only: c_int64_t
 #ifdef _CUDA
     use gpu_runtime, only: gpu_prepare_preview_geometry
+#elif defined(ASTR_GPU_CPP)
+    use fluid_runtime, only: cpp_prepare_preview_state
 #endif
     type(checkpoint_state_identity) :: identity,expected,geometry_identity
     character(8) :: magic
@@ -233,6 +239,11 @@ contains
     call checkpoint_perfect_gas_gpu(trim(options%restore_directory)//'/state.h5',.false., &
       [ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm,identity,state_host_budget(),MPI_COMM_WORLD, &
       allow_repartition=.false.,restored_exact=matched)
+#elif defined(ASTR_GPU_CPP)
+    call checkpoint_perfect_gas_state(trim(options%restore_directory)//'/state.h5',.false., &
+      [ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm,q,rho,vel,prs,tmp,identity,state_host_budget(),MPI_COMM_WORLD, &
+      allow_repartition=.false.,restored_exact=matched)
+    call cpp_prepare_preview_state()
 #else
     call check(.false.,'device preview requires a CUDA build')
 #endif
@@ -369,7 +380,7 @@ contains
 
   integer(int64) function state_host_budget() result(bytes)
     bytes=options%host_budget_bytes
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     bytes=bytes-compact_statistics_host_bytes()
 #endif
   end function
@@ -399,13 +410,33 @@ contains
       (flowtype=='bl'.and.low_order_y_nonreflecting_enabled()))
   end function
 
+  logical function static_read_profile_definition()
+    use bc, only: wall_blowing_amplitude,profile_nscbc_outlet_enabled
+    use numerical_forms, only: convection_form,viscous_form
+    logical :: compact_plate,explicit_top
+    compact_plate=trim(conschm)=='743e'.and.trim(difschm)=='643c'.and.recon_schem==5.and.lchardecomp.and. &
+      (all(bctype==[11,21,41,50,1,1]).or.profile_nscbc_outlet_enabled())
+    explicit_top=trim(conschm)=='543e'.and.trim(difschm)=='643e'.and.recon_schem==3.and..not.lchardecomp.and. &
+      all(bctype==[11,21,41,52,1,1])
+    static_read_profile_definition=trim(flowtype)=='bl'.and.lreadgrid.and.ninit==3.and.nondimen.and. &
+      (compact_plate.or.explicit_top).and.diffterm.and.trim(turbinf)=='prof'.and. &
+      convection_form=='standard'.and.viscous_form=='standard'.and. &
+      .not.wall_blowing_legacy_random.and.abs(wall_blowing_amplitude)<=1.e-10_real_kind
+  end function
+
   logical function read_profile_output_candidate()
-    read_profile_output_candidate=lreadgrid.and.profile_checkpoint_definition().and.real_bytes==8.and. &
+    ! Existing rank-local RNG history and static-profile resources do not
+    ! depend on a particular convection/diffusion formula. Geometry is
+    ! checked below before publishing or restoring this Cartesian layout.
+    read_profile_output_candidate=lreadgrid.and.(profile_checkpoint_definition().or.static_read_profile_definition().or. &
+      (wall_blowing_legacy_random.and.flowtype=='bl'.and.ninit==3.and.nondimen.and.turbinf=='prof')).and. &
+      (real_bytes==8.or.static_read_profile_definition()).and. &
       ndims==3.and.numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb
   end function
 
   logical function read_profile_output_case()
-    read_profile_output_case=read_profile_output_candidate().and.read_profile_geometry_verified.and.wall_blowing_legacy_random
+    read_profile_output_case=read_profile_output_candidate().and.read_profile_geometry_verified.and. &
+      (wall_blowing_legacy_random.or.static_read_profile_definition())
   end function
 
   subroutine verify_read_profile_geometry()
@@ -478,22 +509,26 @@ contains
       (flowtype=='ldcavity'.and.ldc_boundary_layout(bctype)).or.low_order_y_nonreflecting_enabled())
   end function
 
+  logical function open_shock_nscbc_output_case()
+    ! Static targets and a derived outlet plane require no new restart state.
+    open_shock_nscbc_output_case=use_gpu.and.trim(flowtype)=='openshock'.and. &
+      all(bctype==[12,22,1,1,1,1]).and..not.lreadgrid.and.ninit==0.and.nondimen.and. &
+      .not.lavg.and..not.lfilter.and..not.diffterm.and..not.lchardecomp.and. &
+      trim(conschm)=='543e'.and.trim(difschm)=='643e'.and.recon_schem==3
+  end function
+
   logical function standalone_grid_resource_case()
     standalone_grid_resource_case=lreadgrid.and.trim(flowtype)/='bl'.and. &
       (trim(flowtype)=='tgv'.or.new_form_physical_boundary_case())
   end function
 
   subroutine check_capability()
-    use boundary_high_order, only: high_order_adiabatic_wall_enabled,high_order_wall_enabled
-    logical :: supported_case
+    use boundary_high_order, only: high_order_adiabatic_wall_enabled,high_order_wall_enabled,high_order_boundary_enabled
+    use bc, only: profile_nscbc_outlet_enabled,nscbc_farfield_incoming_only_enabled
+    logical :: supported_case,joint_mean,initial_family
 #ifdef ASTR_BUILD_TESTING
     character(16) :: validation_mode
     integer :: validation_status
-#endif
-#ifdef ASTR_GPU_CPP
-    if(use_gpu) then
-      call check(.not.options%adaptive%enabled,'C++ adaptive-output field collector is not connected')
-    endif
 #endif
     call check(options%host_budget_bytes>0,'new output requires an explicit host buffer budget')
     if(options%volume%enabled.or.options%slices%enabled) call check(ndims==3.and. &
@@ -501,8 +536,14 @@ contains
       'field archives require a registered three-dimensional field layout')
     ! Exact continuation has a stricter contract than ordinary solver execution.
     if(.not.options%checkpoint%enabled.and.len_trim(options%restore_directory)==0) return
+    initial_family=ndims==3.and.nondimen.and..not.lreadgrid.and.ninit==0.and..not.lavg.and. &
+      ((all(bctype==1).and.lihomo.and.ljhomo.and.lkhomo.and. &
+        (flowtype=='hit'.or.flowtype=='2dvort').and.conschm=='643e'.and.difschm=='643e').or. &
+       (flowtype=='sod'.and.all(bctype==[50,50,1,1,1,1]).and..not.lihomo.and.ljhomo.and.lkhomo.and. &
+        conschm=='543e'.and.difschm=='643e'.and.recon_schem==3.and..not.lchardecomp.and. &
+        .not.lfilter.and..not.diffterm))
     ! AIR5 retains its complete chemical state in both restart modes.
-    supported_case=(trim(flowtype)=='tgv'.and.(all(bctype==1).or.high_order_wall_enabled)).or. &
+    supported_case=initial_family.or.(trim(flowtype)=='tgv'.and.(all(bctype==1).or.high_order_wall_enabled)).or. &
       (trim(flowtype)=='tgv'.and.lreadgrid.and. &
       (all([ia,ja,ka]==32).or.all([ia,ja,ka]==64).or.all([ia,ja,ka]==128).or.all([ia,ja,ka]==256)).and. &
       all(bctype==[1,1,41,41,1,1]).and.trim(conschm)=='643e'.and.trim(difschm)=='643e').or. &
@@ -512,7 +553,7 @@ contains
       (trim(flowtype)=='bl'.and.lreadgrid.and.(trim(turbinf)=='prof'.or.trim(turbinf)=='intp').and. &
       all(bctype==[11,21,41,51,1,1])).or.extruded_profile_output_case().or.read_profile_output_case().or. &
       (joint_sbli_output_case().and.lreadgrid).or.(profile_low_order_nscbc_enabled().and.lreadgrid).or. &
-      new_form_physical_boundary_case()
+      new_form_physical_boundary_case().or.open_shock_nscbc_output_case()
 #ifdef ASTR_BUILD_TESTING
     ! This bounded RK probe has no output/restart contract to publish.
     call get_environment_variable('ASTR_VALIDATION_NSCBC_RK',validation_mode,status=validation_status)
@@ -531,12 +572,15 @@ contains
       .not.lcomb.and.(.not.lavg.or..not.use_gpu.or.trim(flowtype)=='bl')
     call check((supported_case.or.air5_output_case()).and..not.limmbou.and. &
       .not.lrestart.and.trim(rkscheme)=='rk3', &
-      'new output admits TGV, bc41 or hermite7 channel, profile/dynamic flatplate or fixed AIR5 HBL/SBLI RK3')
+      'new output requires a registered TGV/HIT/vortex/Sod, wall, profile/dynamic plate or AIR5 RK3 configuration')
     call check(.not.lcracon.or.(numq==5.and.num_species==0.and..not.lcomb), &
       'checkpoint crashfix supports only non-reacting five-variable flow')
     if((extruded_profile_output_case().or.read_profile_output_case().or.profile_low_order_nscbc_enabled()).and.bctype(2)==22) then
-      call check(.not.options%adaptive%enabled.and.(.not.lavg.or.profile_low_order_nscbc_enabled()), &
-        'profile joint NSCBC admits same-topology restart; means require KEEP, adaptive not validated')
+      joint_mean=profile_low_order_nscbc_enabled().or.(profile_nscbc_outlet_enabled().and. &
+        conschm=='743e'.and.difschm=='643c'.and.nscbc_farfield_incoming_only_enabled().and. &
+        .not.nscbc_farfield_sbli_shock_enabled()).or.(high_order_boundary_enabled.and.diffterm)
+      call check(.not.options%adaptive%enabled.and.(.not.lavg.or.joint_mean), &
+        'joint NSCBC checkpoint: unsupported mean-statistics configuration or adaptive output')
     endif
     call check(ninit>=0.and.ninit<=3,'new output initialization dimension must be 0:3')
     if(air5_output_case()) call check(ninit==0,'AIR5 external initialization is not registered')
@@ -572,7 +616,7 @@ contains
     character(*),intent(in) :: name,fallback
     character(1200) :: path
     path=fallback
-    if(enabled.and.(trim(flowtype)=='bl'.or.trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli'.or. &
+    if(enabled.and.(trim(flowtype)=='bl'.or.trim(flowtype)=='hit'.or.trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli'.or. &
       (trim(flowtype)=='tgv'.and.lreadgrid).or.new_form_physical_boundary_case()).and. &
       len_trim(options%restore_directory)>0) &
       path=trim(options%restore_directory)//'/../../resources/'//name
@@ -597,6 +641,7 @@ contains
       profile_wall_phase_file=profile_wall_file.and..not.wall_blowing_legacy_random.and.wall_blowing_nmod_t>0
     endif
     if((extruded_profile_output_case().or.read_profile_output_candidate()).and.len_trim(options%restore_directory)>0.and. &
+      .not.static_read_profile_definition().and. &
       .not.profile_state_boundary_enabled().and..not.profile_low_order_nscbc_enabled().and. &
       .not.low_order_y_nonreflecting_enabled()) &
       call check(wall_blowing_legacy_random,'extruded profile restart requires legacy_random checkpoint')
@@ -659,7 +704,7 @@ contains
       options%slices%enabled=.false.
       if(mpirank==0) write(*,'(a)') 'ASTR_OUTPUT no-field-I/O overrides checkpoint, volume and slices'
     endif
-    if(read_profile_output_candidate().and.wall_blowing_legacy_random.and. &
+    if(read_profile_output_candidate().and.(wall_blowing_legacy_random.or.static_read_profile_definition()).and. &
       (options%checkpoint%enabled.or.len_trim(options%restore_directory)>0)) &
       call verify_read_profile_geometry()
     call check_capability()
@@ -699,8 +744,8 @@ contains
     logical :: requested_mean
     ok=.true.;message=''
 #ifdef ASTR_GPU_CPP
-    if(use_gpu.and.(candidate%crashfix.or.candidate%statistics%enabled)) then
-      ok=.false.;message='C++ crashfix and mean-field statistics are not connected'
+    if(use_gpu.and.candidate%crashfix.and..not.cpp_crashfix_supported()) then
+      ok=.false.;message='C++ crashfix needs five-variable central643e/KEEP643c/MP7-LD743e; mixed supports FP64 viscous_flux only'
       return
     endif
 #endif
@@ -728,7 +773,7 @@ contains
       ok=.false.;message='formal and CPU legacy statistics need separate transactions'
       return
     endif
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(use_gpu.and..not.requested_mean) then
       ok=compact_statistics_supported()
       if(.not.ok) message='legacy statistics unavailable for this case/backend'
@@ -745,7 +790,7 @@ contains
     lavg=active_run%statistics%enabled
     if(mean_path_ready.and.(registered_mean_enabled.eqv.lavg)) return
     compact_statistics=.false.
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     compact_statistics=compact_statistics_requested()
     if(compact_statistics) call initialize_compact_statistics_gpu()
 #endif
@@ -772,7 +817,7 @@ contains
     character(128) :: path
     identity=checkpoint_state_identity(int(nstep,int64),time,dt_used,deltat)
     write(path,'(A,I0.12,A)') 'outdat/statistics.step',nstep,'.h5'
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(compact_statistics) then
       call complete_compact_statistics_file(trim(path),.true.,identity,state_host_budget(), &
         allow_repartition=curve_repartition_case())
@@ -805,6 +850,8 @@ contains
 #endif
     source=case_input_path
     contract=0
+    ! Separate revisions for post-shared geometry/top halos and critical history.
+    if(.not.lcomb.and.numq==5) contract(7)=ibset(ibset(contract(7),3),4)
     contract(1:6)=[int(feqchkpt,int64),int(feqwsequ,int64),int(feqslice,int64), &
       int(feqlist,int64),int(feqavg,int64),int(merge(1,0,use_gpu),int64)]
     contract(8)=merge(1_int64,0_int64,statistics_active)+merge(2_int64,0_int64,compact_statistics)+ &
@@ -822,7 +869,19 @@ contains
         call check(status==1.or.trim(value)==''.or.trim(value)=='fp64'.or.trim(value)=='mixed_workspace', &
           'invalid legacy GPU precision selection for native FP32 restart')
 #else
+#ifdef ASTR_GPU_CPP
+        if(use_gpu.and.trim(value)=='mixed_workspace') then
+          call get_case_option('gpu_mixed_candidate',value,status=status)
+          call check(status==0.and.trim(value)=='viscous_flux', &
+            'C++ mixed restart currently supports the viscous_flux candidate')
+          ! Bit 2 identifies FP32 stored viscous flux, not the FP64 state type.
+          contract(7)=ibset(contract(7),2)
+        else
+          call check(status==1.or.trim(value)==''.or.trim(value)=='fp64','new restart requires FP64')
+        endif
+#else
         call check(status==1.or.trim(value)==''.or.trim(value)=='fp64','new restart requires FP64')
+#endif
 #endif
       case(2)
         call get_environment_variable('ASTR_GPU_SYNC_MODE',value,status=status)
@@ -838,10 +897,13 @@ contains
 #endif
       case(3)
         call get_environment_variable('ASTR_GPU_FILTER_WORKSPACE',value,status=status)
-        contract(7)=merge(1_int64,0_int64,trim(value)=='full')
+        contract(7)=ior(contract(7),merge(1_int64,0_int64,trim(value)=='full'))
         value=''
         call get_case_option('gpu_mp_positivity',value,status=status)
-        if(trim(value)=='flux') contract(7)=ibset(contract(7),1)
+        if(trim(value)=='flux') then
+          ! Bit5 identifies the roundoff-interior budget; bit1 remains the mode.
+          contract(7)=ibset(ibset(contract(7),1),5)
+        endif
         if(global_compact_enabled()) contract(7)=ibclr(contract(7),0)
       end select
     enddo
@@ -898,7 +960,7 @@ contains
         identity,state_host_budget(),allow_repartition=repartitioning)
       if(mean_statistics) call mean_statistics_file(trim(path)//'/statistics.h5',.false., &
         identity,state_host_budget())
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       if(compact_statistics) call complete_compact_statistics_file(trim(path)//'/statistics.h5',.false., &
         identity,state_host_budget(),allow_repartition=curve_repartition_case())
 #endif
@@ -976,6 +1038,8 @@ contains
     endif
     if(ninit>=1.and.ninit<=3) &
       call freeze_static_resource(initial_source_name(ninit),trim(initial_source_path(ninit)))
+    if(flowtype=='hit'.and.ninit==0) &
+      call freeze_static_resource('velocity.h5',trim(output_resource_path('velocity.h5','datin/velocity.h5')))
   end subroutine
 
   subroutine mean_statistics_file(path,writing,identity,budget)
@@ -1031,6 +1095,12 @@ contains
     type(checkpoint_state_identity),intent(inout) :: identity
     type(checkpoint_state_identity) :: expected
     expected=identity
+#ifdef ASTR_GPU_CPP
+    if(use_gpu) then
+      call complete_inflow_cpp_file(path,writing,identity,state_host_budget(), &
+        allow_repartition=curve_repartition_case())
+    else
+#endif
 #ifdef _CUDA
     if(use_gpu) then
       call complete_inflow_gpu_file(path,writing,identity,state_host_budget(), &
@@ -1040,6 +1110,9 @@ contains
       call complete_inflow_cpu_file(path,writing,identity,state_host_budget(), &
         allow_repartition=curve_repartition_case())
 #ifdef _CUDA
+    endif
+#endif
+#ifdef ASTR_GPU_CPP
     endif
 #endif
     call check(irk/=0.or.ninflowslice<inflow_count,'dynamic inflow cache cursor outside frozen sources')
@@ -1091,7 +1164,7 @@ contains
 
   subroutine flow_file(path,writing,identity)
     use fludyna, only: updatefvar
-    use parallel, only: qswap
+    use parallel, only: qswap,reconcile_crashfix_history
     character(*),intent(in) :: path
     logical,intent(in) :: writing
     type(checkpoint_state_identity),intent(inout) :: identity
@@ -1142,6 +1215,12 @@ contains
       endif
       call checkpoint_crashfix_gpu(path,writing,state_host_budget(),options%device_budget_bytes,MPI_COMM_WORLD,matched, &
         allow_inexact=.not.options%exact_restart)
+      if(.not.writing) then
+        block
+          use commarray_gpu, only: crinod_d
+          if(allocated(crinod_d)) call reconcile_crashfix_history_gpu()
+        end block
+      endif
     else
 #endif
       if(lean) then
@@ -1168,6 +1247,7 @@ contains
       endif
       call checkpoint_crashfix_state(path,writing,crinod,lcracon,state_host_budget(),MPI_COMM_WORLD,matched, &
         allow_inexact=.not.options%exact_restart)
+      if(.not.writing.and..not.lcomb.and.numq==5) call reconcile_crashfix_history(crinod)
 #ifdef _CUDA
     endif
 #endif
@@ -1579,7 +1659,8 @@ contains
         endif
       end block
     endif
-    if(new_form_physical_boundary_case().and.bctype(1)==12.and.all(bctype(3:6)==1)) &
+    if((new_form_physical_boundary_case().or.open_shock_nscbc_output_case()).and. &
+      bctype(1)==12.and.all(bctype(3:6)==1)) &
       driver_config(3)=trim(driver_config(3))//'/x12-stage-v1'
     backflow_outlet=numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
       bctype(2)==22.and.trim(flowtype)/='channel'
@@ -1601,7 +1682,8 @@ contains
       call check(ierr==MPI_SUCCESS.and.all(real_to_word(root_driver)==real_to_word(driver)), &
         'bc22 reference differs between ranks')
     endif
-    if(joint_sbli_output_case()) then
+    if(numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
+       bctype(4)==52.and.nscbc_farfield_sbli_shock_enabled()) then
       block
         use boundary_high_order, only: high_order_boundary_enabled
 #ifdef ASTR_BUILD_TESTING
@@ -1662,7 +1744,7 @@ contains
           endif
 #endif
         elseif(nscbc_farfield_grcbc_enabled()) then
-          write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-v2',real_to_word(target)
+          write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-v3',real_to_word(target)
         else
           write(driver_config(2),'(a,7(z16.16))') 'sbli-top-v1',real_to_word(target)
         endif
@@ -1751,6 +1833,10 @@ contains
       saved(8)=ibclr(saved(8),3)
       restored_mean_path=iand(saved(8),6_int64)
       if(global_compact_enabled()) saved(7)=ibclr(saved(7),0)
+      ! Non-exact continuation uses freshly initialized geometry and the current
+      ! boundary/MP algorithms; unlike exact restore it does not inherit revisions.
+      if(.not.options%exact_restart.and..not.lcomb.and.numq==5) &
+        saved(7)=ior(iand(saved(7),not(56_int64)),iand(contract(7),56_int64))
       if(.not.options%exact_restart.and..not.lcomb.and.numq==5.and.saved(6)/=contract(6)) then
         if(mpirank==0) write(*,'(a,2(1x,i0))') &
           'ASTR_OUTPUT non-exact backend switch source/target GPU flags:',saved(6),contract(6)
@@ -1992,9 +2078,13 @@ contains
     if(.not.due) return
     phase_started=insitu_clock()
     local=0; ok=.true.
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(use_gpu) then
+#ifdef ASTR_GPU_CPP
+      call cpp_adaptive_energy_sum(local,ok)
+#else
       call gpu_adaptive_energy_sum(local,ok)
+#endif
     else
 #endif
       do k=0,km-1
@@ -2012,7 +2102,7 @@ contains
       enddo
       enddo
       enddo
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     endif
 #endif
     call check(ok.and.ieee_is_finite(local),'invalid adaptive kinetic energy node or local sum')
@@ -2080,7 +2170,7 @@ contains
       identity,state_host_budget())
     if(mean_statistics) call mean_statistics_file(trim(path)//'/statistics.h5',.true., &
       identity,state_host_budget())
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(compact_statistics) call complete_compact_statistics_file(trim(path)//'/statistics.h5',.true., &
       identity,state_host_budget(),allow_repartition=curve_repartition_case())
 #endif
@@ -2095,6 +2185,7 @@ contains
     if(dynamic_output_case()) resource_count=5+inflow_count
     if(air5_output_case()) resource_count=2+size(air5_checkpoint_resources())
     if(ninit>=1.and.ninit<=3) resource_count=resource_count+1
+    if(flowtype=='hit'.and.ninit==0) resource_count=resource_count+1
     if(wall_blowing_legacy_random.or.profile_wall_file) resource_count=resource_count+1
     if(profile_wall_phase_file) resource_count=resource_count+1
     allocate(resources(resource_count),stat=err)
@@ -2121,6 +2212,10 @@ contains
       resources(3:resource_count)=air5_checkpoint_resources()
     endif
     i=resource_count
+    if(flowtype=='hit'.and.ninit==0) then
+      resources(i)='velocity.h5'
+      i=i-1
+    endif
     if(profile_wall_phase_file) then
       resources(i)='wallbs_phase.dat'
       i=i-1

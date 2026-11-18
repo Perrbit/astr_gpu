@@ -755,6 +755,7 @@ module statistic
     !
     stas%urms=0.e0_real_kind
     stas%machrms=0.e0_real_kind
+    stas%rhoe=0.e0_real_kind
     !
     miudrho=0.e0_real_kind
     dudx2=0.e0_real_kind
@@ -777,7 +778,7 @@ module statistic
       s23=0.5e0_real_kind*(dvel(i,j,k,2,3)+dvel(i,j,k,3,2))
       s33=dvel(i,j,k,3,3)
       !
-      ! div=s11+s22+s33
+      div=s11+s22+s33
       !
       v2=vel(i,j,k,1)**2+vel(i,j,k,2)**2+vel(i,j,k,3)**2
       !

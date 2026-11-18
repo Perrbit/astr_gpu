@@ -130,6 +130,25 @@ def test_native_unsorted_plane_selection_is_same_layout(probe, tmp_path):
     assert snapshot(parent) == before
 
 
+@pytest.mark.parametrize('download', [0, 1, 664848, -1])
+def test_native_transfer_count_is_not_field_payload(probe, tmp_path, download):
+    parent, head = make_chain(tmp_path)
+    for frame in parent.glob('step*'):
+        rows = (frame / 'FRAME').read_text().splitlines()
+        payload = int(rows[3].split()[0])
+        rows[3] = f'{payload} {download}'
+        (frame / 'FRAME').write_text('\n'.join(rows)+'\n')
+        reseal(frame)
+    before = snapshot(parent)
+    result = invoke(probe, head, 6, ())
+    assert (result.returncode == 0) == (download >= 0), result.stdout+result.stderr
+    if download >= 0:
+        assert 'OUTPUT_NATIVE_LINEAGE_COMPATIBLE' in result.stdout
+    else:
+        assert 'errorcode 74' in result.stdout+result.stderr
+    assert snapshot(parent) == before
+
+
 @pytest.mark.parametrize("fault", ["parent_crc", "input_crc", "missing_parent", "symlink_parent", "legacy",
     "damaged_frame", "metadata_clock", "fp32", "inventory", "derived_definition", "missing_metadata", "clock_cutoff",
     "symlink_payload", "hardlink_payload", "unexpected_member", "unbound_segment"])

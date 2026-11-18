@@ -14,6 +14,10 @@ module insitu_catalog_m12
   use benchmark_runtime, only: benchmark_field_io_disabled
 #ifdef _CUDA
   use insitu_m12_gpu, only: m12_diagnostic_layout_supported,m12_probe_count,capture_m12_probes_gpu,capture_m12_wall_gpu
+#elif defined(ASTR_GPU_CPP)
+  use insitu_m12_cpp, only: m12_diagnostic_layout_supported,m12_probe_count, &
+    capture_m12_probes_gpu=>capture_m12_probes_cpp,release_m12_probes_cpp, &
+    capture_m12_wall_cpp,release_m12_wall_cpp
 #endif
   implicit none
   private
@@ -46,7 +50,7 @@ contains
     character(512) :: message
     integer :: n,p,i,j,unit,status,closed
     logical :: enabled,ok,supported,dirty,requested
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     real(real_kind),allocatable :: probes(:,:),wall(:,:)
 #endif
     if(benchmark_field_io_disabled()) return
@@ -77,7 +81,7 @@ contains
       endif
       call catalog_product_options(options,enabled)
       supported=.false.
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       supported=enabled.and.use_gpu.and.trim(flowtype)=='bl'.and.numq==5.and.m12_diagnostic_layout_supported()
 #endif
       if(.not.agreed(supported)) then
@@ -91,10 +95,14 @@ contains
         dirty=.true.;cycle
       endif
       status=0;closed=0;ok=.false.
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       if(state%definition%view%kind=='m12_probes') then
         if(.not.allocated(probes)) allocate(probes(6,m12_probe_count))
+#ifdef ASTR_GPU_CPP
+        call capture_m12_probes_gpu(probes,ok,identity%step)
+#else
         call capture_m12_probes_gpu(probes,ok)
+#endif
         ok=agreed(ok)
         if(ok.and.mpirank==0) then
           if(streams(p)%opened.and.trim(streams(p)%directory)/=directory) then
@@ -119,7 +127,11 @@ contains
         endif
       else
         if(.not.allocated(wall)) allocate(wall(3,im+1))
+#ifdef ASTR_GPU_CPP
+        call capture_m12_wall_cpp(wall,ok,identity%step)
+#else
         call capture_m12_wall_gpu(wall,ok)
+#endif
         ok=agreed(ok)
         if(ok) then
           write(file,'(a,"/wall.step",i0.12,".rank",i4.4,".csv")') directory,identity%step,mpirank
@@ -153,6 +165,10 @@ contains
 
   subroutine finish_catalog_m12_diagnostics()
     integer :: p,status
+#ifdef ASTR_GPU_CPP
+    call release_m12_probes_cpp()
+    call release_m12_wall_cpp()
+#endif
     if(.not.allocated(streams)) return
     do p=1,size(streams)
       if(.not.streams(p)%opened) cycle

@@ -163,6 +163,22 @@ def test_each_existing_product_has_explicit_typed_definition(tmp_path, kind):
     assert 'PRODUCT 2 valid=T id=archive' in result.stdout, result.stdout
 
 
+@pytest.mark.parametrize('kind,source,provider,valid',[
+    ('wall_curve','reynolds','wall-time',True),
+    ('wall_curve','reynolds','velocity-time',False),
+    ('wall_curve','favre','wall-time',False),
+    ('slice','reynolds','velocity-time',False),
+])
+def test_wall_time_shear_is_distinct_from_primitive_mean_gradient(tmp_path,kind,source,provider,valid):
+    item=visual_product(kind)
+    item.update(field='wall_shear_x',source=source,statistics_source=provider)
+    result=run(tmp_path,[HEADER,item])
+    assert result.returncode==0,result.stdout+result.stderr
+    assert f'PRODUCT 1 valid={"T" if valid else "F"}' in result.stdout,result.stdout
+    if not valid:
+        assert 'wall transport means require accumulating instantaneous wall quantities' in result.stdout
+
+
 def test_index_image_reuses_global_slice_selection(tmp_path):
     item = visual_product()
     item['sampling'] = product()['sampling']

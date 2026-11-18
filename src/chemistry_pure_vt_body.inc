@@ -4,7 +4,7 @@
     real(real64) :: concentration(air5_num_species),mole_fraction(air5_num_species)
     real(real64) :: pair_rate(air5_num_species),concentration_sum,pressure
     real(real64) :: mw_time,sigma,reduced_mass,mean_speed,collision_coefficient,collision_rate
-    real(real64) :: product,denominator,inverse_time,equilibrium_energy,current_energy,energy_difference
+    real(real64) :: product,denominator,inverse_time,energy_difference
     integer :: molecule,partner,local_status
 
     source=0.0_real64
@@ -83,9 +83,7 @@
       do partner=1,air5_num_species
         inverse_time=inverse_time+mole_fraction(partner)*pair_rate(partner)
       enddo
-      equilibrium_energy=air5_species_vibrational_energy(molecule,temperature)
-      current_energy=air5_species_vibrational_energy(molecule,tv)
-      energy_difference=equilibrium_energy-current_energy
+      energy_difference=air5_species_vibrational_difference(molecule,temperature,tv)
       source=source+rho_species(molecule)*energy_difference*inverse_time
     enddo
     status=chemistry_status_ok

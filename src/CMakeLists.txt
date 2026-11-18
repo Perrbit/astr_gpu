@@ -290,7 +290,17 @@ add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
 if(NOT ASTR_GPU_CPP_BACKEND STREQUAL "none")
   set_target_properties(astr_checkpoint_filesystem astr_catalog_json astr_insitu_vortex
     PROPERTIES POSITION_INDEPENDENT_CODE YES)
-  target_sources(astr PRIVATE ../src_gpu/fluid_runtime.F90)
+  target_sources(astr PRIVATE ../src_gpu/fluid_runtime.F90 ../src_gpu/compact_line_solver.F90
+    ../src_gpu/inflow_timeseries.F90
+    ../src_gpu/crashfix_runtime.F90
+    ../src_gpu/production_statistics_runtime.F90
+    ../src_gpu/chemistry_statistics_runtime.F90
+    ../src_gpu/compact_operator.F90 ../src_gpu/me6opti_operator.F90 ../src_gpu/insitu_index_runtime.F90
+    ../src_gpu/insitu_statistics_runtime.F90 ../src_gpu/insitu_selected_device.F90
+    ../src_gpu/insitu_wall_runtime.F90 ../src_gpu/insitu_m12_runtime.F90)
+  if(ASTR_WITH_CATALYST AND ASTR_WITH_INSITU_DEVICE)
+    target_sources(astr PRIVATE ../src_gpu/insitu_preview_runtime.F90)
+  endif()
   target_compile_definitions(astr PRIVATE ASTR_GPU_CPP ASTR_GPU_CPP_NAME="${ASTR_GPU_CPP_BACKEND}")
   target_link_libraries(astr PRIVATE astr_device_state)
   set_target_properties(astr PROPERTIES POSITION_INDEPENDENT_CODE YES LINKER_LANGUAGE CUDA
@@ -543,7 +553,8 @@ if(ASTR_WITH_CATALYST)
   endif()
   add_library(astr_catalyst_adapter STATIC catalyst_adapter.cpp insitu_mesh_adapter.cpp)
   target_include_directories(astr_catalyst_adapter PRIVATE .)
-  if(ASTR_WITH_CUDA)
+  if(ASTR_NATIVE_CUDA)
+    target_compile_definitions(astr PRIVATE ASTR_INSITU_NATIVE_CUDA)
     find_path(ASTR_EGL_INCLUDE_DIR EGL/eglext.h REQUIRED)
     find_package(Threads REQUIRED)
     get_filename_component(ASTR_COMPILER_BIN "${CMAKE_Fortran_COMPILER}" DIRECTORY)
@@ -582,6 +593,14 @@ if(ASTR_WITH_CATALYST)
     target_link_libraries(astr_catalyst_adapter PRIVATE VTK::RenderingOpenGL2
       VTK::AcceleratorsVTKmCore VTK::IOCatalystConduit ParaView::RemotingViews CUDA::cudart
       VTK::FiltersCore VTK::FiltersGeneral VTK::FiltersFlowPaths VTK::FiltersParallelFlowPaths)
+    if(ASTR_GPU_CPP_BACKEND STREQUAL "cuda")
+      find_package(Python3 REQUIRED COMPONENTS Development.Embed)
+      target_link_libraries(astr PRIVATE Python3::Python)
+      if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Match the render probes: ParaView's Python DSOs resolve through the host.
+        target_link_options(astr PRIVATE "LINKER:--no-as-needed")
+      endif()
+    endif()
     vtk_module_autoinit(TARGETS astr_catalyst_adapter MODULES VTK::RenderingOpenGL2)
     # Python's narrow control bridge resolves only these exported local entry points.
     set_target_properties(astr PROPERTIES ENABLE_EXPORTS YES)
@@ -1553,6 +1572,22 @@ if(ASTR_WITH_CUDA AND BUILD_TESTING)
     "${CMAKE_CURRENT_BINARY_DIR}/mp_ld_probe_modules")
   target_link_libraries(mp_ld_reconstruction_probe PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
   target_compile_definitions(mp_ld_reconstruction_probe PRIVATE ASTR_BUILD_TESTING)
+  add_executable(sponge_reference_probe EXCLUDE_FROM_ALL
+    ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
+    ../tests/gpu_validation/sponge_reference_probe.cuf)
+  set_target_properties(sponge_reference_probe PROPERTIES LINKER_LANGUAGE Fortran
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sponge_reference_modules")
+  target_include_directories(sponge_reference_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/sponge_reference_modules")
+  target_link_libraries(sponge_reference_probe PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
+  target_compile_definitions(sponge_reference_probe PRIVATE ASTR_BUILD_TESTING)
+  add_executable(crashfix_reference_probe EXCLUDE_FROM_ALL
+    ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
+    ../tests/gpu_validation/crashfix_reference_probe.cuf)
+  set_target_properties(crashfix_reference_probe PROPERTIES LINKER_LANGUAGE Fortran
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/crashfix_reference_modules")
+  target_include_directories(crashfix_reference_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/crashfix_reference_modules")
+  target_link_libraries(crashfix_reference_probe PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
+  target_compile_definitions(crashfix_reference_probe PRIVATE ASTR_BUILD_TESTING)
   add_executable(native_filter_window_probe EXCLUDE_FROM_ALL
     ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
     ../tests/gpu_validation/native_filter_window_replay.cuf)
@@ -1566,11 +1601,15 @@ if(ASTR_WITH_CUDA AND BUILD_TESTING)
   if(ASTR_WITH_AIR5_CHEMISTRY)
     target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_AIR5_CHEMISTRY)
     target_compile_definitions(mp_ld_reconstruction_probe PRIVATE ASTR_AIR5_CHEMISTRY)
+    target_compile_definitions(sponge_reference_probe PRIVATE ASTR_AIR5_CHEMISTRY)
+    target_compile_definitions(crashfix_reference_probe PRIVATE ASTR_AIR5_CHEMISTRY)
     target_compile_definitions(native_filter_window_probe PRIVATE ASTR_AIR5_CHEMISTRY)
   endif()
   if(ASTR_HAS_MPI_CUDA_QUERY)
     target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
     target_compile_definitions(mp_ld_reconstruction_probe PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
+    target_compile_definitions(sponge_reference_probe PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
+    target_compile_definitions(crashfix_reference_probe PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
     target_compile_definitions(native_filter_window_probe PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
   endif()
 endif()

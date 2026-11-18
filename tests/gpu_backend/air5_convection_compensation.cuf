@@ -1,0 +1,12 @@
+! Declaration owner for the original RK kernels' disabled compensation branch.
+! Scalar helper bodies are frozen unchanged; this probe does not claim field
+! compensation coverage, which is tested separately before full integration.
+module chemistry_compensation_gpu
+  use iso_fortran_env,only:real64
+  use cudafor
+  implicit none
+  logical,device :: air5_compensated_d=.false.
+  real(real64),device,allocatable :: air5_carry_d(:,:,:,:),air5_origin_d(:,:,:,:),air5_origin_carry_d(:,:,:,:)
+contains
+#include "frozen_rk_compensation.inc"
+end module

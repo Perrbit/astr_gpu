@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include "device_state.h"
+#include "astr_precision.h"
 
 namespace {
 __device__ size_t offset(const AstrDeviceView &view, const int index[5])
@@ -10,7 +11,7 @@ __device__ size_t offset(const AstrDeviceView &view, const int index[5])
     return result;
 }
 
-__global__ __launch_bounds__(512) void reverse_kernel(AstrDeviceView q, double *output, size_t count)
+__global__ __launch_bounds__(512) void reverse_kernel(AstrDeviceView q, astr_numerical_real *output, size_t count)
 {
     const size_t point = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (point < count) {
@@ -20,7 +21,7 @@ __global__ __launch_bounds__(512) void reverse_kernel(AstrDeviceView q, double *
             index[axis] = q.lower[axis] + q.extent[axis] - 1 - remaining % q.extent[axis];
             remaining /= q.extent[axis];
         }
-        output[point] = static_cast<const double *>(q.data)[offset(q, index)];
+        output[point] = static_cast<const astr_numerical_real *>(q.data)[offset(q, index)];
     }
     return;
 }
@@ -35,14 +36,14 @@ __global__ __launch_bounds__(512) void physical_kernel(AstrDeviceView q, AstrDev
             index[axis] = rhs.lower[axis] + remaining % rhs.extent[axis];
             remaining /= rhs.extent[axis];
         }
-        static_cast<double *>(rhs.data)[point] = static_cast<const double *>(q.data)[offset(q, index)];
+        static_cast<astr_numerical_real *>(rhs.data)[point] = static_cast<const astr_numerical_real *>(q.data)[offset(q, index)];
     }
     return;
 }
 }
 
 // Independent consumer of borrowed views; it owns its diagnostic stream and buffer.
-extern "C" int astr_mb1_consume(void *state, double *reversed, size_t count)
+extern "C" int astr_mb1_consume(void *state, astr_numerical_real *reversed, size_t count)
 {
     AstrDeviceView q{}, rhs{};
     int code = astr_device_state_view(state, ASTR_DEVICE_Q, &q);
@@ -50,11 +51,11 @@ extern "C" int astr_mb1_consume(void *state, double *reversed, size_t count)
     code = astr_device_state_view(state, ASTR_DEVICE_RHS, &rhs);
     if (code != 0) return code;
     if (count != static_cast<size_t>(q.stride[4])) return ASTR_DEVICE_INVALID_ARGUMENT;
-    double *output = nullptr;
+    astr_numerical_real *output = nullptr;
     cudaStream_t stream = nullptr;
     cudaError_t status = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
     if (status != cudaSuccess) return static_cast<int>(status);
-    status = cudaMalloc(&output, count * sizeof(double));
+    status = cudaMalloc(&output, count * sizeof(astr_numerical_real));
     if (status == cudaSuccess) {
         reverse_kernel<<<(count + 511) / 512, 512, 0, stream>>>(q, output, count);
         status = cudaGetLastError();
@@ -66,7 +67,7 @@ extern "C" int astr_mb1_consume(void *state, double *reversed, size_t count)
     }
     if (status == cudaSuccess) status = cudaStreamSynchronize(stream);
     if (status == cudaSuccess)
-        status = cudaMemcpy(reversed, output, count * sizeof(double), cudaMemcpyDeviceToHost);
+        status = cudaMemcpy(reversed, output, count * sizeof(astr_numerical_real), cudaMemcpyDeviceToHost);
     const cudaError_t completed = cudaStreamSynchronize(stream);
     if (status == cudaSuccess) status = completed;
     if (output) {

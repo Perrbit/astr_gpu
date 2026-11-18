@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import h5py
 import numpy as np
@@ -53,6 +54,9 @@ def main():
     parser.add_argument('--mpiexec', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--ranks', type=int, choices=[1, 2], default=1)
+    parser.add_argument('--topology', help='three dimensions matching --ranks; default is an x slab')
+    parser.add_argument('--grid', type=int, default=16)
+    parser.add_argument('--mapping', choices=['periodic'])
     parser.add_argument('--mode', choices=['exact', 'nonexact', 'all'], default='all')
     parser.add_argument('--sync', choices=['dependency', 'explicit'], default='explicit')
     parser.add_argument('--memcheck', action='store_true')
@@ -64,7 +68,18 @@ def main():
     parser.add_argument('--automatic', action='store_true')
     parser.add_argument('--keep', type=int, choices=[1, 2], default=2)
     parser.add_argument('--no-test-observations', action='store_true')
+    parser.add_argument('--compact-form', choices=['explicit_explicit', 'compact_explicit', 'explicit_compact', 'compact_compact'])
+    parser.add_argument('--compact-reference', type=Path)
+    parser.add_argument('--convection-form', choices=['standard', 'keep'], default='standard')
+    parser.add_argument('--viscous-form', choices=['standard', 'me6_opti'], default='standard')
     args = parser.parse_args()
+    topology = (1, 1, 1) if args.ranks == 1 else (2, 1, 1)
+    if args.topology:
+        topology = tuple(map(int, args.topology.split(',')))
+        if len(topology) != 3 or min(topology) < 1 or np.prod(topology) != args.ranks:
+            parser.error('--topology must match --ranks')
+    if bool(args.compact_form) != bool(args.compact_reference):
+        parser.error('--compact-form and --compact-reference must be selected together')
     if args.automatic_reference is not None and args.mode != 'exact':
         parser.error('automatic history continuity is an exact-restart test; select --mode exact')
     if args.restore_source is not None and args.mode != 'nonexact':
@@ -81,7 +96,7 @@ def main():
                OMPI_MCA_coll='^cuda,hcoll,ucc', OMPI_MCA_opal_cuda_support='0',
                ASTR_GPU_FILTER_WORKSPACE=args.workspace, ASTR_GPU_HALO_TRANSPORT=args.transport,
                ASTR_GPU_SYNC_MODE=args.sync, ASTR_CFL_PROFILE_Y='1',
-               ASTR_FORCE_MPI_TOPOLOGY='1,1,1' if args.ranks == 1 else '2,1,1',
+               ASTR_FORCE_MPI_TOPOLOGY=','.join(map(str, topology)),
                ASTR_VALIDATION_RHS_PREFIX='outdat/rhs', ASTR_VALIDATION_RHS_STEP='4')
     if args.workspace == 'default':
         del env['ASTR_GPU_FILTER_WORKSPACE']
@@ -95,15 +110,32 @@ def main():
     references = {b: (frozen/f'{b}_np1_keep_x' if args.automatic_reference is None else
                       args.automatic_reference/('cpu_automatic' if b == 'cpu' else 'old_gpu_automatic')) /
                       'outdat/new/checkpoints/step000000000004/state.h5' for b in ('cpu', 'gpu')}
+    if args.compact_form:
+        references = {b: args.compact_reference/name/'outdat/new/checkpoints/step000000000004/state.h5'
+                      for b, name in [('cpu', 'cpu'), ('gpu', 'old_gpu')]}
     reference_fields = {b: checkpoint(path) for b, path in references.items()}
-    report = {'binary': str(args.binary.resolve()), 'ranks': args.ranks, 'cases': {},
+    report = {'binary': str(args.binary.resolve()), 'ranks': args.ranks, 'topology': topology, 'cases': {},
               'reference_pair': compare(reference_fields['cpu'], reference_fields['gpu'])}
 
     def run(name, exact, restore=None, checkpoints=True, binary=None, backend=None, steps=4):
         binary = args.binary if binary is None else binary
         backend = args.backend if backend is None else backend
         directory = root/name
-        prepare_case(directory, original, backend != 'cpu', backend == 'cpp', automatic, steps=steps)
+        prepare_options = dict(convection_form=args.convection_form, viscous_form=args.viscous_form)
+        if args.compact_form:
+            derivative, filtering = args.compact_form.split('_')
+            scheme = '643c' if derivative == 'compact' else '643e'
+            prepare_options.update(conschm=scheme, difschm=scheme,
+                                   filter_scheme='compact10' if filtering == 'compact' else 'explicit10')
+        prepare_case(directory, original, backend != 'cpu', backend == 'cpp', automatic,
+                     grid=args.grid, steps=steps, numerics=prepare_options,
+                     mesh=dict(lreadgrid=True,gridfile='datin/grid.tgv.h5') if args.mapping else None)
+        if args.mapping and restore is None:
+            generator = Path(__file__).resolve().parents[1]/'gpu_validation/generate_curvilinear_tgv_grid.py'
+            subprocess.run([sys.executable, str(generator), '--grid', ','.join([str(args.grid)]*3),
+                            '--amplitude', '0.15', '--mapping', args.mapping,
+                            '--output', str(directory/'datin/grid.tgv.h5'),
+                            '--report', str(directory/'grid_report.txt')], check=True)
         options = dict(directory='outdat/new', exact_restart=exact, host_budget_bytes=-1,
                        device_budget_bytes=-1, device_reserve_bytes=0)
         if restore is not None:
@@ -187,6 +219,11 @@ def main():
         item['restored_statistics'] = restored_statistics(resumed, identity_reference)
         if mode == 'exact':
             item['identical_datasets'] = exact_state(state(resumed), state(continuous))
+            if args.mapping:
+                item['identical_geometry_datasets'] = exact_state(
+                    resumed/'outdat/new/resources/geometry.h5', continuous/'outdat/new/resources/geometry.h5')
+                if (resumed/'datin/grid.tgv.h5').exists():
+                    raise AssertionError('standalone CURVE recovery unexpectedly needed the external input grid')
         for backend in ('cpu', 'gpu'):
             item['frozen'][backend] = compare(candidate, reference_fields[backend])
             if args.automatic:

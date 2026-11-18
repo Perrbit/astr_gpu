@@ -1,0 +1,400 @@
+! Freeze unchanged production CPU/old-GPU repair, including exceptional states.
+module crashfix_flux_reference_kernels
+  use cudafor
+  use astr_precision, only: real_kind
+contains
+  attributes(global) subroutine evaluate_critical_flux(im,jm,km,hm,n,points,npdc,physical_dir,gamma,weight,flux,active)
+    use solver_gpu, only: mp_ld_interface_flux,critical_interface_active
+    integer,value :: im,jm,km,hm,n,npdc,physical_dir
+    integer,device :: points(3,n),active(n)
+    real(real_kind),value :: gamma,weight
+    real(real_kind),device :: flux(5,n)
+    real(real_kind) :: f(5)
+    integer :: id,axis
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(id>n) return
+    axis=(id-1)/10+1
+    call mp_ld_interface_flux(points(1,id),points(2,id),points(3,id),axis,im,jm,km,gamma,hm,npdc,physical_dir,weight,f)
+    flux(:,id)=f
+    active(id)=merge(1,0,critical_interface_active(points(1,id),points(2,id),points(3,id),axis,im,jm,km,npdc))
+  end subroutine
+end module
+
+program crashfix_reference_probe
+  use cudafor
+  use mpi
+  use ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
+  use astr_precision, only: real_kind,real_bytes
+  use astr_precision_mpi, only: mpi_real_type
+  use commvar, only: im,jm,km,hm,ia,ja,ka,ndims,numq,num_species,num_modequ, &
+    nondimen,lcomb,lcracon,lreport,lihomo,ljhomo,lkhomo,gamma,mach,const2,const6,nstep,ctime
+  use commarray, only: q,rho,vel,prs,tmp,spc,x,nodestat,crinod
+  use commarray_gpu, only: q_d,qsave_d,rho_d,vel_d,prs_d,tmp_d,crinod_d,sync_crashfix_mask_to_gpu
+  use parallel, only: mpirank,mpisize,lio,mpitag,isize,jsize,ksize,ig0,jg0,kg0, &
+    mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+  use mainloop, only: crashfix,fhand_err
+  use crashfix_gpu, only: repair_crashfix_state_gpu,repair_reconciled_state_gpu,release_crashfix_gpu
+  use halo_exchange_gpu, only: release_halo_exchange_buffers_gpu
+  use fludyna, only: q2fvar
+  use crashfix_flux_reference_kernels, only: evaluate_critical_flux
+  implicit none
+  real(real_kind),allocatable :: initial(:,:,:,:),initial_p(:,:,:,:),cpu_q(:,:,:,:),cpu_p(:,:,:,:), &
+    gpu_q(:,:,:,:),gpu_p(:,:,:,:)
+  integer(1),allocatable :: initial_mask(:,:,:),cpu_mask(:,:,:),gpu_mask(:,:,:),fluid(:,:,:)
+  real(real_kind) :: reference(5),error,maximum
+  integer :: rank,ranks,devices,status,ir,jr,kr,scenario,i,j,k,m,unit,has_cpu,repaired
+  character(1024) :: prefix,path
+  character(80) :: argument
+  logical :: reconciled,flux_only,join_only,cpu_join,halo_seed
+  call MPI_Init(status);call MPI_Comm_rank(MPI_COMM_WORLD,rank,status);call MPI_Comm_size(MPI_COMM_WORLD,ranks,status)
+  status=cudaGetDeviceCount(devices)
+  if(status/=cudaSuccess.or.devices<1) error stop 'repair reference requires GPU'
+  status=cudaSetDevice(mod(rank,devices));if(status/=cudaSuccess) error stop 'repair reference binding'
+  call get_command_argument(1,argument);read(argument,*) isize,jsize,ksize
+  call get_command_argument(2,prefix)
+  call get_command_argument(3,argument);reconciled=trim(argument)=='reconciled'
+  flux_only=trim(argument)=='flux'
+  cpu_join=trim(argument)=='join-cpu'.or.trim(argument)=='join-cpu-halo'
+  halo_seed=trim(argument)=='join-halo'.or.trim(argument)=='join-cpu-halo'
+  join_only=trim(argument)=='join'.or.trim(argument)=='join-halo'.or.cpu_join
+  if(isize*jsize*ksize/=ranks) error stop 'repair reference layout/precision'
+  im=16;jm=8;km=16;ia=im*isize;ja=jm*jsize;ka=km*ksize
+  mpirank=rank;mpisize=ranks;lio=rank==0;mpitag=100
+  ir=mod(rank,isize);jr=mod(rank/isize,jsize);kr=rank/(isize*jsize)
+  ig0=ir*im;jg0=jr*jm;kg0=kr*km
+  mpileft=MPI_PROC_NULL;mpiright=MPI_PROC_NULL;mpidown=MPI_PROC_NULL;mpiup=MPI_PROC_NULL
+  if(ir>0) mpileft=rank-1
+  if(ir<isize-1) mpiright=rank+1
+  if(jr>0) mpidown=rank-isize
+  if(jr<jsize-1) mpiup=rank+isize
+  mpiback=modulo(kr-1,ksize)*isize*jsize+jr*isize+ir
+  mpifront=modulo(kr+1,ksize)*isize*jsize+jr*isize+ir
+  lihomo=.false.;ljhomo=.false.;lkhomo=.true.
+  ndims=3;numq=5;num_species=0;num_modequ=0;nondimen=.true.;lcomb=.false.;lcracon=.true.;lreport=.false.
+  gamma=1.4d0;mach=.3d0;const2=gamma*mach**2;const6=1/(gamma-1);nstep=0;ctime=0
+  allocate(q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+    vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+    tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm),nodestat(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+    crinod(-hm:im+hm,-hm:jm+hm,-hm:km+hm),spc(-hm:im+hm,-hm:jm+hm,-hm:km+hm,0), &
+    x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
+  allocate(q_d,mold=q);allocate(qsave_d(0:im,0:jm,0:km,5));allocate(rho_d,mold=rho)
+  allocate(vel_d,mold=vel);allocate(prs_d,mold=prs);allocate(tmp_d,mold=tmp)
+  allocate(initial,mold=q);allocate(cpu_q,mold=q);allocate(gpu_q,mold=q)
+  allocate(initial_p(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6));allocate(cpu_p,mold=initial_p);allocate(gpu_p,mold=initial_p)
+  allocate(initial_mask(-hm:im+hm,-hm:jm+hm,-hm:km+hm));allocate(cpu_mask,mold=initial_mask)
+  allocate(gpu_mask,mold=initial_mask);allocate(fluid(0:im,0:jm,0:km))
+  open(newunit=fhand_err,status='scratch',form='formatted')
+  if(flux_only) then
+    if(ranks/=1) error stop 'critical flux reference uses one rank; MPI repair is checked separately'
+    call freeze_critical_flux()
+    close(fhand_err);call MPI_Finalize(status)
+    stop
+  endif
+  if(join_only) then
+    call audit_shared_critical_flux()
+    close(fhand_err);call MPI_Finalize(status)
+    stop
+  endif
+  do scenario=1,7
+    if(scenario==6.and.ranks==1) cycle
+    if(reconciled.and.scenario==4) cycle
+    reference=[1.d0,.2d0,0.d0,0.d0,1.d-3*const6+.5d0*.2d0**2]
+    if(scenario==7) reference=[huge(1._real_kind)/16,huge(1._real_kind)/80,0._real_kind,0._real_kind,huge(1._real_kind)/16]
+    do m=1,5
+      q(:,:,:,m)=reference(m)
+    enddo
+    nodestat=0;crinod=.false.;crinod(im+hm,jm+hm,km+hm)=.true.;x=0
+    if(scenario<=4) then
+      do k=-hm,km+hm
+      do j=-hm,jm+hm
+      do i=-hm,im+hm
+        q(i,j,k,5)=q(i,j,k,5)+1.d-5*(i+2*j+3*k+6*hm)
+      enddo
+      enddo
+      enddo
+      q(2,2,2,1)=-1;q(3,2,2,1)=-2;q(3,3,2,5)=-1
+      q(0,0,0,1)=-1;q(im,jm,km,1)=-1
+      if(scenario==2) q(2,2,2,5)=ieee_value(0.d0,ieee_quiet_nan)
+      if(scenario==3) then
+        q(2,2,2,:)=q(1,1,1,:)*1.d-6;q(2,2,2,5)=1.d-20;q(2,2,2,2:4)=0
+      endif
+      if(scenario==4) then
+        nodestat(3,3,2)=1;nodestat(1,2,2)=1
+      endif
+    elseif(scenario==5) then
+      q=ieee_value(0.d0,ieee_quiet_nan);q(im-1,jm-1,km/2,:)=reference
+    elseif(scenario==6) then
+      if(rank<ranks-1) q=ieee_value(0.d0,ieee_quiet_nan)
+    else
+      q(im/2,jm/2,km/2,1)=-1;q(im/2,jm/2,km/2,5)=-1
+    endif
+    do k=-hm,km+hm
+    do j=-hm,jm+hm
+    do i=-hm,im+hm
+      if(.not.all(ieee_is_finite(q(i,j,k,:))).or.q(i,j,k,1)<=0.or.q(i,j,k,5)<=0) then
+        rho(i,j,k)=q(i,j,k,1);vel(i,j,k,:)=0;prs(i,j,k)=-1;tmp(i,j,k)=-1
+      else
+        call q2fvar(q(i,j,k,:),rho(i,j,k),vel(i,j,k,:),prs(i,j,k),tmp(i,j,k),spc(i,j,k,:))
+      endif
+    enddo
+    enddo
+    enddo
+    initial=q;initial_p(:,:,:,1)=rho;initial_p(:,:,:,2:4)=vel;initial_p(:,:,:,5)=prs;initial_p(:,:,:,6)=tmp
+    initial_mask=int(merge(1,0,crinod),1);fluid=int(merge(1,0,nodestat(0:im,0:jm,0:km)<=0),1)
+    q_d=q;rho_d=rho;vel_d=vel;prs_d=prs;tmp_d=tmp;qsave_d=777
+    call sync_crashfix_mask_to_gpu();call release_crashfix_gpu()
+    has_cpu=merge(1,0,scenario<=4.and..not.reconciled)
+    cpu_q=initial;cpu_p=initial_p;cpu_mask=initial_mask
+    if(has_cpu==1) then
+      call crashfix(repaired_nodes=repaired)
+      cpu_q=q;cpu_p(:,:,:,1)=rho;cpu_p(:,:,:,2:4)=vel;cpu_p(:,:,:,5)=prs;cpu_p(:,:,:,6)=tmp
+      cpu_mask=int(merge(1,0,crinod),1)
+    endif
+    if(reconciled) then
+      call repair_reconciled_state_gpu(scenario)
+    else
+      call repair_crashfix_state_gpu(scenario)
+    endif
+    gpu_q=q_d;gpu_p(:,:,:,1)=rho_d;gpu_p(:,:,:,2:4)=vel_d;gpu_p(:,:,:,5)=prs_d;gpu_p(:,:,:,6)=tmp_d
+    crinod=crinod_d;gpu_mask=int(merge(1,0,crinod),1)
+    if(.not.all(ieee_is_finite(gpu_q(0:im,0:jm,0:km,:)))) error stop 'nonfinite original physical repair state'
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      if(fluid(i,j,k)==0) cycle
+      if(.not.all(ieee_is_finite(gpu_p(i,j,k,:))).or. &
+        min(gpu_p(i,j,k,1),gpu_p(i,j,k,5),gpu_p(i,j,k,6))<=0) error stop 'original fluid repair caches invalid'
+    enddo
+    enddo
+    enddo
+    error=0
+    if(has_cpu==1) then
+      do m=1,5
+        do k=0,km
+        do j=0,jm
+        do i=0,im
+          if(fluid(i,j,k)==0) cycle
+          error=max(error,abs(gpu_q(i,j,k,m)-cpu_q(i,j,k,m))/max(1.d0,abs(cpu_q(i,j,k,m))))
+        enddo
+        enddo
+        enddo
+      enddo
+      if(any(cpu_mask/=gpu_mask)) error stop 'original repair masks differ'
+    elseif(scenario>=5) then
+      do m=1,5
+        error=max(error,maxval(abs((gpu_q(0:im,0:jm,0:km,m)-reference(m))/max(1.d0,abs(reference(m))))))
+      enddo
+    endif
+    call MPI_Allreduce(error,maximum,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,status)
+    if(real_bytes==8.and.maximum>2.d-10) error stop 'original repair differs'
+    write(path,'(a,a,i1,a,i8.8,a)') trim(prefix),'.case',scenario,'.rank',rank,'.bin'
+    open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted')
+    write(unit) [im,jm,km,hm,numq],[ig0,jg0,kg0],[ia,ja,ka],scenario,has_cpu
+    write(unit) fluid,initial_mask,initial,initial_p,cpu_mask,cpu_q,cpu_p,gpu_mask,gpu_q,gpu_p
+    close(unit)
+    call release_crashfix_gpu()
+    if(rank==0) print *, 'ORIGINAL_REPAIR_PASS ',scenario,maximum
+  enddo
+  call release_halo_exchange_buffers_gpu()
+  close(fhand_err)
+  call MPI_Finalize(status)
+contains
+  subroutine freeze_critical_flux()
+    use commvar, only: bfacmpld
+    use commvar_gpu, only: copy_commvar_to_gpu
+    use commarray_gpu, only: dxi_d,jacob_d,shock_mask_d,expanded_shock_halo_d
+    integer,parameter :: n=30
+    integer :: points(3,n),active(n),positions(10),axis,dim,s,kind,shock,number
+    integer,device,allocatable :: points_d(:,:),active_d(:)
+    real(real_kind),device,allocatable :: flux_d(:,:)
+    real(real_kind) :: flux(5,n)
+    real(real_kind),allocatable :: metric(:,:,:,:,:),jac(:,:,:)
+    allocate(metric(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3));allocate(jac,mold=rho)
+    metric=0
+    metric(:,:,:,1,1)=1.1d0;metric(:,:,:,1,2)=.03d0;metric(:,:,:,1,3)=.02d0
+    metric(:,:,:,2,1)=.02d0;metric(:,:,:,2,2)=.9d0;metric(:,:,:,2,3)=.04d0
+    metric(:,:,:,3,1)=.01d0;metric(:,:,:,3,2)=.02d0;metric(:,:,:,3,3)=1.2d0
+    do k=-hm,km+hm
+    do j=-hm,jm+hm
+    do i=-hm,im+hm
+      rho(i,j,k)=1+.02d0*sin(.11d0*i+.07d0*j-.09d0*k)
+      vel(i,j,k,:)=[.2d0+.03d0*cos(.16d0*i+.04d0*k),.04d0*sin(.2d0*j),.01d0*cos(.14d0*k)]
+      prs(i,j,k)=1+.03d0*cos(.15d0*i-.13d0*j);tmp(i,j,k)=prs(i,j,k)/rho(i,j,k)*const2
+      q(i,j,k,1)=rho(i,j,k);q(i,j,k,2:4)=rho(i,j,k)*vel(i,j,k,:)
+      q(i,j,k,5)=prs(i,j,k)*const6+.5d0*rho(i,j,k)*sum(vel(i,j,k,:)**2)
+      jac(i,j,k)=1+.001d0*i+.002d0*j+.001d0*k
+    enddo
+    enddo
+    enddo
+    initial=q;initial_p(:,:,:,1)=rho;initial_p(:,:,:,2:4)=vel;initial_p(:,:,:,5)=prs;initial_p(:,:,:,6)=tmp
+    allocate(dxi_d,mold=metric);allocate(jacob_d,mold=jac);allocate(shock_mask_d(0:im,0:jm,0:km))
+    allocate(points_d(3,n),active_d(n),flux_d(5,n))
+    q_d=q;rho_d=rho;vel_d=vel;prs_d=prs;tmp_d=tmp;dxi_d=metric;jacob_d=jac
+    bfacmpld=.35d0;call copy_commvar_to_gpu();expanded_shock_halo_d=.false.
+    do axis=1,3
+      dim=im
+      if(axis==2) dim=jm
+      if(axis==3) dim=km
+      positions=[-1,0,1,2,3,dim/2,dim-3,dim-2,dim-1,dim]
+      do s=1,10
+        points(:,(axis-1)*10+s)=[im/2,jm/2,km/2]
+        points(axis,(axis-1)*10+s)=positions(s)
+      enddo
+    enddo
+    points_d=points
+    do kind=0,2
+      crinod=.false.;crinod(im+hm,jm+hm,km+hm)=.true.
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        if(kind==1) crinod(i,j,k)=mod(i+2*j+3*k,7)==0
+        if(kind==2) crinod(i,j,k)=.true.
+      enddo
+      enddo
+      enddo
+      call sync_crashfix_mask_to_gpu();initial_mask=int(merge(1,0,crinod),1)
+      do shock=0,1
+        shock_mask_d=int(shock,1)
+        call evaluate_critical_flux<<<1,64>>>(im,jm,km,hm,n,points_d,4,1,gamma,bfacmpld,flux_d,active_d)
+        status=cudaGetLastError();if(status/=cudaSuccess) error stop 'original critical flux launch'
+        status=cudaDeviceSynchronize();if(status/=cudaSuccess) error stop 'original critical flux execution'
+        flux=flux_d;active=active_d
+        if(.not.all(ieee_is_finite(flux))) error stop 'original critical flux nonfinite'
+        if(kind==0.and.any(active/=0)) error stop 'unrelated halo history contaminated original flux'
+        if(kind==2.and.any(active/=1)) error stop 'original all-marked faces not critical'
+        number=1+2*kind+shock
+        write(path,'(a,a,i1,a)') trim(prefix),'.flux',number,'.bin'
+        open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted')
+        write(unit) [im,jm,km,hm,numq,kind,shock,n],[gamma,mach,bfacmpld],initial_mask,points, &
+          initial,initial_p,metric,jac,flux,int(active,1)
+        close(unit)
+        print *, 'ORIGINAL_CRITICAL_FLUX_PASS ',number,count(active/=0)
+      enddo
+    enddo
+  end subroutine
+
+  subroutine audit_shared_critical_flux()
+    use iso_fortran_env, only: int64
+    use commvar, only: bfacmpld,npdci,npdcj,npdck,recon_schem,lchardecomp,conschm
+    use commarray, only: dxi,jacob,lshock
+    use parallel, only: qswap
+    use solver, only: high_order_interface_flux_cpu
+    use commvar_gpu, only: copy_commvar_to_gpu
+    use commarray_gpu, only: dxi_d,jacob_d,shock_mask_d,expanded_shock_halo_d
+    integer,parameter :: n=30
+    integer :: points(3,n),active(n),headers(13),axis,dim,s,selected,p(3),flags(2),locations(3,2),dimensions(3),types(3)
+    integer,device,allocatable :: points_d(:,:),active_d(:)
+    real(real_kind),device,allocatable :: flux_d(:,:)
+    real(real_kind) :: flux(5,n),stencil(8,11),both_stencil(8,11,2),both_flux(5,2),difference(5)
+    logical :: identical
+    character(1024) :: sources
+    if(ranks/=2) error stop 'shared critical flux audit requires two ranks'
+    call get_command_argument(4,sources)
+    write(path,'(a,a,i8.8,a)') trim(sources),'/reference.case1.rank',rank,'.bin'
+    open(newunit=unit,file=trim(path),status='old',access='stream',form='unformatted')
+    read(unit) headers
+    if(any(headers(1:5)/=[im,jm,km,hm,numq]).or.any(headers(6:8)/=[ig0,jg0,kg0])) error stop 'shared audit input layout'
+    read(unit) fluid,initial_mask,initial,initial_p,cpu_mask,cpu_q,cpu_p,gpu_mask,gpu_q,gpu_p;close(unit)
+    axis=1;dim=im
+    if(jsize==2) then
+      axis=2;dim=jm
+    elseif(ksize==2) then
+      axis=3;dim=km
+    endif
+    q_d=gpu_q;rho_d=gpu_p(:,:,:,1);vel_d=gpu_p(:,:,:,2:4);prs_d=gpu_p(:,:,:,5);tmp_d=gpu_p(:,:,:,6)
+    crinod=gpu_mask/=0;nodestat=0
+    p=[im/2,jm/2,km/2];p(axis)=0
+    if(halo_seed) then
+      p(axis)=dim-1
+      if(rank==0) crinod(p(1),p(2),p(3))=.true.
+    else
+      if(rank==1) crinod(p(1),p(2),p(3))=.true.
+    endif
+    initial=gpu_q
+    if(cpu_join) then
+      q=gpu_q;rho=gpu_p(:,:,:,1);vel=gpu_p(:,:,:,2:4);prs=gpu_p(:,:,:,5);tmp=gpu_p(:,:,:,6)
+      call crashfix();call qswap()
+      gpu_q=q;gpu_p(:,:,:,1)=rho;gpu_p(:,:,:,2:4)=vel;gpu_p(:,:,:,5)=prs;gpu_p(:,:,:,6)=tmp
+      allocate(dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3));allocate(jacob,mold=rho)
+      allocate(lshock(-hm:im+hm,-hm:jm+hm,-hm:km+hm));lshock=.false.
+      dxi=0;dxi(:,:,:,1,1)=1;dxi(:,:,:,2,2)=1;dxi(:,:,:,3,3)=1;jacob=1
+      npdci=3;npdcj=3;npdck=3
+      if(mpileft==MPI_PROC_NULL) npdci=1
+      if(mpiright==MPI_PROC_NULL) npdci=merge(4,2,npdci==1)
+      if(mpidown==MPI_PROC_NULL) npdcj=1
+      if(mpiup==MPI_PROC_NULL) npdcj=merge(4,2,npdcj==1)
+      if(mpiback==MPI_PROC_NULL) npdck=1
+      if(mpifront==MPI_PROC_NULL) npdck=merge(4,2,npdck==1)
+      recon_schem=5;lchardecomp=.true.;conschm='743e'
+    else
+      call sync_crashfix_mask_to_gpu()
+      call repair_reconciled_state_gpu(99)
+      gpu_q=q_d;gpu_p(:,:,:,1)=rho_d;gpu_p(:,:,:,2:4)=vel_d;gpu_p(:,:,:,5)=prs_d;gpu_p(:,:,:,6)=tmp_d
+    endif
+    if(any(transfer(gpu_q,[0_int64],size(gpu_q))/=transfer(initial,[0_int64],size(initial)))) &
+      error stop 'persistent history audit changed the already healthy reconciled q'
+    allocate(dxi_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3));allocate(jacob_d,mold=rho)
+    dxi_d=0;dxi_d(:,:,:,1,1)=1;dxi_d(:,:,:,2,2)=1;dxi_d(:,:,:,3,3)=1;jacob_d=1
+    allocate(shock_mask_d(0:im,0:jm,0:km));shock_mask_d=0;expanded_shock_halo_d=.false.
+    bfacmpld=.35d0;call copy_commvar_to_gpu()
+    points=0
+    do s=1,n
+      points(:,s)=[im/2,jm/2,km/2]
+    enddo
+    selected=(axis-1)*10+1
+    points(axis,selected:selected+9)=merge(dim-1,-1,rank==0)
+    allocate(points_d(3,n),active_d(n),flux_d(5,n));points_d=points
+    if(cpu_join) then
+      dimensions=[im,jm,km]
+      types=[npdci,npdcj,npdck]
+      do s=1,n
+        axis=(s-1)/10+1
+        flux(:,s)=high_order_interface_flux_cpu(points(:,s),axis)
+        p=points(:,s)
+        if(types(axis)==1.or.types(axis)==4) p(axis)=max(0,p(axis))
+        active(s)=merge(1,0,crinod(p(1),p(2),p(3)))
+        p=points(:,s);p(axis)=p(axis)+1
+        if(types(axis)==2.or.types(axis)==4) p(axis)=min(dimensions(axis),p(axis))
+        if(crinod(p(1),p(2),p(3))) active(s)=1
+      enddo
+      axis=1;if(jsize==2) axis=2
+      if(ksize==2) axis=3
+    else
+      call evaluate_critical_flux<<<1,64>>>(im,jm,km,hm,n,points_d,3,0,gamma,bfacmpld,flux_d,active_d)
+      status=cudaGetLastError();if(status/=cudaSuccess) error stop 'shared audit flux launch'
+      status=cudaDeviceSynchronize();if(status/=cudaSuccess) error stop 'shared audit flux execution'
+      flux=flux_d;active=active_d
+    endif
+    do s=1,8
+      p=points(:,selected);p(axis)=p(axis)+s-4
+      stencil(s,1:5)=gpu_q(p(1),p(2),p(3),:);stencil(s,6:11)=gpu_p(p(1),p(2),p(3),:)
+    enddo
+    call MPI_Gather(stencil,88,mpi_real_type,both_stencil,88,mpi_real_type,0,MPI_COMM_WORLD,status)
+    call MPI_Gather(flux(:,selected),5,mpi_real_type,both_flux,5,mpi_real_type,0,MPI_COMM_WORLD,status)
+    call MPI_Gather(active(selected),1,MPI_INTEGER,flags,1,MPI_INTEGER,0,MPI_COMM_WORLD,status)
+    p=points(:,selected)+[ig0,jg0,kg0]
+    call MPI_Gather(p,3,MPI_INTEGER,locations,3,MPI_INTEGER,0,MPI_COMM_WORLD,status)
+    if(rank==0) then
+      if(cpu_join) write(*,'(a)') 'ORIGINAL_SHARED_CRITICAL_BACKEND CPU'
+      if(any(locations(:,1)/=locations(:,2))) error stop 'shared audit compared different physical interfaces'
+      identical=all(transfer(both_stencil(:,:,1),[0_int64],88)==transfer(both_stencil(:,:,2),[0_int64],88))
+      difference=abs(both_flux(:,1)-both_flux(:,2))
+      write(*,'(a,3(1x,i0))') 'ORIGINAL_SHARED_CRITICAL_FLAGS axis/left/right:',axis,flags
+      if(halo_seed) then
+        write(*,'(a)') 'ORIGINAL_SHARED_CRITICAL_HISTORY_SEED: rank0 last interior node; reconciliation rerun; q bits unchanged'
+      else
+        write(*,'(a)') 'ORIGINAL_SHARED_CRITICAL_HISTORY_SEED: one rank1 shared-node mark; reconciliation rerun; q bits unchanged'
+      endif
+      write(*,'(a,6(1x,i0))') 'ORIGINAL_SHARED_CRITICAL_GLOBAL_LEFT_NODES:',locations
+      write(*,'(a,l1,1x,es24.16e3)') 'ORIGINAL_SHARED_CRITICAL_STENCIL bits/max_abs:',identical, &
+        maxval(abs(both_stencil(:,:,1)-both_stencil(:,:,2)))
+      write(*,'(a,5(1x,es24.16e3))') 'ORIGINAL_SHARED_CRITICAL_FLUX_ABS:',difference
+      write(*,'(a,5(1x,es24.16e3))') 'ORIGINAL_SHARED_CRITICAL_FLUX_SCALED:',difference/ &
+        max(1.e0_real_kind,max(abs(both_flux(:,1)),abs(both_flux(:,2))))
+      path=trim(prefix)//'.shared_flux.bin'
+      open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted')
+      write(unit) [axis,flags],locations,[gamma,mach,bfacmpld],both_stencil,both_flux
+      close(unit)
+    endif
+  end subroutine
+end program

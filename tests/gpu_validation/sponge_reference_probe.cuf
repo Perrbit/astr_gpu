@@ -1,0 +1,99 @@
+! Calls the unchanged CPU and CUDA Fortran sponge functions on the same fields.
+program sponge_reference_probe
+  use cudafor
+  use mpi
+  use astr_precision, only: real_kind,real_bytes
+  use astr_precision_mpi, only: mpi_real_type
+  use ieee_arithmetic, only: ieee_is_finite
+  use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,numq,ja,ka,lihomo,ljhomo,lkhomo
+  use commarray, only: q
+  use commarray_gpu, only: q_d,qwork_d
+  use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront, &
+    mpirank,mpisize,mpitag
+  use halo_exchange_gpu, only: release_halo_exchange_buffers_gpu
+  use sponge_layer, only: spongefilter_layer,lspg_i0,lspg_im,lspg_jm,lspg_k0,lspg_km, &
+    spg_im_beg,spg_im_end,spg_jm_beg,spg_jm_end,sponge_damp_coef_im,sponge_damp_coef_jm
+  use sponge_gpu, only: init_sponge_gpu,release_sponge_gpu,apply_xmax_sponge_gpu,apply_ymax_sponge_gpu
+  implicit none
+  integer :: ierr,rank,ranks,devices,device_status,ir,jr,kr,i,j,k,m,mode,unit
+  real(real_kind),allocatable :: initial(:,:,:,:),actual(:,:,:,:)
+  real(real_kind) :: error,global_error
+  character(1024) :: prefix,path
+  character(80) :: argument
+  call MPI_Init(ierr);call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr);call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr)
+  device_status=cudaGetDeviceCount(devices)
+  if(device_status/=cudaSuccess.or.devices<1) error stop 'reference probe has no GPU'
+  device_status=cudaSetDevice(mod(rank,devices))
+  if(device_status/=cudaSuccess) error stop 'reference GPU binding failed'
+  call get_command_argument(1,argument);read(argument,*) isize,jsize,ksize
+  call get_command_argument(2,prefix)
+  if(isize*jsize*ksize/=ranks.or.len_trim(prefix)==0) error stop 'reference topology/prefix'
+  im=16;jm=12;km=8;numq=5
+  mpirank=rank;mpisize=ranks;mpitag=100
+  ir=mod(rank,isize);jr=mod(rank/isize,jsize);kr=rank/(isize*jsize)
+  mpileft=MPI_PROC_NULL;mpiright=MPI_PROC_NULL;mpidown=MPI_PROC_NULL;mpiup=MPI_PROC_NULL
+  if(ir>0) mpileft=rank-1
+  if(ir<isize-1) mpiright=rank+1
+  if(jr>0) mpidown=rank-isize
+  if(jr<jsize-1) mpiup=rank+isize
+  mpiback=modulo(kr-1,ksize)*isize*jsize+jr*isize+ir
+  mpifront=modulo(kr+1,ksize)*isize*jsize+jr*isize+ir
+  lihomo=.false.;ljhomo=.false.;lkhomo=.true.;ja=jm;ka=km
+  is=1;ie=im-1;js=1;je=jm-1;ks=0;ke=km
+  if(ir>0) is=0
+  if(ir<isize-1) ie=im
+  if(jr>0) js=0
+  if(jr<jsize-1) je=jm
+  lspg_i0=.false.;lspg_k0=.false.;lspg_km=.false.
+  spg_im_beg=im-4;spg_im_end=ie;spg_jm_beg=jm-4;spg_jm_end=je
+  if(ir<isize-1) then
+    spg_im_beg=-1;spg_im_end=-1
+  endif
+  if(jr<jsize-1) then
+    spg_jm_beg=-1;spg_jm_end=-1
+  endif
+  allocate(q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),initial(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5))
+  allocate(actual,mold=initial);allocate(q_d,mold=initial);allocate(qwork_d,mold=initial)
+  do m=1,5
+  do k=-hm,km+hm
+  do j=-hm,jm+hm
+  do i=-hm,im+hm
+    initial(i,j,k,m)=real(m,real_kind)+sin(.19e0_real_kind*(i+ir*im)+.27e0_real_kind*(j+jr*jm)- &
+      .32e0_real_kind*(k+kr*km))+.01e0_real_kind*rank
+  enddo
+  enddo
+  enddo
+  enddo
+  do mode=1,3
+    lspg_im=mode/=2;lspg_jm=mode/=1
+    if(lspg_im) then
+      allocate(sponge_damp_coef_im(spg_im_beg:spg_im_end,0:jm,0:km));sponge_damp_coef_im=.04e0_real_kind
+    endif
+    if(lspg_jm) then
+      allocate(sponge_damp_coef_jm(0:im,spg_jm_beg:spg_jm_end,0:km));sponge_damp_coef_jm=.03e0_real_kind
+    endif
+    call init_sponge_gpu()
+    q=initial;q_d=initial
+    call spongefilter_layer()
+    if(lspg_im) call apply_xmax_sponge_gpu()
+    if(lspg_jm) call apply_ymax_sponge_gpu()
+    actual=q_d
+    if(.not.all(ieee_is_finite(q)).or..not.all(ieee_is_finite(actual))) error stop 'nonfinite original sponge'
+    error=maxval(abs(q-actual))
+    call MPI_Allreduce(error,global_error,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(real_bytes==8.and.global_error>2.e-10_real_kind) error stop 'original CPU/GPU sponge mismatch'
+    write(path,'(a,a,i1,a,i8.8,a)') trim(prefix),'.mode',mode,'.rank',rank,'.bin'
+    open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted')
+    write(unit) [im,jm,km,hm,numq],[is,js,ks],[ie,je,ke], &
+      [spg_im_beg,spg_im_end,spg_jm_beg,spg_jm_end],mode
+    write(unit) initial,q,actual
+    close(unit)
+    if(rank==0) print *, 'ORIGINAL_SPONGE_PASS ',mode,global_error
+    call release_sponge_gpu()
+    if(allocated(sponge_damp_coef_im)) deallocate(sponge_damp_coef_im)
+    if(allocated(sponge_damp_coef_jm)) deallocate(sponge_damp_coef_jm)
+  enddo
+  call release_halo_exchange_buffers_gpu()
+  deallocate(q,q_d,qwork_d,initial,actual)
+  call MPI_Finalize(ierr)
+end program

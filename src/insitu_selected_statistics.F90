@@ -6,7 +6,12 @@ module insitu_selected_statistics
   use insitu_sample_moments, only: sample_moment_size,push_sample_moments,decode_sample_primitives
   use insitu_time_integral, only: clipped_trapezoid
   use ieee_arithmetic, only: ieee_is_finite
-#ifdef _CUDA
+#ifdef ASTR_GPU_CPP
+  use insitu_selected_device_cpp, only: selected_moment_device, &
+    allocate_selected_moments_gpu=>allocate_selected_moments_cpp, &
+    release_selected_moments_gpu=>release_selected_moments_cpp,download_selected_moments_cpp,upload_selected_moments_cpp, &
+    selected_moments_present_cpp,selected_moments_bytes_cpp,move_selected_moments_cpp,gather_selected_moments_cpp
+#elif defined(_CUDA)
   use insitu_sample_moments_gpu, only: selected_moment_device,allocate_selected_moments_gpu, &
     release_selected_moments_gpu,gather_selected_moments_gpu,selected_profile_workspace_bytes_gpu, &
     selected_external_workspace_bytes_gpu
@@ -37,7 +42,7 @@ module insitu_selected_statistics
     integer,allocatable :: indices(:,:)
     integer(int64),allocatable :: keys(:)
     real(real_kind),allocatable :: states(:,:)
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     type(selected_moment_device) :: device
 #endif
     integer(int64) :: last_step=-1,segments=0,coverage_id=0,coverage_parent=0,coverage_step=-1
@@ -58,7 +63,7 @@ module insitu_selected_statistics
     procedure :: set_active=>set_selected_statistics_active
     procedure :: sample_host=>sample_selected_statistics_host
     procedure :: sample_external=>sample_selected_statistics_external
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     procedure :: sample_device=>sample_selected_statistics_device
 #endif
     procedure :: find=>find_selected_statistics
@@ -104,7 +109,9 @@ contains
     class(selected_statistics),intent(in) :: this
     integer,intent(in) :: g
     present_state=allocated(this%groups(g)%states)
-#ifdef _CUDA
+#ifdef ASTR_GPU_CPP
+    if(this%on_device) present_state=selected_moments_present_cpp(this%groups(g)%device)
+#elif defined(_CUDA)
     if(this%on_device) present_state=associated(this%groups(g)%device%states)
 #endif
   end function
@@ -154,7 +161,14 @@ contains
       pos=pos+25
       words(pos:pos+3*n-1)=int(reshape(this%groups(g)%indices,[3*n]),int64);pos=pos+3*n
       if(.not.present_state) cycle
-#ifdef _CUDA
+#ifdef ASTR_GPU_CPP
+      if(this%on_device) then
+        allocate(downloaded(n,c),stat=status)
+        if(status/=0) return
+        call download_selected_moments_cpp(this%groups(g)%device,downloaded,present_state)
+        if(.not.present_state) return
+      endif
+#elif defined(_CUDA)
       if(this%on_device) then
         allocate(downloaded(n,c),stat=status)
         if(status/=0) return
@@ -304,10 +318,15 @@ contains
         values(:,m)=word_to_real(words(pos:pos+n-1));pos=pos+n
       enddo
       if(this%on_device) then
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
         call allocate_selected_moments_gpu(restored%groups(g)%device,restored%groups(g)%indices,c,valid)
         if(.not.valid) goto 900
+#ifdef ASTR_GPU_CPP
+        call upload_selected_moments_cpp(restored%groups(g)%device,values,valid)
+        if(.not.valid) goto 900
+#else
         if(n>0) restored%groups(g)%device%states(:n,:)=values
+#endif
 #endif
       else
         call move_alloc(values,restored%groups(g)%states)
@@ -331,7 +350,7 @@ contains
     ok=.false.
     if(.not.all(ieee_is_finite(window)).or.window(2)<=window(1)) return
     if(any(intervals<1).or.any(cells<1).or.any(origin<0).or.any(origin+cells>intervals)) return
-#ifndef _CUDA
+#if !defined(_CUDA) && !defined(ASTR_GPU_CPP)
     if(on_device) return
 #endif
     call this%release()
@@ -520,7 +539,7 @@ contains
         if(covariance) this%groups(g)%velocity_slots=[1,2,3]
         call move_alloc(indices,this%groups(g)%indices);call move_alloc(keys,this%groups(g)%keys)
         if(this%on_device) then
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
           call allocate_selected_moments_gpu(this%groups(g)%device,this%groups(g)%indices,c,valid)
 #endif
         else
@@ -554,7 +573,9 @@ contains
     destination%covariance=source%covariance;destination%failed=source%failed
     call move_alloc(source%indices,destination%indices);call move_alloc(source%keys,destination%keys)
     call move_alloc(source%states,destination%states)
-#ifdef _CUDA
+#ifdef ASTR_GPU_CPP
+    call move_selected_moments_cpp(source%device,destination%device)
+#elif defined(_CUDA)
     destination%device%states=>source%device%states;destination%device%indices=>source%device%indices
     destination%device%invalid=>source%device%invalid
     destination%device%profile_weights=>source%device%profile_weights
@@ -672,20 +693,31 @@ contains
     ok=success
   end subroutine
 
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
+#ifdef ASTR_GPU_CPP
+  subroutine sample_selected_statistics_device(this,step,time,const2,const6,ok)
+#else
   subroutine sample_selected_statistics_device(this,step,time,hm,q,const2,const6,ok)
     use cudafor
+#endif
     class(selected_statistics),intent(inout) :: this
+#ifdef _CUDA
     integer,intent(in) :: hm
+#endif
     integer(int64),intent(in) :: step
     real(real_kind),intent(in) :: time,const2,const6
+#ifdef _CUDA
     real(real_kind),device,intent(in) :: q(-hm:,-hm:,-hm:,:)
+#endif
     logical,intent(out) :: ok
     real(real_kind) :: weights(2)
     integer :: g,nf
     logical :: seed,repeat,valid,success
     ok=.false.
-    if(.not.this%configured.or..not.this%on_device.or.size(q,4)/=5) return
+    if(.not.this%configured.or..not.this%on_device) return
+#ifdef _CUDA
+    if(size(q,4)/=5) return
+#endif
     success=.true.
     do g=1,size(this%groups)
       if(.not.this%groups(g)%active.or.this%groups(g)%failed) cycle
@@ -696,10 +728,15 @@ contains
       endif
       if(repeat) cycle
       nf=this%groups(g)%nfields
+#ifdef ASTR_GPU_CPP
+      call gather_selected_moments_cpp(this%groups(g)%device,this%groups(g)%field_ids(:nf),const2,const6,weights, &
+        this%groups(g)%previous,this%groups(g)%covariance,valid)
+#else
       call gather_selected_moments_gpu(q,this%cells(1),this%cells(2),this%cells(3),hm, &
         this%groups(g)%device%indices,this%groups(g)%field_ids(:nf),const2,const6,this%groups(g)%device%states, &
         weights,this%groups(g)%previous,this%groups(g)%covariance,this%groups(g)%device%invalid,valid, &
         sample_count=size(this%groups(g)%keys))
+#endif
       if(.not.valid) then
         this%groups(g)%failed=.true.;this%groups(g)%continuous=.false.;success=.false.;cycle
       endif
@@ -789,7 +826,9 @@ contains
       host_bytes=host_bytes+40+int(n,int64)*(3*storage_size(0)/8+8)
       if(.not.group_has_state(this,g)) cycle
       if(this%on_device) then
-#ifdef _CUDA
+#ifdef ASTR_GPU_CPP
+        device_bytes=device_bytes+selected_moments_bytes_cpp(this%groups(g)%device)
+#elif defined(_CUDA)
         device_bytes=device_bytes+size(this%groups(g)%device%indices,kind=int64)*storage_size(0)/8+ &
           size(this%groups(g)%device%states,kind=int64)*real_bytes+storage_size(0)/8
         device_bytes=device_bytes+selected_profile_workspace_bytes_gpu(this%groups(g)%device)
@@ -803,7 +842,7 @@ contains
 
   subroutine release_selected_statistics(this)
     class(selected_statistics),intent(inout) :: this
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     integer :: g
     if(allocated(this%groups)) then
       do g=1,size(this%groups)

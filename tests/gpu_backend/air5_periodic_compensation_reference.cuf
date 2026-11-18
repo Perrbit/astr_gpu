@@ -1,0 +1,50 @@
+module commarray_gpu
+  use cudafor
+  use iso_fortran_env,only:real64
+  implicit none
+  real(real64),device,allocatable :: q_d(:,:,:,:),carry_d(:,:,:,:)
+end module
+module periodic_reference
+  use cudafor
+  use iso_fortran_env,only:real64
+  implicit none
+  integer,parameter :: real_kind=real64
+contains
+#include "frozen_periodic_kernels.inc"
+#include "frozen_compensation_math.inc"
+end module
+program air5_periodic_compensation_reference
+  use commarray_gpu
+  use periodic_reference
+  implicit none
+  integer,parameter :: n=8,h=5
+  real(real64) :: base(11),q(-h:n+h,-h:n+h,-h:n+h,11),carry(0:n,0:n,0:n,11), &
+    expected_high(11),expected_carry(11),out(6,11)
+  integer :: c,u,status
+  character(1024) :: input,output
+  call get_command_argument(1,input);call get_command_argument(2,output)
+  open(newunit=u,file=trim(input),access='stream',form='unformatted',status='old');read(u)base;close(u)
+  allocate(q_d(-h:n+h,-h:n+h,-h:n+h,11),carry_d(0:n,0:n,0:n,11))
+  do c=1,11
+    q(:,:,:,c)=base(c);carry(:,:,:,c)=0.0_real64
+    carry(0,:,:,c)=scale(base(c),-60);carry(n,:,:,c)=-scale(base(c),-60)
+    call compensated_mean(base(c),base(c),carry(0,1,1,c),carry(n,1,1,c),expected_carry(c))
+    expected_high(c)=0.5_real64*base(c)+0.5_real64*base(c)
+    call compensated_normalize(expected_high(c),expected_carry(c))
+  enddo
+  q_d=q;carry_d=carry
+  ! These are the physical-state operations in the all-periodic NP=1 fast branch.
+  ! Its later halo-only/primitive refreshes do not modify physical q or carry.
+  call qswap_x_kernel<<<1,256>>>(n,n,n,h,11)
+  status=cudaDeviceSynchronize();if(status/=0)error stop 'original periodic x'
+  call qswap_y_kernel<<<1,256>>>(n,n,n,h,11)
+  status=cudaDeviceSynchronize();if(status/=0)error stop 'original periodic y'
+  call qswap_z_kernel<<<1,256>>>(n,n,n,h,11)
+  status=cudaDeviceSynchronize();if(status/=0)error stop 'original periodic z'
+  q=q_d;carry=carry_d
+  do c=1,11
+    out(:,c)=[q(0,1,1,c),q(n,1,1,c),carry(0,1,1,c),carry(n,1,1,c),expected_high(c),expected_carry(c)]
+  enddo
+  open(newunit=u,file=trim(output),access='stream',form='unformatted',status='new');write(u)out;close(u)
+  deallocate(q_d,carry_d)
+end program

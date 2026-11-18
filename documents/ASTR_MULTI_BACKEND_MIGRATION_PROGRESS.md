@@ -1,12 +1,145 @@
 # ASTR 多后端迁移进度
 
-更新日期：2026-11-13。主计划：`ASTR_MULTI_BACKEND_MIGRATION_PLAN.md`。
+更新日期：2026-11-18。主计划：`ASTR_MULTI_BACKEND_MIGRATION_PLAN.md`。
 截至MB5b的首期goal已完成，实施基线为ff7a320及本轮工作区改动，
 包含正式输出/恢复、性能基线及设备缓冲MPI；不包含KEEP/ME6、紧致格式、
 复杂物理边界、AIR5或原位渲染。不能据此宣称完整ASTR已适配DCU。
 2026-11-13：MB0--MB5b在上述周期TGV范围内完成。最终证据索引见第9.7节。
+截至MB7的迁移goal已由用户恢复为active，以2df6d1d及已确认计划修订为基线；
+MB6/MB7尚未完成，起始依赖核查见第10节。CPP-P性能优化仍等待MB8完成后执行。
+2026-11-17四项后续修订已获批准并完成本地代表闭环，见10.169；完整goal仍active。
+本轮DCU数值补余及两处启动声明节点复核已完成，见10.170--10.172；
+128277354、128277778均COMPLETED，不将仍有任务体失败的128272750改记通过。
+2026-11-17用户已确认FMA方案A，见10.176；10.173--10.175的
+该待审批项已解除，当前编译设置未改，完整goal未据此标记完成。
+MB8已按主计划5.2开始接线；基础物性及设备状态组件的本地证据见10.177。
+10.178补齐源项/Jacobian/LU6/ROS-2共用数学层及首轮G1；V-T稳定
+能量差和分层口径已获批，保留原q到瞬时源项未通过的近平衡记录。
+10.179补齐事务/IEEE和代表控制检查，并将化学半步接入现有设备
+上下文及Fortran C ABI；局部字段、控制历史和缓存已取得本地证据。
+10.180补齐冻结声速/CFL和11分量RK3字段组件，本地FP64/非反应
+FP32共享诊断检查通过；空间通量仍在接线，未据此开放完整AIR5。
+10.181新增驻留Tv/组分梯度与黏性/热/组分扩散通量，解析梯度及
+原CPU/旧GPU局部通量对照通过；界面限制和散度/MPI仍待。
+10.182记录界面约束参考的编译分歧。10.183已定位并修正测试包装
+的源码编译模式，撤回不再需要的谓词拆分提议：原函数同单元按
+原`.cuf`模式/O2编译即可通过，原GPU生产源码未改。
+10.184补齐驻留11分量中心/MP7/LLF及扩散界面候选的本地组件证据；
+完整预算字段、受限RHS/MPI和普通AIR5主循环仍未接通。
+10.185新增驻留对称预算/受限面/RHS及接口平面组件，恒定场通过；
+非均匀MP7在界面投影返回201。已在原CPU/旧GPU复现邻近输入的
+同类失败，公共算法数值修订待批准；未绕过失败或继续下游矩阵。
+10.186独立补齐对称对流私有界面MPI组件：本地NP=1/2 x/y/z的
+pinned/device逐位数据检查通过，pinned双rank Memcheck干净；
+设备路径仍有UCX工具报告，不记为Memcheck通过。未解除10.185阻断。
+10.187独立补齐27/33通道黏性通量halo的separate/packed/packed-overlap
+组件，含本地四rank二维分解；仍未接普通AIR5完整推进，未改公共投影。
+10.188补齐保守滤波的独立共用数学层，原CPU/旧GPU及有理数精确
+符号检查通过；尚未接设备场、滤波专用MPI或普通AIR5时间循环。
+10.189接入保守滤波设备场和专用MPI，四组夹具26次新后端运行通过；
+重复振动能近下界夹具在三实现复现提交后机器级越界，数值修订待批，
+不将这部分记为完整滤波或普通AIR5通过。
+10.190发现CPU legacy未限幅分支擦除正痕量，GPU不擦除，已冻结
+原函数/核诊断；CPU最小修订待批，legacy未迁入新后端。
+10.191独立接入等温底壁与旧定压状态出口的数学/设备写入组件，
+不是完整NSCBC或完整边界调度；普通AIR5、G2及DCU仍待。
+10.192补齐固定目标与本地j剖面入口的设备持久存储、显式更新和
+MPI物理面选择组件，528次本地调用及双rank Memcheck通过；
+不是完整边界调度或普通AIR5推进。
+10.193补齐HBL出口、相似/入射顶面、动态顶面ghost及边界carry
+复位组件；672状态、68次面写入、128组carry掩码及Fortran接口
+通过。首次差异定位为原插值的FMA语义，新实现显式保留该操作，
+全局编译设置不变；完整边界调度和特征RHS仍待。
+10.194补齐特征顶面纯算子及实际RHS装配接口；461组固定热力学
+算子通过，实际q装配的原参考912行中105行超原预算，已停在原
+参考比较，未执行C++字段矩阵。定位为全传入零松弛的大数相减，
+以及近声速声学分类的舍入放大；新增公共数值修订待人工决定。
+10.195独立接入HBL及postshock状态边界的Fortran/MPI调度，保留
+逐面全局放行和成功后的carry处理。121个rank-case及44个rank级
+故障检查通过，物理节点缓存显式刷新后匹配原GPU；尚未串入普通
+AIR5推进或补齐q/carry共享平均、最终halo刷新，未解除四项待批。
+10.196定位原GPU全周期单rank快分支漏补偿，新增最小路由修订
+待人工决定，原路径未修改。10.197接入显式逐轴补偿面交换与归一化，
+在HBL式拓扑完成本地pinned/device MPI、最终halo和缓存组件检查；
+不是该快分支修复或普通AIR5控制器接通，当前五类数值决定待批。
+10.198补齐批次物性刷新接口：一次清零、各区域保留失败、最后统一
+查询。独立故障/缓存隔离及原通信矩阵复验通过，不改转换数学、
+q/carry/history或单区域调用合同；尚未接入普通AIR5阶段控制器。
+10.199补齐化学区域批次执行及Fortran/MPI状态、计数/极值归约。
+99个rank-case和22个全局故障观察通过，packed/quiet不改设备状态；
+尚未接其后的边界/halo或完整两半步/RK循环，未解除五项待批。
+10.200迁入按需AIR5主时间统计SUM44/ENDPOINT14设备字段，六个
+有效样本及两个故障样本在原1e-14预算内对照通过；数组恢复、同步
+模式及十组输入字段隔离逐字一致。公共时钟/正式统计文件和原位
+Tv/组分中心矩仍待，不将这项组件结果当作MB8-G完成。
+10.201补齐AIR5主统计时钟、启停/窗口操作接口与现行统计HDF5读写。
+本地NP=1/2 x/y/z/4同拓扑统计续接逐字一致，旧GPU文件到新C++
+的继承满足原预算。完整AIR5时间循环/检查点批次、跨拓扑、原位
+均值供应者及DCU仍待，五项数值决定未解除。
+10.202以精确有理数几何细化公共投影失败，并形成NR1--NR5待审
+数值修订方案。原接受/拒绝的两个最终输入都有满足原返回预算的
+box内FP64见证；未实现候选或修改生产数学，五项仍待审批。
+10.203用户批准NR3/NR5最小修复及NR1组件实现。NR3通过三痕量/
+一真正限幅对照，NR5通过实际周期控制器六组合和Memcheck；NR1
+候选通过常规组件和原投影端点，但99组界面邻域仍失败，生产
+投影恢复原公式、候选证据保留。NR2/NR4未实施。
+10.204将NR1余下12个未找到见证的输入也证明为可行：15组最终
+通量见证均通过原设备返回预算和两侧能量约束；新的候选构造
+方向待确认，未改生产数学。
+10.205接入AIR5旧式滤波的C++设备组分备份和末次修复组件；
+32组旧GPU对照逐字相同。三轴滤波及补偿调度仍待。
+10.206接入AIR5旧式滤波三轴内点与普通端部的设备方向算子；
+全分量/单分量24组对照逐字一致。高阶壁面覆盖、三轴交换和
+补偿调度仍待。
+10.207接通AIR5旧式滤波设备阶段：高阶壁面、三轴halo和提交、
+补偿余量/主值双遍、组分修复及全rank失败归约。32组连续两次
+滤波与旧GPU逐字一致，另有4组单rank非法状态传播对照。
+10.208接通Fortran AIR5 RK空间准备入口：滤波选路、状态边界、
+内部转换、共享面q/carry协调、最终halo刷新及面物性更新。
+17组本地阶段运行通过；尚未启动普通完整时间步。
+10.209接入AIR5 full-state/layered扩散预算与RHS调度。本地
+12组有效对照、两组均匀场完整黏性链和四组故障归约通过；
+强能量限幅的layered对照未过RHS预算，不进入完整时间步。
+10.210保留扩散例程实际乘加次序，强layered限幅复验通过。
+完整22组旧GPU对照和2组均匀场测试通过，最大RHS预算比
+0.9581747547；不代表普通AIR5整步或DCU已验收。
+10.211接通原始对流RHS及三个非symmetric限制器的设备/MPI阶段。
+中心15组原GPU对照和故障隔离通过；双卡选择性MP7少量总能量
+RHS点仍超原预算，未准入普通AIR5整步。
+10.212按旧MP7左右面乘加次序修订后，双卡光滑矩阵6组通过。
+新增真正触限的MP7双卡z夹具在首组限幅后总能量RHS超预算
+（1.77129倍）；旧系数回放不能消除差异，普通整步仍未放行。
+10.213定位为右侧低阶LLF总能量负分裂的乘加次序。修订后33组
+本地对照通过，包含6组实际触限及6组故障隔离；同点绝对差
+降至1.63709e-10。只关闭非symmetric对流组件的本地门槛。
+10.214接通实际AIR5梯度、Ducros/压力曲率、标量halo及掩码扩张。
+单rank和双rank x的9组传感器至对流RHS对照通过；双rank z
+首组掩码匹配、原始RHS通过，限幅RHS仍在近零残差处超预算。
+10.215定位并修正限幅面通量的局部乘加次序，真实传感器15组
+全部通过（含双rank z）；无黏传感器不再分配黏性工作区。
+10.216接通连续AIR5输运RK3阶段，对旧普通astr的冻结输运
+参考完成5组逐阶段对照，含双卡扩散与捕获正激波。化学两半步
+及C++普通主程序调度仍待接入。
+当前新C++普通astr仍未接通AIR5完整推进、统计/续算或DCU AIR5，
+不将组件结果表述为反应流或物理验收完成。
 
 ## 1. 当前状态
+
+以下四项已获人工批准并完成本地代表复验，结果见10.169：
+1. H1旧stored_sp补齐原高阶黏性闭合；同模式四步、LP1恢复及
+   修正的原SP分支双rank Memcheck通过。
+2. MP3 bc50采用批准的同状态/轨迹区分，传感器公式不改；
+   原x物理端子集推进、标记、观察隔离及Memcheck通过。
+3. HIT/2dvort/MP7 Sod接通现行同拓扑检查点，三后端2+2通过；
+   HIT恢复实际使用冻结velocity.h5。
+4. CPU turbstats恢复div赋值并清零rhoe，NaN消失，保存q独立
+   均值及报告恢复核对通过，未顺带增加GPU统计量。
+
+批准前已先完成不受影响的FP32入口和三个已有初场入口；当前
+已按批准范围完成参考修订、MP3判据和现行恢复代表闭环，不以新增
+边缘组合或重复运行旧证据替代这些必要收口。新的DCU任务仍须另行申请
+具体提交/查询授权；本轮128277354/128277778均已完成且提交授权已用毕，
+不因goal续推而再次提交或查询其它作业。目标范围保持不变。
 
 | 阶段 | 状态 | 已有证据或缺项 |
 |---|---|---|
@@ -19,6 +152,142 @@
 | MB4 输出与续算 | 已完成首期闭环 | 本地及DCU精确/非精确恢复；DCU NP=2/4三维场、27切片及输出隔离通过；见9.7 |
 | MB5a 性能基线 | 已完成限定配置基线 | 本地新旧及DCU 128³五窗口；新C++本地单卡慢于旧实现，DCU四卡device效率79.86%；显存口径见9.4--9.5，不作跨硬件代码加速比较 |
 | MB5b 设备缓冲MPI | 已完成首期代表矩阵 | 本地NVIDIA及DCU NP=1/2/4、pinned/device和begin/end实际通过；不扩大到多节点/RDMA |
+| MB6 紧致及成熟KEEP/ME6 | 本地FP64及原生精度代表已有证据；两批DCU紧致/KEEP/ME6、原生FP32及恢复代表通过，待逐项收口 | 两层PCR、独立滤波、KEEP双点/紧致展开、ME6私有边角halo、代表周期/壁面续算；物理端节点带/ME6及紧致滤波见10.15--10.18、10.31，原生精度见10.109--10.127；DCU128170436/128172334见10.128/10.130，限定已执行组合，不代表MB6完成 |
+| MB7 复杂非反应流及消费者 | 本地代表主程序、原位消费者、平板、x向NSCBC及bc52顶面/联合主链取得证据，其余待推进 | 壁面/波纹ME6及消费者见10.23--10.33；传感器、上风和平板见10.34--10.43；bc12/22/52组件与x向主程序、低阶411/421、RTI/LDC见10.44--10.56；高阶壁面、SBP63/SAT、海绵、吹吸和时序入口见10.61--10.67；统计/窗口/重分区、低精度和crashfix见10.72--10.90。N7--N11修复及顶面主链见10.87--10.95，KEEP/ME6非反射联合链及消费者见10.96--10.97，MP7-LD 743e/643c incoming_only联合及主统计见10.98--10.100。更广MP7组合、GRCBC、高阶开边界、更广CURVE/源项/消费者联合、保正、低精度余项和DCU矩阵仍待；不代表MB7完成 |
+| MB8 固定AIR5双温 | 局部物性、化学半步、边界、滤波和输运组件已有证据；阶段入口通过冻结输运的连续RK3对照 | 10.177--10.216。NR3/NR5已修复；NR1候选未通过界面邻域试验，后续候选构造待决定；NR2/NR4未实施。普通主循环/G2、完整输出与统计/恢复集成及DCU仍待 |
+
+当前原生精度集成见10.116--10.124：普通C++ FP32周期TGV已有
+16³四步固定/自动、显式/紧致、代表双卡、输出/精确及非精确
+恢复与观察隔离证据；物理端显式滤波组件已补齐。此前“主程序
+仍不可构建”的组件阶段描述为历史状态。普通非周期、其余
+原生可选消费者与DCU仍待，根构建开放不等于全组合放行。
+10.118另取得低阶平板及RTI的代表性原生FP32证据；MP7-LD
+静态读网格剖面的原生精度检查点当时待批，随后已获批准，
+本地代表输出/恢复见10.146。
+10.119补齐FP32紧凑平均统计组件、真实平板固定/自动采样、
+同拓扑恢复及已有x/z多次重分区历史；不代替长期统计充分性。
+10.120补齐原生FP32海绵组件/代表主程序，并核实H1/Hermite7/
+SBP63/ME6普通程序的既有FP64限制；不新增其FP32准入。
+10.121补齐原生FP32低阶x-NSCBC组件和OpenShock代表推进/
+输出/精确恢复；非均匀度量高切向速度出口的较大RHS差值
+单列，不作为FP32生产精度结论，也不外推bc52或联合平板。
+10.122另补齐bc52原生组件、黏性源项投影，以及MP7-LD/643c
+联合incoming_only平板的双卡固定/自动推进；这里只做推进，
+静态ninit3的FP32输出/恢复当时待批，随后按10.146接回。
+高切向速度组件的
+较大差已用只改变FMA的旧GPU测试构建定位，生产编译不变。
+10.123补齐原生FP32主统计的运行时启停/改频率、禁用期间恢复
+及旧采样写出交接；10.124补齐原生周期KEEP的显式/紧致普通
+推进、代表输出/精确及非精确恢复。保留紧致滤波较大差值，
+不据短窗放行生产精度；原生低阶壁面KEEP代表主链随后见10.127，
+其余开放边界及更广消费者、新DCU证据仍待。
+10.125定位的另一出口/底壁展向漏项随后获批并修复，10.126
+完成FP64黏性GRCBC四步代表回归、三方向双卡及精确恢复；
+不再等待这两项CPU修复的审批，不据此宣称长期SBLI物理验收。
+已授权的DCU首批128170436随后完成13项短运行及统计核对，
+见10.128；其余DCU范围仍须另行授权，不据此完成全部MB7。
+随后获批的第二批128172334已完成KEEP/ME6、静态波纹壁面、
+GRCBC/H1、原生FP32周期KEEP和归档代表，见10.130。
+第三批128175780完成前14项入口/修复历史/混合黏性/源项代表，
+但CPU吹吸参考继承GPU同步选项而在推进前被拒绝，整批FAILED；
+其余7项随后获批在128215915执行，计算完成后遇测试比较器
+的HDF组处理错误；离线完整复核见10.147，不改写原失败记录。
+本地原生FP32选区统计、剖面与流动派生量见10.129；新热/
+壁面诊断的既有FP64限定未放开，完整MB6/MB7仍须逐项收口。
+
+MP预算组件随后完成获批修订（10.132），新C++计算/通信主链
+取得本地平板及激活型阶段代表证据（10.133）；不再是完全没有
+实现。10.134补齐FP64 incoming_only/H1联合并修正新C++遗漏
+的H1边界对流装配；10.135补齐正常数范围的FP32预算、实际
+incoming_only RK和激活型MPI阶段，次正规数浮点模式差异按
+用户批准单列。正式MP恢复身份已于2026-11-17获批并在本地
+按10.146接回，DCU新MP及其余
+联合仍待；不将原有FP64专用H1扩展为FP32能力。
+10.140补齐此前明确拒绝的C++自适应输出动能采集器：FP64及
+原生FP32的16³周期TGV取得监测、数值场、同拓扑精确恢复、
+代表旧GPU到新后端非精确恢复和开关隔离证据；既有16/32³
+周期Cartesian准入未扩大，新采集器的DCU运行及图像联合未验证。
+10.141补齐原生FP32既有32³周期/y-wavy CURVE的六组普通主程序
+短测、40份同状态梯度、精确恢复与完整q/halo观察隔离；几何与
+原实现逐字一致。最大梯度差7.77128e-5已在捕获状态上由FMA
+舍入重算复现，保留编译设置及D10误差原值。曲线网格图像与
+新DCU执行仍未取得证据，不据此认领长期FP32精度。
+10.142随后补齐原生FP32新NVIDIA主程序的实际图像代表：32³
+笛卡尔、周期及y-wavy曲线网格，两设备管线及固定/自动步长。
+截面、Q和瞬时流线共45张正式段JPEG及15张续算JPEG，渲染
+字段/几何回读记录为0；状态/控制及续算像素逐字一致。原生
+均值/热壁面图像、更广联合及新DCU仍待，不完成整个MB7。
+10.143补齐其中的原生Reynolds/Favre均值图像代表，共18张
+正式段、9张恢复段JPEG，状态/统计与渲染开关隔离，恢复
+数据集和图片一致。当时旧式壁面来源的C++接线未实现，
+后续10.148--10.154补齐下述代表；新的热/剪切诊断依旧受
+FP64限制，不能混称为旧式壁面来源。
+10.145已完成获批的旧壁面均值解析修复及四份新原参考；
+10.146接回MP数值修订身份与静态剖面FP32输出/恢复，10.147
+完成旧DCU补余7项的独立数值复核。上述审批不再列待决策。
+10.148--10.149接通旧壁面供给及wall-time历史，10.151--10.152
+接通静止SBLI物理中跨曲线，10.153--10.154接通M12稀疏探针
+及展向平均壁面CSV。10.155补齐M12/通用平板预设的本地
+NVIDIA实际图像代表。10.156接回FP64周期32³ TGV的瞬时与
+已保存均值只读预览，standard-device代表和独立均值halo
+检查已通过；10.157另补齐双卡均值实际图片和现存M12物理
+坐标预览、源/状态/RNG隔离及匹配原图片/轨迹，直连裁剪仍待。
+高阶八层壁面曲线/历史、正式会话及原始采样已随后按10.159--
+10.161完成本地代表，不据此认领全部壁面图像。
+上述新能力的DCU执行仍待，不将代表验证扩大为全部完成。
+10.158补齐当前公共源的DTK26.04/GNU12/gfx906构建、两种
+精度主程序及20个可执行文件的动态依赖检查；未进行新的
+Slurm操作或GPU执行，新批次数值验证仍需单独授权。
+10.159获批任务128241288在manifest路径处退出、未进入GPU；
+修正后的第二次提交后来获批并完成，见10.164。10.162的新壁面GNU/DTK两精度
+构建与整数头核对独立通过，不替代该数值批次。10.163另补齐
+FP64双卡事件/时间窗与动态设备出图联合，不恢复旧静态入口。
+10.165核查H1 mixed时发现旧CUDA Fortran的stored_sp x/y物理端
+未接H1高阶黏性闭合；新C++已有高阶分支，不能为匹配错误
+参考而降级。该组合的验收停止，旧参考修订待人工决定。
+10.166定位MP3 bc50端点原始传感器的舍入放大，判据修订待批；
+10.167补齐原生FP32时序入口的固定/自动、窗口及精确恢复。
+10.168补接hit、2dvort和MP7 sod三个已有初始化入口的C++推进，
+FP64三方向双卡代表通过；现行检查点登记尚待批准。新发现的
+CPU HIT专用turbstats未初始化量问题仅存档，不修复或移植。
+
+2026-11-15用户已明确批准N7/N8/N9/N10的既有最小修复提案；
+N7/N8/N9随后完成10.87的本地代表修复/复验；N10的共享OR、hm层
+halo及真实界面通量组件已按10.88修复，均不再等待审批。
+N10原问题为非零crinod在MPI接口的标记/通量不一致，见10.71；
+新C++普通FP64阶段与非零历史代表续算随后接通，见10.89；
+实际输入轮询/设备历史开关组件见10.90，更广边界联合及DCU仍待。
+共享节点q/物性修复组件已通过，见10.70；当时FP32/mixed修复
+未放行，原生FP32组件及周期TGV生命周期随后见10.136，
+MP7-LD平板无正式输出联合见10.137；10.138另补FP64主状态的
+viscous_flux mixed修复TGV，其余mixed组合仍未准入。
+bc52代表普通主程序与KEEP/ME6非反射续算见10.91；联合22/52
+的KEEP/ME6交线和消费者补接见10.96--10.97；743e/643c MP7-LD
+incoming_only分阶段联合链见10.98--10.100。原无黏二维GRCBC
+窗口及H1生产定义主链见10.101--10.105，H1随机吹吸、数值
+消费者和两条渲染管线代表见10.106--10.108。更广MP7联合、
+低阶三维黏性GRCBC、高阶混合/主统计组合及DCU仍待，不等于
+全部NSCBC已迁移。
+普通MP7静态顶面平板的正式输出/续算注册见10.92。联合22/52
+原始参考的统计相位缺陷N11已按用户批准修正，见10.93--10.94；
+新C++联合KEEP/ME6及上述MP7-LD代表主程序随后接通。H1主
+平均在10.161的CPU启动曾被共享准入拒绝，随后获批，10.164
+已完成CPU/旧GPU/新C++主统计、采样隔离及精确恢复；不把
+选区统计当作主平均参考。原生FP32的CFL/瞬时标量组件见10.95，
+不等于完整FP32主程序、时间累计或输出消费者已完成。
+LP1为混合黏性存储候选在现行control.bin中的身份与同模式续算，见10.75；
+LP1/LP2另获明确批准，实施与本地代表结果见10.86。
+MP1进展见10.77：周期MP7的flux组件已接入，普通主程序
+原轨迹RHS门槛LP2问题及历史失败保留；批准后区分口径见10.86。
+其超限节点的逐界面归因见10.78：已确认是两份输入在同一算子下
+产生的一个FP32 ULP差；该事实与用户批准的范围分别记录。
+独立MP3最终通量存储的组件证据见10.79，普通主程序周期短窗及
+基本场/数值截面证据见10.80，原HBL1低阶平板两步见10.81。
+derivative的独立诊断存储/周期TGV见10.82，低阶剖面平板的壁面
+标量、时间均值与基本归档见10.83；候选检查点和更广工况仍未完成。
+原生FP32状态/halo的首个前置增量见10.84；其实际MPI载荷已是4字节，
+10.85补周期显式数值组件及四步组合；主程序/CFL/统计和其他算子/
+消费者仍未完成，不与旧CUDA Fortran结果混用。
 
 ## 2. 冻结参考
 
@@ -27,7 +296,8 @@
   全目录设为只读；`reference.json` 记录源码树、二进制来源和离线散列。
 - `source/` 不与当前工作区共享可变源码；`bin/` 保存参考可执行文件，
   `build_records/` 保存原缓存、编译/链接设置和库解析记录。
-- 参考范围仅为 FP64、standard 643e/643e、十阶显式滤波的周期五变量 TGV。
+- 初次冻结的运行证据范围仅为 FP64、standard 643e/643e、十阶显式滤波的周期五变量 TGV。
+  第10.3节另用同一不可变CPU/旧GPU二进制生成匹配紧致输入的新参考，未修改冻结源码或二进制。
 - 新鲜参考检查：16³ 区间、4个完整步、固定 dt=1e-3，CPU/GPU NP=1及
   NP=2 x/y/z 分解。最大缩放场差为 `1.1147314445468803e-15`；
   现有短测同时覆盖同拓扑精确续接及变更滤波配置的拒绝行为。
@@ -866,3 +1136,11815 @@ archive_127915636_np2/report.json，最大缩放差4.30e-15。
 依赖的NULL pointer-info诊断保留为独立事项，不谎称已采集完整硬件指标。
 平均场/统计产品、自动密集输出信号、紧致/PCR、KEEP/ME6、复杂边界/CURVE、
 AIR5、低精度及设备原位渲染继续属于后续接线/MB6--MB9，不纳入本期完成声明。
+
+## 10. 截至MB7的新goal起点
+
+用户已授权建立并推进新goal，但未授权新的Slurm操作、Git写操作、子代理或worktree。
+保留现有基线和证据，不操作127923877或A800旧任务，不提前开展CPP-P性能优化。
+交付范围及数值/恢复门槛以主计划4.3.1、5、5.1和6为准；不能只完成MB6就
+标记整个goal完成，也不能把旧CUDA Fortran产品当作新后端已接通。
+
+第一步从周期紧致独立组件开始，已核对：
+
+- src/compact_line_solver.F90已有矩阵、独立带主元LU参考、分块因子及PCR表生成。
+- src_gpu/compact_line_solver_gpu.cuf提供局部PCR、缩约PCR、周期修正及回代的
+  已有实现；新C++移植应沿用该数学定义，不用Thomas替代设备求解。
+- src/compact_operator.F90和src_gpu/compact_distributed_gpu.cuf管理分区/全局
+  接口。模块内分块缩约与跨rank接口系统须分开核查，不能用单rank通过替代全局耦合。
+- 现有compact_line_solver_probe的FP64组件门槛为最大缩放解差2e-10、归一化
+  线性系统残差1e-12；涉及复制、索引和序列化仍逐值一致。
+
+起始核查时尚无新C++紧致核，随后完成首个组件如下。后续接分布式接口、
+导数/滤波与普通主程序，不能用当前单组件证据替代这些交付。
+新消费者接入前应分别冻结与其成熟子集匹配的参考，不能将只覆盖显式TGV的
+0d0f367现有证据直接外推到所有紧致、边界或原位能力。
+
+### 10.1 MB6 首个两层PCR组件
+
+新增src_gpu/compact_line_solver.cu/.h/.F90：Fortran复用既有常系数因子预处理，
+按C ABI上传常量表；设备执行分块局部PCR、缩约系统PCR、周期秩二修正和回代。
+没有CPU求解RHS回退，也未改为批量Thomas。计划复用设备上下文的stream，
+持有固定RHS/解/工作缓冲；设备视图可供后续打包核直接访问。当前探针中的
+输入/结果主机复制是显式组件观察，不是每核回读或主程序已经接线。
+
+CPU参考模块与独立冻结0d0f367源码逐字节相同，SHA256为
+74565d56d75ed57ca7d8fc823a09b54d6e243b66e93829a22f743766a4a74e0b。
+本次组件另外用制造解/完整矩阵乘法及独立带主元LU对照，不把冻结显式TGV
+数据当作紧致算子的参考。src/compact_line_solver.F90没有修改。
+
+| 实际检查 | 结果 |
+|---|---|
+| 252组线求解 | n=2/7/127/128/129/257/513，分块4/128，周期导数/滤波矩阵及非周期非对称矩阵，1/5/11 RHS，explicit/dependency |
+| 最大缩放解差 | 6.6646541666468252e-15，对独立LU；制造解也满足2e-10 |
+| 最大归一化残差 | 8.2917531977844866e-16，门槛1e-12 |
+| 同步与输入隔离 | 两模式结果逐位相同；RHS逐位不变，缓冲地址跨solve不变 |
+| 生命周期 | 线计划借用期间拒绝销毁父上下文且保留句柄；先释放计划后可正常释放上下文 |
+| 组件自身最大受控设备分配 | 285528字节，不含父上下文、驱动或系统显存，不是生产规模预测 |
+| Compute Sanitizer | memcheck 0 errors/0 bytes leaked；initcheck 0 errors；racecheck 0 hazards/errors/warnings |
+| 普通astr与既有TGV | 根构建通过；8组显式TGV场/缓存/halo、观测与同步隔离通过 |
+
+入口为根CMake目标astr_backend_compact_line，源码tests/gpu_backend/compact_line_probe.F90。
+记录在results/multi_backend_mb6_20261113/native/的compact_line_final.log、
+compact_line_memcheck.log、compact_line_initcheck.log、compact_line_racecheck.log及
+existing_tgv_after_compact/。内存工具之后仅增加探针CPU参考有限性检查及分配量输出，
+设备核和C ABI未变，未因此重跑三套内存检查。
+
+DTK26.04/GNU12在登录节点通过同一目标的编译/设备链接与依赖预检，二进制
+SHA256为9af4d5d8d4f281b82bf48c2b9f8102ee71994de7806ad9721fe2ad3d459376c3。
+远端日志为~/weiph/backend_mb6_20261113/compact_configure.log、compact_build.log及
+compact_runtime_links.log。未在登录节点执行GPU程序，未操作Slurm或127923877。
+
+以上为首个线组件的证据边界；随后取得的分布式及主程序证据见下文。
+
+### 10.2 跨rank接口PCR
+
+src_gpu/compact_line_solver.cu/.F90现已接入独立方向通信器上的接口PCR。
+常系数端点响应和2x2消元系数由既有CPU模块预处理；实际RHS、局部求解、
+接口PCR、全局回代、周期秩二修正和重复端点恢复均在设备执行。
+不聚集物理RHS到CPU求解，不改为rank独立闭合。创建周期计划时仅回读
+8个端点常数构造一次2x2修正矩阵，不在逐次求解回读完整线。
+
+普通halo与紧致接口使用不同的私有重复通信器。pinned模式固定复用三个
+主机槽，device-aware模式直接传设备端点指针且不分配主机槽；接口每次仅
+传2*nrhs个FP64值。MPI前等待发送流就绪，接收后由同一stream消费，
+不新增通信线程或自动后端回退。计划持有本地线资源并阻止父上下文提前释放。
+
+入口为根目标astr_backend_compact_distributed和
+tests/gpu_backend/run_compact_distributed.py。本地结果：
+
+| 检查 | 实测结果 |
+|---|---|
+| 分区/矩阵/RHS | NP=1及NP=2 x/y/z；每rank216组，覆盖导数/滤波矩阵、周期/物理端、7/129/257区间、1/5/11 RHS和两种同步 |
+| 独立参考 | 全局带主元LU、制造解及完整矩阵残差；通信器先反序再按几何坐标重建 |
+| 最大缩放解差/恢复端点差 | 3.6312117370689831e-15，门槛2e-10 |
+| 最大归一化残差 | 8.9047661582738122e-16，门槛1e-12 |
+| 两种接口传输 | 同一拓扑的全部观测逐位相同；device-aware应用层host_stage_bytes与pinned分配均为0，不据此推断MPI内部传输机制 |
+| 内存 | NP=2 pinned memcheck：两rank均0 errors、0 bytes leaked |
+
+记录在native/distributed_pinned、distributed_device及distributed_memcheck，根为
+results/multi_backend_mb6_20261113。探针另支持四rank直线；最短区间取
+max(7,2*line_ranks+1)，确保每个本地PCR核心至少两个未知量。该四rank检查
+尚未运行，不能用双rank结果替代两轮接口PCR证据。11列仍不代表AIR5接通。
+
+### 10.3 本地普通紧致TGV与续算
+
+新增src_gpu/compact_operator.cu/.h/.F90，在现有设备字段上直接组装紧致
+导数/滤波RHS、调用全局线计划并写回梯度或通量散度。原始场布局不变，
+按已有批量上限处理线；不因该接线每核传输整场到CPU。紧致滤波按轴完成，
+每轴先刷新halo，批次求解后原地写回互不重叠的线；不额外分配显式qwork。
+scalar/full分别按单分量/五分量批次处理，沿用原选择及数值定义。
+ASTR_GPU_COMPACT_TRANSPORT仍独立选择pinned/device-aware，COMPACT_SYNC
+默认explicit，batch默认65535；普通halo和一般设备核的同步选择仍独立。
+
+参考由只读0d0f367 CPU/CUDA Fortran二进制实际运行匹配输入取得：
+16³、Re=1600、Ma=0.1、dt=1e-3、4个完整步、standard/RK3，分别覆盖
+643c/643c+compact10、643c/643c+explicit10、643e/643e+compact10。
+这些新运行保存在native/flow_compact_compact_trace、flow_compact_explicit、
+flow_explicit_compact的cpu/old_gpu子目录；不是借用显式参考外推。
+
+| 检查 | 实测结果 |
+|---|---|
+| 紧致导数+紧致滤波 | 本地NP=1及NP=2 x/y/z；与CPU/旧GPU的终态及三个RK阶段场/缓存差均通过2e-10，最高约4.40e-14 |
+| 分项RHS | 新C++对流及完整RHS与冻结实现同相位短窗对照，最大缩放差1.639223479177332e-12；不是强行把不同舍入轨迹称为完全同状态 |
+| 独立滤波组合 | 紧致导数+显式滤波NP=1/2 y、显式导数+紧致滤波NP=1/2 z，场、RHS、标量和步序通过 |
+| 存储/同步/通信隔离 | 双rank x的scalar/explicit/pinned与full/dependency、设备接口+设备halo结果物理q逐位相同 |
+| 非整除批次 | 双rank x、full/dependency、batch_rhs=127，覆盖跨分量批次及末尾不满批次；场和分项RHS通过同一门槛 |
+| 精确续算 | NP=2 x，连续4步与2+2恢复，全部15个HDF5数据集逐位相同；统计及步序一致 |
+| 非精确续算 | NP=2 x固定步长恢复最大场差约2.75e-14；单rank自动步长恢复另对照冻结CPU/旧GPU，场差约2.81e-14，恢复步序一致 |
+| 输出隔离 | 同配置检查点开/关终态物理q逐位相同 |
+| 原始量存档 | 双rank紧致路径2个三维场及27个固定索引截面，与冻结CPU/旧GPU逐字段/元数据对照通过；输出开/关物理q逐位相同，不包括紧致后处理梯度准入 |
+| 主程序内存 | NP=2紧致TGV memcheck：两rank均0 errors、0 bytes leaked |
+| 原显式路径 | 新接线后8组现有显式TGV的场、缓存、halo及观测/同步检查通过；线组件252组重查通过 |
+
+入口为run_compact_tgv_gate.py及run_cpp_restart_gate.py的compact选项。
+主要证据：native/flow_compact_compact_final、flow_compact_compact_rhs_v2、
+flow_compact_device、flow_compact_memcheck、flow_mode_isolation.log、
+restart_compact_np2、restart_compact_auto_np1、flow_compact_batch127、
+compact_primitive_archives及explicit_after_compact_flow。
+早期探针未同时选择第0步与终态第4步，分析器缺少对应快照；已改为显式
+选择primary=0/secondary=4并保留原失败记录，没有修改数值容差。
+
+本轮没有操作Slurm、127923877或A800作业。DCU主程序、局部线和分布式组件
+均已完成DTK26.04/GNU12/gfx906编译、设备链接与运行库预检，无not found。
+新增目标首次批量构建遇到顶层Makefile未登记目标；显式重新配置后已完成，
+原失败日志保留，不添加运行时重试。新主程序SHA256为
+2e8beb6a83923c25055e7b4b0ef472a447d91d42a7311365ffacdccd2ec537be。
+本地记录见dtk2604/compact_flow_build_final.log及compact_flow_runtime_links.log。
+已准备12个组件运行和18个16³/4步普通程序运行输入，位于
+results/multi_backend_mb6_20261113/dcu_batch；算例、独立参考和可执行副本已放在
+远端~/weiph/backend_mb6_20261113/run，计算体为run_compact_mb6_rocm.sh。
+尚未提交、未在登录节点执行GPU程序；计算节点短测仍须单独授权。
+
+以上为普通紧致路径的阶段记录；随后KEEP/ME6及CPU修订见10.4。
+
+### 10.4 周期KEEP/ME6及已批准的CPU初始化修订
+
+新增src_gpu/keep_operator.cu/.h，显式KEEP复用原算术平均双点通量；
+紧致KEEP复用CPU的294项、85个基函数展开表，由设备组装单项式RHS、
+调用已有全局PCR并累加通量。表只在初始化上传，物理RHS不回CPU求解。
+不把普通中心差分称为KEEP，也不将该实现称为严格熵守恒格式。
+
+新增src_gpu/me6opti_operator.cu/.h/.F90，复用既有ME6 G2系数及全度量
+半点投影、范数比混合导数惩罚。每阶段先将当前u/T扩展到边角halo：
+y包含x ghost，z随后包含x/y ghost，只交换halo而不平均节点；MPI使用
+私有重复通信器，后端跟随普通halo的pinned/device选择，与紧致接口独立。
+mu/kappa为按需分配的两个设备派生场，私有包槽固定复用；该路径不再
+分配或计算未被周期ME6使用的节点应力/热通量。普通梯度仍按原相位更新。
+当前主程序只准入已验证的无量纲周期TGV，没有据此准入物理壁面或CURVE。
+
+#### CPU记录初始化问题
+
+首个KEEP紧致+ME6+compact10运行在prepare RK stage返回-1，并未产生
+负密度/负压力场。GDB硬件写监视点证明：src/keep_operator.F90中
+build_keep_split_plan的记录初始化将新C++调用者的紧致滤波标志清零；
+NVHPC26.1/O2生成了对记录地址前28字节的零写。带前后哨兵的独立CPU
+探针复现为before=[101,0,103,104,105,106,107,108]，after未变。
+这是实际生成代码的对象越界证据，不把合法Fortran的原数学公式称为错误。
+
+用户明确批准后，仅将该dummy改为intent(inout)，替换默认构造赋值为
+逐成员完整清零；没有改任何双点通量、展开顺序或权重。随后：
+
+- NVHPC26.1和远端GNU12的前后哨兵均保持原值，仍生成294项/85基函数。
+- 完整表的修前NVHPC、修后NVHPC和修后GNU12二进制逐字节一致，散列为
+  115e8ef52fc1502c3cdc19a608b22dc4cd7e9bfd319d1e343f916012207e3469。
+- 源码除这处初始化外，CPU KEEP/ME6算子未改。临时DEBUG-MB6-PREP日志已移除。
+  旧失败、GDB监视点和哨兵记录保留，不靠重排存储或关闭检查掩盖越界。
+
+复现/复验入口为astr_backend_keep_host_guard；证据在native/keep_host_guard*.log、
+keep_host_table_before/after.bin、keep_me6_watch/gdb.log，以及dtk2604/keep_guard_gnu.log。
+GNU检查仅为登录节点CPU程序，没有执行登录节点GPU或任何Slurm操作。
+
+#### 修订后参考与实际检查
+
+重新从根构建CPU/旧CUDA Fortran程序，冻结于
+results/multi_backend_mb6_20261113/reference_fixed_keep。reference.json保留
+2df6d1d源码归档、唯一CPU初始化修订、编译/链接记录和二进制散列。
+该目录的standard_tgv_explicit10路径只存原输入模板，不冒充已有运行证据。
+新的匹配参考为native/keep_me6_compact_refixed/cpu和old_gpu，已只读保存。
+此前0d0f367参考没有覆盖、修改或删除；受CPU初始化影响的正式KEEP紧致
+交付以新参考复验为准，而不只引用此前看似接近的短窗场。
+
+| 实际检查 | 结果与范围 |
+|---|---|
+| 显式KEEP组件 | x/y/z、32/64/128节点，CPU体算子差最大7.329e-16；各分量观测阶5.82--5.99，离散动能/压力功残差<4.87e-17，守恒净量通过既有2e-12缩放门槛；同步两模式逐位一致 |
+| ME6组件 | 常物性、变物性、斜向度量/波及棋盘模态；同状态CPU映射算子最大差5.866e-17，密度RHS不变；同步两模式逐位一致；memcheck零错误/零泄漏，initcheck零错误 |
+| 新主程序KEEP+节点黏性 | 显式单rank、紧致NP=1/2 x/y/z代表短窗通过；更广边界不据此放行 |
+| KEEP+ME6，显式主格式 | 16³/4步/1e-3，NP=1/2 x/y/z，场、缓存、分项RHS、标量及步序通过；本组合不调用有问题的紧致展开初始化 |
+| KEEP+ME6+compact10，新参考 | 同一16³/4步，NP=1/2 x/y/z，最大场/缓存差4.197e-14，分项RHS差1.570e-12，均低于2e-10 |
+| 两种传输/工作区/同步 | 双rank y的scalar/pinned/explicit与full/device/dependency终态物理q逐位相同 |
+| ME6实际应用通信量 | 双rank y每rank发送1762560字节；pinned中转3525120字节，device中转0且pinned分配0；双rank z device每rank发送2799360字节，中转0。指标不包含MPI内部传输，也不是进程显存峰值 |
+| 续算与输出隔离 | 双rank y紧致KEEP+ME6连续4步与2+2精确恢复，全部15个HDF5数据集逐位一致；非精确代表恢复物理q差0，输出开/关物理q逐位一致；不外推所有非精确恢复均逐位一致 |
+| 联合内存检查 | 上述双rank y的5个连续/恢复/输出开关运行共10份memcheck日志均零错误、零泄漏 |
+| 原显式路径保护 | 新公共资源/阶段接线后，8组标准643e/643e TGV终态、三阶段缓存和399个scalar滤波halo相位检查保持通过 |
+
+证据根仍为results/multi_backend_mb6_20261113/native：keep_component.log、
+me6_component*.log、keep_explicit_cpp、keep_compact_cpp/np2、
+keep_me6_explicit_cpp/np2、me6_pinned_traffic、me6_device_traffic、
+keep_me6_compact_refixed、keep_me6_compact_device、keep_me6_restart_np2y及
+keep_me6_mode_isolation.log；原显式保护为standard_after_keep_me6。
+这不是性能验收、长期物理验证或非周期边界完成。
+
+同一CUDA C++维护源在DTK26.04/GNU12/gfx906通过主程序和KEEP/ME6探针
+的设备编译、链接及运行库预检；本地保存dtk2604/keep_me6_build.log和
+keep_me6_runtime_links.log。新DCU主程序散列为
+e5ec7de43fe5b57d85e3a86931eb92122061049e5b2e8667ae1e9a53cad943d6。
+这仍不是DCU设备上的数值运行证据。既有待授权18个普通紧致运行的可执行
+副本没有替换，旧队列任务没有查询或操作；KEEP/ME6实跑需另行说明范围。
+
+剩余：DCU实际组件/NP=1/2/4主程序及续算/存档证据、FP32/已有混合精度，
+以及MB7的复杂非反应流和新NVIDIA原位消费者。整个goal仍active，MB6/MB7
+未整体完成；既有待授权DCU批次未提交，阶段扩展不自动扩大其授权范围。
+
+### 10.5 MB7首组周期静态CURVE
+
+复用既有generate_curvilinear_tgv_grid.py的三方向周期映射：
+x=xi+0.15*sin(xi)*sin(eta)，y=eta+0.15*sin(eta)*sin(zeta)，
+z=zeta+0.15*sin(zeta)*sin(xi)。32³区间，解析映射Jacobian范围
+0.79103125--1.24271875；使用已有KEEP G1a几何、643c/643c、ME6 G2、
+compact10、dt=1e-3及4个完整步，没有修改几何公式或边界。
+
+先用10.4的新冻结CPU/旧GPU程序生成匹配参考并逐阶段/RHS交叉检查，
+再解除新C++运行入口的“禁止读网格”条件。原设备算子已经读取完整
+Jacobian及九个逆度量，本次没有用笛卡尔近似替代几何投影。
+当前入口仍仅周期五变量TGV，不放行物理壁面、一般开放边界或动网格。
+
+本地NP=1及NP=2 x/y/z的实际证据：
+
+| 量或行为 | 结果 |
+|---|---|
+| 与CPU/旧GPU的最大终场差 | 2.4203e-14 |
+| 三RK阶段场/物性缓存最大差 | 3.1477e-14 |
+| 对流/完整RHS最大差 | 3.9263e-13 |
+| 三坐标、J及九个逆度量 | 全局13个几何场最大缩放差7.772e-16；门槛均为2e-10 |
+| 完整步检查点物理q | 与终态设备观察逐位一致 |
+| NP=2 y精确续算 | 连续4步与2+2续算的15个状态数据集和17个几何数据集均逐位一致，步序/统计相位一致 |
+| 外部网格独立性 | 恢复运行未生成原datin/grid.tgv.h5，使用检查点几何资源完成；未添加文件缺失回退 |
+| 输出隔离 | 检查点开/关物理q逐位一致 |
+
+首次几何比较错误地将不同rank拓扑的partitions/rank_extras当成同形
+全局几何场，分析器停止；真实求解已完成。保留该日志后，仅重分析原
+x分解结果，比较全局q0001--q0013；拓扑特有冗余数据在同拓扑精确
+续算中逐位检查。没有放宽场差或重跑同一x运行掩盖检查器问题。
+
+TGV的kenergy/enstophy沿用原CPU计算节点平均，不是曲线网格的物理体积
+平均；本轮只检验相同定义的实现一致性，没有擅自改变该统计定义。
+原位后处理几何加权统计是另一消费者，尚未由本项接通。
+
+入口为run_compact_tgv_gate.py的--grid/--mapping/--checkpoint，恢复入口为
+run_cpp_restart_gate.py对应选项。证据在native/curve_keep_me6_reference、
+curve_keep_me6_cpp、curve_keep_me6_np2、curve_keep_me6_np2yz及
+curve_keep_me6_restart；参考cpu/old_gpu目录只读。未操作Git或Slurm。
+该组不替代独立CFL/低精度、其他格式、物理端、DCU或原位消费者的后续交付。
+
+### 10.6 MB7非周期halo前置通信
+
+核对src/parallel.F90的原规则后，扩展新C++固定槽通信，而不修改CPU通信：
+物理侧MPI_PROC_NULL不写回halo、不平均该侧节点；单rank非周期方向
+不做周期回绕。内部MPI接口仍执行已选的节点协调或仅hm层halo刷新。
+普通halo仍只处理方向法向面，ME6边角扩展另由其私有通道负责。
+
+原C ABI不能区分“单rank周期轴”和“单rank物理轴”，因为两者都可能没有
+实际MPI邻居。prepare接口现要求显式periodic(3)，运行时从既有lihomo/
+ljhomo/lkhomo传入；两个探针调用也同步修订，没有增加旧接口兼容包装。
+分布式非周期方向允许真实MPI_PROC_NULL，MPI前后复制和接收写回均按
+实际邻居执行；应用传输字节记录不再将缺失邻居计入。固定槽、私有通信器
+和begin/end生命周期不变，没有每步分配或自动通信后端回退。
+
+本地NVIDIA已完成：
+
+- physical布局，NP=1/2各覆盖x/y/z，hm=3/5、explicit/dependency；pinned
+  和device各36组布局检查，每组含6个交换阶段，全数组逐位对照独立
+  Fortran包参考，包含物理侧保持、共享节点、halo和不应修改的角区。
+- 每组检查q地址稳定、嵌套begin/不匹配end/未完成时销毁等实际生命周期。
+- 代表NP=2 y的initcheck两日志均零错误；NP=2 z的memcheck两日志均
+  零错误、零泄漏。PROC_NULL接收槽不被上传或消费。
+- periodic组件六种NP/轴组合复验通过；标准643e/643e TGV的8组终场、
+  三阶段缓存和399个scalar滤波halo相位检查保持通过。
+
+入口为run_halo_components.py --layout physical，记录位于native/
+halo_physical_pinned、halo_physical_device、halo_physical_sanitizer、
+halo_periodic_after_physical和standard_after_physical_halo。
+本项仅补齐非周期通信基础；C++主程序的壁面状态、单边数值闭合和边界
+RHS尚未移植，不能把组件通过说成完整bc41/NSCBC算例已支持。
+新增通信接口后续已通过DCU重编（10.11），数值运行仍待授权与实测；
+原已准备的run/bin副本与平台作业均未操作。
+
+### 10.7 bc41基础状态设备组件
+
+新增src_gpu/boundary_state.cu/.h/.F90，仅迁移无吹吸、无高阶闭合、无化学
+的静止等温无滑移bc41。沿用CPU noslip的二点零法向压力导数闭合
+p_w=(4*p_1-p_2)/3、rho_w=p_w/T_w*const2、零速度及q5=p_w*const6。
+状态恢复提供明确命令，由后续主程序接线保留既有RK相位；没有把固定
+壁面改为新的特征条件或施加额外保正截断。初版另含未接线的壁面RHS
+清零命令；第10.10节核对真实CPU阶段链后已删除，它不代表原CPU合同。
+
+用新冻结CPU/旧CUDA Fortran二进制，先运行既有41x/41y/41z夹具、
+643e/643e、KEEP+标准黏性、无滤波、16³、dt=1e-5、一个完整步。
+检查两后端三个RK阶段的真实壁面状态和二点闭合，随后只读保存快照。
+首个参考脚本错误地把scalar传作restore参数，导致尝试读取scalar下资源；
+strace定位后改为命名参数。原失败保留，未改CPU或HDF5实现。
+
+根目标astr_backend_wall41读取这些真实状态，污染指定壁面后调用新GPU
+核恢复。108项覆盖x/y/z、两个参考后端、三个阶段、两种同步及只处理
+下壁/上壁/双壁。指定壁面q和rho/u/v/w/p/T最大缩放差3.578e-16；
+其余物理节点、另一壁面和全部halo保持种子数据逐位不变。状态核不
+改变RHS；初版的独立RHS清零测试仅是已删除辅助命令的历史记录，不能
+作为真实壁面阶段规则的证据。全部指定壁面值另检查严格有限。
+
+本地memcheck为零错误、零泄漏；initcheck同样零错误。
+证据为native/wall41_reference_fixed、wall41_component.log、wall41_memcheck.log
+及wall41_initcheck.log，入口prepare_wall41_reference.py/wall41_probe.F90。
+这些观察中的整场上传/下载仅用于隔离组件测试，设备核本身不回调CPU。
+
+当前尚未接入完整壁面时间步：物理端导数/滤波闭合、体RHS写入范围、
+阶段所有权和其他壁面变体仍待移植/验证。没有解除主程序周期TGV准入，
+没有宣称bc41整例或全部边界完成；本组件的后续DCU构建见10.11，尚未DCU运行。
+
+### 10.8 643e低阶物理端梯度组件
+
+新增fluid_gradient_basic_boundary(handle,low(3),high(3))，显式给出本rank
+实际物理端，不从MPI接口推断壁面。沿用src/derivative.F90 diff6ec及旧
+gradcal_gpu的低阶闭合：端点二阶单边、相邻一点二阶中心、再一点四阶
+中心、其余六阶中心；所有方向通过完整九分量度量投影。原周期入口
+仍使用无物理端的专用核，不增加运行时开关、额外场或主机计算回调。
+该入口尚未接入主推进，不能据此宣称壁面时间步完成。
+
+prepare_wall41_reference.py --gradients使用已修订并冻结的CPU/旧GPU
+二进制，输出三个RK阶段的原始变量、实际几何和梯度。测试打包仅为
+读取这些已有快照，不在Python计算推进或梯度参考。首轮脚本将tuple
+与整数相加而停止；已改为显式数组，失败目录保留，未改参考算法。
+
+astr_backend_boundary_gradient已在本地NVIDIA检查：
+
+- 72项真实状态：41x/y/z、CPU/旧GPU参考、三个RK阶段、两种同步，
+  原halo及物理侧halo全部置NaN两种输入。最大逐变量缩放差5.654e-16，
+  所有输出梯度有限，输入速度/温度的全部字（含NaN）逐位不变。
+- 256项制造解：全部64种物理端组合、hm=3/5和两种同步；4×7×9区间
+  二次多项式配合完整斜向变度量，直接与解析导数投影比较，最大绝对差
+  1.213e-15。涵盖交线、角点、最短轴，以及单侧/双侧/无物理端。
+  无物理端时另与原周期梯度入口逐位一致。
+- memcheck为零错误、零泄漏，initcheck为零错误。
+
+证据为native/wall41_gradient_reference_v2、boundary_gradient_full.log、
+boundary_gradient_memcheck.log及boundary_gradient_initcheck.log。
+本阶段没有改动CPU离散或提高边界理论阶数；高阶闭合、物理端通量/
+滤波和普通主程序RK接线仍待后续完成；后续DCU构建见10.11，数值运行尚未完成。
+
+### 10.9 KEEP显式低阶物理端与RHS所有权组件
+
+新增fluid_keep_accumulate_basic，直接接收现有npdc类型及first/last体区域，
+在原RHS上累加负对流散度，不清除边界已装配项。完全保留CPU
+keep_explicit_volume规则：距物理端一层和两层时，分别使用普通物理
+通量的二阶和四阶中心闭合；更内部使用原KEEP双点六阶通量。端点
+的本方向贡献为零，实际壁面/RHS处理仍由后续阶段装配，不在此臆造。
+未改CPU公式、KEEP表、生产默认或主程序准入。原周期入口继续清零
+并使用其专用核。
+
+astr_backend_keep增加256项：全部64种物理端组合、两种同步及包含端点/
+排除边界节点两种体区域。使用全九分量变度量、非均匀正值场，将所有
+物理侧halo置NaN；逐变量对照现有CPU算子。RHS预填非零值，以检查
+累加而非清零；体区域外所有RHS字逐位保持。最大缩放差2.241e-16，
+所有实际输出严格有限。原32/64/128六阶收敛及守恒/动能交换检查仍通过，
+没有据此将物理端低阶过渡称为六阶保结构边界。
+
+memcheck与initcheck均零错误，前者零泄漏。记录为native/
+keep_basic_boundary_component.log、keep_basic_boundary_memcheck.log及
+keep_basic_boundary_initcheck.log。这仍是同状态组件证据；完整壁面
+时间步、黏性物理端闭合、滤波和阶段所有权以及DCU实测仍待推进。
+
+本轮根CMake主程序最终构建完成后，另运行16³、4完整步的标准周期
+TGV对照（standard_after_basic_boundary_final）：explicit/dependency两种
+同步的最大终场缩放差1.267e-15，CPU模式与冻结CPU终场逐位一致；
+五项标量最大差3.581e-14，步号/time/dt记录一致。没有重跑长期算例。
+
+### 10.10 bc41设备阶段链四步对照
+
+继续补齐三项阶段接口：
+
+- fluid_refresh_primitives_boundary只重建物理节点及真实可用的面halo，
+  不读物理边界外没有定义的q；原周期重建入口保持原行为。
+- fluid_flux_divergence_basic保留CPU nodal通量的二阶/四阶端部闭合及
+  逐方向累加范围。与KEEP的三方向共同体区域不同，CPU黏性在x/y/z
+  方向分别仅限制本方向范围，不能一律换成整个内点盒。
+- fluid_prepare_stage增加可选边界状态和物性重建命令，分别在滤波后、
+  共享节点/halo交换前，以及交换完成后执行。原调用方不传时行为不变。
+
+核对原CPU调用链后，没有在黏性之后使用10.7的壁面RHS清零命令：旧
+低阶bc41每阶段开始重设状态，但黏性切向贡献可在阶段更新中保留；
+不能用“静止壁面”推断其最终RHS全零。新实现保持该阶段约定，未修改
+CPU设计或将它等同高阶壁面RHS合同。
+
+prepare_wall41_reference.py --steps 4 --gradients重新用冻结二进制生成
+41x/y/z、16³、dt=1e-5、KEEP/643e、无滤波/吹吸/源项驱动的四步参考。
+astr_backend_wall41_step调用实际fluid_step、固定槽非周期transport、
+状态/梯度/KEEP/标准黏性核连续推进，参考仅作只读观察，不重置阶段场。
+三方向、CPU/旧GPU参考、两种同步共144个阶段，分别检查pre_rhs的q/
+六项原始变量、对流RHS、完整RHS和post_update的q。所有物理侧q halo
+预置NaN，推进中不恢复它们；实际物理状态严格有限且正值。
+最大缩放q、原始变量、RHS差分别为1.253e-15、1.230e-15、1.695e-15。
+memcheck零错误/零泄漏，限定正确观察范围后initcheck同样零错误。
+
+证据为native/wall41_step_reference、wall_step_mpi_component.log、
+wall_step_memcheck_fixed.log和wall_step_initcheck_fixed.log。首次直接启动MPI程序
+因SDK安装前缀中的帮助/启动文件路径失败，改用匹配HPC-X的mpiexec
+后正常运行；没有修改MPI库或添加运行时自动回退。
+
+首次initcheck报告了测试观察函数对未定义物理侧原始变量ghost的整块
+D2H读取，计算核没有相应读报告。已停止该次测试，将观察改为既有
+snapshot_axis接口，只读物理节点及一个实际周期方向的面，其他位置
+为观察缓冲的零填充，不初始化生产ghost。随后同一144阶段检查及
+initcheck通过；失败日志wall_step_initcheck.log保留，不作为通过证据。
+
+本项是调用主推进组件的有界阶段链，不是普通astr主程序的channel
+统计/驱动或输出/恢复准入；这些消费者仍须继续接通。物理端输出还
+需要区分已定义的真实halo与未定义物理ghost，不能直接复用全块物性
+回读；本轮仅修订测试观察，不擅自扩大原始变量零初始化范围。
+未启用滤波、未认领高阶壁面、ME6物理壁面或DCU数值运行。
+
+随后将同一只读全局轨迹按rank分区，用真实MPI连续推进，不以参考
+状态覆盖共享节点。run_wall41_steps.py覆盖NP=1和NP=2 x/y/z，每组
+仍包含三种壁面方向、CPU/旧GPU参考和两种同步；每rank144个阶段。
+pinned和device各1008个rank阶段检查通过，包含法向两rank物理端/
+MPI接口、切向壁面共享节点和周期方向。两后端的最大q、原始变量、
+RHS差分别为1.253e-15、1.230e-15、1.695e-15。证据为native/
+wall_steps_pinned和wall_steps_device的四个运行日志与report.json。
+这组使用本地两张NVIDIA卡，不替代DCU实测或普通astr消费者验收。
+代表NP=2 x的memcheck及NP=2 y的initcheck，两rank日志均零错误，
+memcheck零泄漏；记录为wall_step_np2x_memcheck.log及wall_step_np2y_initcheck.log。
+删除初版未使用RHS清零接口后，wall_state_contract_component.log中的108项
+状态恢复及全RHS不变检查通过；wall_state_contract_np2x.log中的双rank
+四步阶段链保持相同误差。该删除不改任何CPU例程或已接线数学运算。
+本轮根主程序重建后的standard_after_wall_stage仍通过固定步长TGV对照：
+最大终场差1.267e-15、标量差3.581e-14，CPU模式终场与冻结CPU逐位一致。
+
+### 10.11 更新后端的DTK构建与依赖预检
+
+本节记录10.12--10.13统计/源项扩展之前的构建，不将其自动用于后续新接口。
+只在login09、~/weiph/内同步维护源并编译，未运行登录节点GPU，未
+提交或查询Slurm。DTK26.04/GNU12/gfx906组合完成普通astr与既有
+MB0/MB1/fluid/RHS/halo、紧致局部/分布式、KEEP/ME6、wall41与物理端
+梯度探针的构建。删除未用RHS接口、更新NP=1/2壁面阶段入口后，再
+重编astr、astr_backend_wall41和astr_backend_wall41_step，全部成功。
+
+最终wall41_step的ldd无缺失库：GPUfusion CUDA运行库及galaxyhip来自
+DTK26.04，GNU Fortran/C++运行库为GNU12，MPI/HDF5均为原私有前缀。
+这只是构建/依赖解析，不是DCU壁面运行或新增多rank数值门槛通过。
+源和构建更新在backend_mb4_20261113，未更换原待审run/bin可执行副本。
+
+原日志保留于远端backend_mb6_20261113；本地同一campaign的dtk2604/
+已取回wall_stage_build.log、wall_stage_delta_build.log和
+wall_stage_runtime_links.log。下一步DCU运行仍需逐任务明确授权。
+
+### 10.12 槽道瞬时标量与均匀体力组件
+
+从src/statistic.F90的massfluxchan、fbcxchan、wrmscal和旧statistic_gpu
+核对定义后，新增fluid_channel_statistics，保持原非反应三维槽道的
+瞬时空间统计，不改变为时间平均或新的几何权重：
+
+- 质量流率以实际y间距对rho*u作梯形积分，再按全局ia*ka归一化。
+- 摩擦量为下壁mu*du/dy减上壁对应量，再按ia*ka归一化。
+- wrms为唯一节点的w平方均值开方，按ia*ja*ka归一化，不减均值。
+
+归约在设备完成，每次只回读三个FP64局部标量（另沿用状态错误标量），
+MPI仅归约这些标量。复用现有按block持有的标量统计工作区。仅显式
+请求槽道几何时，新增device_coordinate_y物理节点三维数组，8字节/点，
+不保存不使用的x/z分量；TGV标准准备流程不分配此数组。它是原槽道
+标量定义的供给，不代表已实现曲壁牵引力或一般面积积分。
+
+fluid_uniform_force沿用src_chan：动量RHS增加F*Jacobian，能量RHS增加
+(F dot (q_momentum/rho))*Jacobian；F是单位体积驱动力，不是rho乘加速度。
+不改密度RHS或q本身。fluid_advance_prepared_stage新增可选source_operator，
+在完整通量装配后、RK更新前执行；未传入时维持原路径。
+
+prepare_channel_components.py仅从只读wall41_step_reference抽取CPU/旧GPU
+三个rk1物理时刻、实际坐标、梯度及flowstate.dat，不重跑参考求解器或
+在Python计算替代统计。astr_backend_channel在本地NP=1和NP=2 x/y/z，
+覆盖两参考、三个时刻、两同步及重复调用，共168个rank统计检查，
+最大缩放差3.197e-16；重复局部标量逐位一致，y坐标指针保持稳定，
+关闭消费者时不分配该几何场。
+相同矩阵另有168个源项检查，覆盖零F和三分量非零F：与动量增量/
+局部速度功关系对照为零差，密度RHS和完整输入q逐位不变。
+非零驱动轨迹的NP=2 y统计另作交叉检查，最大差仍3.197e-16。
+
+memcheck零错误/零泄漏，initcheck零错误，racecheck零hazard/error/warning。
+证据为native/channel_component_inputs、channel_forced_inputs、
+channel_scalar_y_np1/np2x/np2y/np2z.log、channel_scalar_y_forced_np2y.log及
+channel_scalar_y_memcheck/initcheck/racecheck.log。早期三坐标版本的
+channel_component_np*.log仅保留为开发记录，不当作最终y单场布局证据。
+新增接口本轮未做DTK重编或DCU运行；普通astr尚未准入槽道，不把
+组件通过等同统计、驱动、输出和恢复全部接线完成。
+
+### 10.13 非零槽道驱动的阶段链与待决定存储区
+
+本节原待决定事项已在10.30获得批准并完成对应实现/检查，不再等待审批；
+以下保留发现时的证据与范围。
+
+用冻结CPU/旧GPU二进制新运行原41x/y/z夹具，16³、4完整步、dt=1e-5、
+KEEP/643e、无滤波，channel_force_fixed=1e-4。保留CPU原规则：仅x齐次
+时施加槽道驱动，所以41x夹具不施加，41y/z施加；未改变输入场或单位。
+新设备阶段链通过source_operator在黏性后加驱动力并检查完整RHS，
+在每阶段持续推进，不用参考覆盖当前场。
+pinned/device各通过NP=1和NP=2 x/y/z的1008个rank阶段检查；最大q、
+物性缓存和RHS缩放差分别1.253e-15、1.331e-15、2.228e-15。证据为
+native/wall41_force_reference、wall_force_pinned/device及相应report.json。
+本轮根主程序重建后的standard_after_channel_components周期TGV仍通过，
+终场最大差1.267e-15、标量差3.581e-14，CPU模式终场与冻结CPU逐位一致。
+
+待人工决定（已提问，尚未执行）：是否在新C++非反应路径首次初始化时，
+仅将不参与当前离散的真实物理边界外q/rho/vel/prs/tmp存储区，以及q的
+双、三方向越界角区定义为+0。物理节点、有效MPI面halo不变，不修改
+CPU；精确恢复仍以文件原值覆盖，格式不变。当前完整检查点保留整块q
+和物性缓存，不能读未定义设备存储，也不能擅自缩小精确续算的比较范围。
+未获确认前，不接通该物理边界路径的完整检查点，也不宣布普通槽道
+运行/输出/续算准入或MB7收口。目标其余范围保持不变。
+
+### 10.14 低阶物理端十阶显式滤波阶段链
+
+新增filter_axis_basic/filter_component_axis_basic，按原CPU通用物理端
+闭合迁移：端点保持不变，距边界第1--3点采用六阶闭合，第4点八阶，
+其余点十阶；MPI接口保留十阶中心模板。系数和运算来自spafilter10exp
+及旧GPU对应函数，未增加保正截断或改变滤波强度。本项不含高阶
+壁面专用boundary_wall_filter6；其CPU调用由high_order_wall_enabled
+另外选择，不能因bctype=41便混用该滤波。
+
+fluid_step抽出原有显式x/y/z存储与交换流程，供周期及物理端共用。
+单分量仍是一个三维work，全变量仍是五分量ping-pong；没有新整场
+工作数组或每步分配。端点参数未提供时保留原周期核，没有错误后
+自动换算法或切换通信。已用数学输入和真实阶段链分别检查。
+
+astr_backend_boundary_filter最初288项覆盖x/y/z、无/左/右/双物理端、
+两种同步、标量的全部五个分量与全变量工作区、最低8区间轴及两个
+独立数学性质：五次多项式保持、Nyquist模式消除（真实端点保留）。
+最大差为零，所有物理侧ghost预置NaN，输出严格有限；源数据、ghost
+及不应修改的分量逐位不变。memcheck零错误/零泄漏，initcheck零错误。
+
+接线复验先捕获新C++阶段钩子的缺项：post_filter的q已经与参考匹配，
+但边界状态命令还在读上阶段prs缓存；首阶段41x壁面rho缩放差
+1.798e-8，测试当即停止。已在滤波后、边界状态前重建物理节点物性，
+然后再做节点协调/halo交换及有效面物性重建，与CPU原顺序一致。
+修正仅在filtering且存在boundary_operator时执行，不改CPU或周期路径。
+失败记录wall_filter_stale_cache.log保留，未放宽2e-10门槛。
+
+冻结CPU/旧GPU新参考为16³、dt=1e-5、4完整步、KEEP/643e、十阶显式
+滤波、fixed force=1e-4，仍按原x齐次规则选择体力。真实阶段链逐一
+检查post_filter、pre_rhs q/缓存、对流/完整RHS与post_update。
+scalar+pinned、full+pinned、scalar+device各覆盖NP=1及NP=2 x/y/z，
+各1008个rank阶段；另做full+device的NP=2 y代表检查。最大q、缓存、
+RHS缩放差分别为2.505e-15、2.572e-15、2.487e-15。
+
+最终物理q按原有测试观察导出（不是检查点）；共276个完整局部场包，
+标量/全变量、pinned/device及explicit/dependency均逐位一致。数学探针
+和代表NP=2 y scalar的memcheck、NP=2 x full的initcheck均零错误，前者
+均零泄漏。没有用初始化未定义ghost来消除工具报告。
+
+证据在native/wall41_filter_reference、wall_filter_unit*.log、
+wall_filter_scalar_pinned/full_pinned/scalar_device、wall_filter_full_device_np2y、
+wall_filter_packet_analysis.log及wall_filter_np2y_memcheck/np2x_initcheck.log。
+run_wall41_steps.py新增--filter-workspace和--compare-output，后者逐包
+检查布局/数据及存储、通信和同步的位模式，不做生产CRC校验。
+根主程序重建后的standard_after_wall_filter周期对照保持原结果：
+终场最大差1.267e-15、标量差3.581e-14，CPU模式终场与冻结CPU逐位一致。
+
+继续审查时删除了新接口过强的局部长度判断：单侧物理端可向另侧
+有效MPI halo取模板点，不能要求本rank至少8个区间。只有两侧均为
+物理端、没有可用外侧halo时，仍需8个区间。数学探针增加局部5区间/
+hm=5的无、左或右物理端输入，合计504项全部零差；该扩展后的
+memcheck/initcheck仍零错误、零泄漏，记录为wall_filter_short_unit*.log。
+
+另用原冻结二进制生成全域10³参考，在NP=2时实际每方向局部5区间。
+scalar+pinned覆盖NP=1/2 x/y/z，四步1008个rank阶段通过；full+device
+的NP=2 y代表检查另通过288阶段。最大q/缓存/RHS差分别1.997e-15、
+2.330e-15、5.581e-15，108个物理q包的同步/存储/通信比较逐位一致。
+证据为wall41_filter_short_reference、wall_filter_short_scalar_pinned、
+wall_filter_short_full_device_np2y及wall_filter_short_packet_analysis.log。
+没有改变halo宽度、闭合公式、数值容差或CPU实现。
+
+本节新增物理端滤波尚未DTK重编/运行；高阶壁面滤波、普通主程序壁面
+消费者及输出/精确恢复仍待完成。紧致物理端阶段链后续见10.15。10.13所列
+未使用存储区首次初始化仍待人工决定，本轮没有执行；goal未收口。
+
+### 10.15 低阶壁面紧致字段与全局两层PCR阶段链
+
+先用修订KEEP初始化后冻结的CPU/旧GPU二进制生成41x/y/z的新参考：
+16³、4完整步、dt=1e-5、KEEP 643c/643c、标准节点黏性、fixed force=1e-4，
+分别关闭滤波和采用compact10（alpha=0.49）。没有改CPU或参考二进制。
+
+将原私有C互操作描述移入compact_line_cpp，供普通主程序和字段探针
+共用；C/Fortran同构增加active_first/active_last。只控制字段回写，
+不删除RHS边界行、不改变矩阵或接口未知量：节点对流/黏性按当前
+方向范围累加，KEEP按CPU原三维内点盒累加；梯度仍写全部物理节点，
+紧致滤波仍按原规则保持真实端点。这些C++物理端原先未准入普通
+主程序，修订的是尚未接通消费者的回写合同，不是CPU数值修正。
+
+阶段探针接入实际设备字段RHS、全局两层PCR/独立接口通信、共享节点
+恢复与字段回写；没有将分块接口变成局部闭合或在CPU求解推进RHS。
+固定系数预处理继续复用CPU数学组件。紧致滤波的scalar/full只改变
+批量组件数，按不相交行/组件捕获RHS、求解、回写，不分配显式qwork。
+探针的固定alpha/beta系数来自filter_coefficient_cal公式；普通主程序
+仍直接使用原filter模块生成的系数，没有增加生产系数副本。
+
+本地已取得：
+
+- 关闭滤波，pinned及device-aware接口分别覆盖NP=1/2 x/y/z，每组
+  1008个rank阶段。q、缓存、RHS最大缩放差分别1.253e-15、1.553e-15、
+  1.713e-15；168个最终局部q包的接口/同步选择逐位一致。
+- compact10 scalar+pinned覆盖同一矩阵；q、缓存、RHS最大差分别
+  4.903e-14、4.908e-14、9.365e-14。另用full、halo=device、接口=device-aware
+  检查NP=2 y；24个q包与scalar+pinned逐位一致，含同步两模式。
+- 对第一阶段实际RHS抽取三个列，仅作测试观察并组装全域系统，以
+  独立带主元LU及A*x-b复核：不滤波每rank27次，scalar滤波72次，
+  full滤波36次。最大残差9.038e-16、LU差7.879e-15，分别低于1e-12
+  与2e-10门槛。观察结果不回传推进；正式通信仍只处理保留端点。
+- 同状态紧致梯度另直接上传冻结原始变量/度量，对照CPU/旧GPU梯度：
+  x/y/z、三个RK阶段、两同步、有/无NaN物理侧ghost共72项，最大差
+  4.974e-18。pinned/device-aware均通过，原始速度/温度全部字不变。
+  与此不同，四步filter轨迹的同相位梯度差包含轨迹差，代表NP=2 y
+  最大1.134e-12，仍低于2e-10；不能把它冒称同状态算子误差。
+- 代表NP=2 x、无滤波四步memcheck零错误/零泄漏；NP=2 y紧致滤波
+  一个完整步（全部壁面方向、两参考、两同步）的initcheck两rank均
+  零错误；同状态梯度initcheck也零错误。
+
+设备缓冲接口记录的应用层host_stage_bytes为零，pinned记录实际暂存。
+MPI自身的传输方式/性能不能从该计数推断。本轮没有做性能优化或给出
+提速结论；包含MPI_SELF的pinned前缀复制仍可作为后续CPP-P诊断项。
+
+证据为native/wall41_compact_reference、wall41_compact_filter_reference、
+wall_compact_pinned/device_interface、wall_compact_filter_scalar_pinned、
+wall_compact_filter_full_device_np2y、compact_same_state_gradient*.log、
+wall_compact_np2x_memcheck.log与wall_compact_filter_np2y_initcheck.log。
+后者使用一个完整步减少重复内存检查，四步数值矩阵没有缩短。
+绑定共享后显式梯度的72项/256项解析检查保持原差；根普通astr的
+KEEP紧致差分/滤波TGV在NP=1/2 y通过，新鲜CPU/旧GPU参考对应终场
+最大2.565e-14、缓存3.822e-14、RHS1.484e-12；记录在
+ordinary_compact_after_ranges。标准显式TGV也保持原结果。
+
+新字段ABI及物理紧致阶段链尚未在DTK重编/运行；未据此准入普通
+主程序壁面输出/恢复，10.13的初始化决策仍待确认。ME6物理端、高阶
+壁面/NSCBC、MP7、低精度及新原位消费者等原goal范围保持未完成，
+不以本节替代MB6/MB7整体收口。
+
+### 10.16 ME6物理端与节点壁面带的设备阶段链
+
+按CPU现有me6_nodal_boundary_point规则分区：距任一非周期物理端不足
+4个全域网格间隔的点使用节点黏性，其余使用ME6。节点应力/热通量仍
+在完整物理盒计算并按原dataswap交换；显式散度或紧致导数只在节点
+壁面带回写。紧致矩阵、RHS行、全局两层PCR及接口未知量均保留完整，
+不在分区处截断求解。随后ME6只向互不重叠的内部盒累加；没有把壁面
+切向黏性RHS清零。该接线保留了CPU低阶边界规则，不引入新闭合。
+
+新增fluid_viscous_wall_band与compact_field_commit_wall_band入口，显式
+选择壁面带回写；普通节点入口行为不变。ME6内部范围由已准备的私有
+计划提供，不新增设备掩码场或每步主机计算场。ME6的C绑定统一放入
+fluid_explicit，由普通主程序包装和阶段探针共用，接口公式未改。
+
+使用已修订初始化后冻结的CPU/旧GPU二进制，新生成16³、dt=1e-5、
+4完整步、41x/y/z、固定驱动1e-4的匹配ME6参考。沿用x齐次驱动规则，
+不对41x添加驱动。低阶壁面、梯度、对流、节点带、ME6内部、源项、
+RK更新连续在设备推进，参考快照仅用于测试观察，不回填计算。
+
+| 组合 | 本地实际覆盖 | 最大q/缓存/RHS缩放差 |
+|---|---|---|
+| KEEP 643e、无滤波、ME6 | pinned/device各NP=1/2 x/y/z，各1008个rank阶段 | 1.253e-15 / 1.230e-15 / 1.821e-15 |
+| KEEP 643e、explicit10 scalar、ME6 | pinned，NP=1/2 x/y/z，1008个rank阶段 | 2.505e-15 / 2.460e-15 / 2.643e-15 |
+| KEEP 643c、compact10、ME6 | scalar+pinned和full+device各NP=1/2 x/y/z，各1008个rank阶段 | 4.903e-14 / 4.903e-14 / 1.033e-13 |
+
+无滤波两种halo后端的168个终态物理q包，以及紧致滤波两种存储/通信
+组合的168个包，布局与数据均逐位一致，含explicit/dependency两同步
+模式。显式滤波另外84包的两同步模式也逐位一致。紧致轨迹同相位
+梯度差最大1.104e-12，含舍入轨迹影响，不冒称同状态算子误差。
+第一阶段实际紧致RHS的独立全局残差最大9.038e-16，带主元LU解差
+最大7.879e-15；不因只回写壁面带而缩小线性系统检查范围。
+
+ME6私有边角通信在NP=2 y/z实际发送非零数据；device模式应用层
+host_stage_bytes为零。x方向扩展由普通面halo提供，故私有ME6的
+x分解发送计数为零是预期结果，不是漏通信。未从该计数推断MPI
+内部协议或性能。NP=2 z显式ME6一个完整步的memcheck两rank均零
+错误、零泄漏；NP=2 y紧致滤波ME6一个完整步的initcheck两rank均
+零错误，均覆盖三个壁面方向、两参考与两同步模式。
+
+共享绑定后重查普通主程序周期KEEP+ME6+compact10的NP=2 y，复用
+匹配不可变参考：终场、缓存、分项RHS最大缩放差分别2.486e-14、
+3.778e-14、1.464e-12，仍低于2e-10。本轮没有性能测试或提速声明。
+
+另加强已批准的KEEP初始化检查：构建前先将整个表对象填为非零，
+前后8个整数哨兵仍不变，未使用基函数存储为零，294项/85基函数
+输出散列仍为115e8ef52fc1502c3cdc19a608b22dc4cd7e9bfd319d1e343f916012207e3469。
+没有再改KEEP公式、权重或CPU离散。
+
+证据根为native/wall41_me6_reference、wall41_me6_explicit_filter_reference、
+wall41_me6_compact_filter_reference及wall_me6_explicit_pinned/device、
+wall_me6_explicit_filter_scalar_pinned、wall_me6_compact_filter_scalar_pinned、
+wall_me6_compact_filter_full_device的report.json和逐rank观察包。
+内存记录为wall_me6_explicit_np2z_memcheck.log和
+wall_me6_compact_filter_np2y_initcheck.log；普通主程序对照为
+ordinary_me6_after_wall_band，初始化复验包为keep_guard_poisoned_20261114.bin。
+
+以上尚未DTK重编/设备运行，也未接通普通主程序的物理壁面输出和
+精确续算。10.13所述未使用存储区初始化仍待独立批准，没有用本次
+KEEP表初始化授权代替。高阶边界/NSCBC、MP7、低精度和新原位消费者
+等原goal范围保持待完成；没有Git写操作或远端任务操作。
+
+### 10.17 非正交波纹壁面与独立紧致滤波
+
+复用既有mapped_grid的x/y/z-wavy映射，幅值参数0.15，y坐标整体乘
+0.5以保持原夹具2pi/pi/2pi长度；初始数组仍按逻辑坐标给定，不另改
+物理模型。实际网格和边界由各冻结程序自行读入和生成度量。参考的
+Jacobian全部为正（约0.03027956707），非对角度量最大值为0.764或
+0.382，确认不是把非正交问题退回笛卡尔几何。每种映射保留相应
+法向的一对bc41壁面，其他两方向周期；温度、固定驱动与10.16一致。
+
+显式KEEP 643e/643e+ME6、无滤波，pinned/device各覆盖NP=1/2 x/y/z、
+4完整步、1008个rank阶段。最大q/缓存/RHS缩放差分别1.331e-15、
+1.553e-15、1.962e-15，168个物理q包跨通信/同步模式逐位一致。
+独立同状态梯度检查另通过72项，最大5.655e-16；256项二次解析场
+检查仍为1.213e-15，原输入字不变，不依赖把物理侧ghost填成有效值。
+
+首次请求紧致KEEP 643c/643c的波纹参考时，冻结CPU在流场初始化后
+明确拒绝：KEEP physical ends currently require a flat axis-aligned tensor
+grid。当前src/keep_geometry.F90也保留该范围限制，仅643e/643e低阶
+bc41允许完整非对角度量。本轮不删除准入、不修改CPU，不把该组合
+当作新C++数值失败，也不声称紧致KEEP的曲面物理端已经支持。失败
+记录保留在wall41_me6_wavy_compact_filter_reference/cpu_x/run.log。
+
+另按原参考已支持的独立组合检查643e/643e+ME6+compact10。阶段探针
+的--filter-method仅将导数/主滤波选择分开，调用原有设备核和全局PCR；
+没有修改主程序默认或新建求解算法。scalar+pinned和full+device均
+覆盖相同四步1008个rank阶段；最大q/缓存/RHS差4.884e-14、4.881e-14、
+4.308e-14，168个终态物理q包逐位一致。实际全局滤波系统最大残差
+9.038e-16、LU差7.879e-15；同相位轨迹梯度最大4.603e-13。
+
+证据为native/wall41_me6_wavy_reference、
+wall41_me6_wavy_explicit_compact_filter_reference、
+wall_me6_wavy_explicit_pinned/device、wall_me6_wavy_compact_filter_scalar_pinned、
+wall_me6_wavy_compact_filter_full_device及wall_me6_wavy_same_state_gradient.log。
+本节只扩展已有算子的网格组合证据；未修改设备数学代码，也未新增
+内存工具运行（同一可执行和存储/索引模式的相关检查见10.16）。这不是
+曲面壁压/热流物理验收，普通主程序壁面消费者和DTK运行仍未完成。
+
+### 10.18 bc42绝热无滑移状态与ME6阶段链
+
+核对CPU noslip_adibatic及旧GPU后，迁移其现有x/y两方向范围：压力与
+温度均取(4*f1-f2)/3，三分量速度为零，按当前完全气体状态方程重建
+密度和五个守恒量。没有加入吹吸、高阶壁面闭合或z向扩展；原CPU的
+该子程序没有z分支，不能因新设备核可按轴索引便宣称z向已移植。
+新wall42_basic_state复用壁面节点索引和写入实现；wall41入口仍保留
+给定壁温。状态核不写RHS、其他面、内部或halo。
+
+先生成并检查冻结CPU/旧GPU的42x/y参考，再修改设备消费者。状态
+探针72项覆盖两侧/单侧、两参考、三个RK阶段及两同步模式；最大
+缩放差5.552e-16，非目标数据和非零RHS逐位不变。原41x/y/z的108项
+检查仍为3.578e-16。bc42单位memcheck零错误、零泄漏。
+
+实际四步16³、dt=1e-5阶段链保留KEEP、ME6并集节点带和原固定驱动
+规则。42x/y各与CPU/旧GPU对照，分别使用NP=1及NP=2 x/y/z分解，
+每组共672个rank阶段：
+
+| 组合 | 存储/通信 | 最大q/缓存/RHS缩放差 |
+|---|---|---|
+| 643e/643e、无滤波 | pinned、device分别检查 | 1.432e-15 / 1.553e-15 / 1.673e-15 |
+| 643c/643c、compact10 | scalar+pinned、full+device分别检查 | 5.099e-14 / 6.256e-14 / 9.225e-14 |
+
+两组配对各112个终态物理q包跨通信/存储/同步逐位一致。紧致实际
+全局系统残差最大7.600e-16，独立LU差7.879e-15，同相位梯度最大
+4.805e-13。NP=2 y紧致组合一个完整步的initcheck两rank均零错误。
+bc41波纹壁面、显式KEEP+ME6+独立compact10的NP=1/2 x/y/z阶段链
+在共享状态核修订后再次与10.17的84个物理q包逐位一致。
+
+参考与证据在native/wall42_me6_reference、wall42_me6_compact_filter_reference、
+wall42_me6_explicit_pinned/device、wall42_me6_compact_filter_scalar_pinned、
+wall42_me6_compact_filter_full_device、wall42_unit*.log、
+wall42_me6_compact_filter_np2y_initcheck.log及wall41_wavy_after_adiabatic。
+阶段/状态探针沿用原文件名，以--boundary-type 42 --wall-axes x y
+显式选择该范围；报告命令保存完整配置，未根据缺文件自动跳过方向。
+
+本项仍是本地设备状态/阶段证据，不是普通主程序bc42输出、精确恢复
+或生产物理验证；这些消费者和新DCU设备运行仍待完成。未修改CPU
+边界，未改变生产默认，也没有执行Git或Slurm操作。
+
+### 10.19 当前物理端接口的DTK构建与未复现编译中断
+
+仅在login09、~/weiph/下同步当前维护源和构建。DTK26.04/GNU12/gfx906
+编译覆盖了10.12--10.18新增的槽道标量/体力、物理端显式/紧致滤波、
+共享紧致描述ABI、节点壁面带、ME6物理端、41/42状态与阶段探针。
+普通astr、原组件和六个新增/更新代表目标现均已完成编译及设备链接。
+没有替换已准备的run/bin副本，没有提交/查询/修改任何Slurm任务。
+
+首轮build_gpufusion.sh在keep_probe.F90编译时返回Error 9，后续目标
+未尝试，不能把该整条命令记为成功。日志无Fortran语法错误或明确
+OOM诊断；随后只读资源检查显示CPU时间/虚拟内存无ulimit上限，
+可用主机内存约100GB，这不足以追认首轮终止原因。
+
+为定位而对失败的单一目标加/usr/bin/time -v记录，再执行一次；
+源码、-O3和循环展开选项均未改，仅使该定点构建使用--parallel 1。
+编译及链接成功，墙钟74.57秒、用户CPU84.22秒、峰值RSS976540 KiB。
+首轮当时也只剩这一个Fortran对象，不能据此把问题归因于并行度。
+本轮没有为该未复现事件添加编译器替换、降优化、重试逻辑或其他
+代码补丁；原因仍未明。原失败和定点诊断日志均保留。
+
+之后只构建首轮尚未尝试的ME6、壁面、物理端梯度、壁面阶段链、槽道
+归约和滤波六个目标，命令退出0。普通astr、wall41_step、channel和
+boundary_filter的ldd均无not found；CUDA/GPUfusion及galaxyhip来自
+DTK26.04，GNU库来自GNU12，MPI/HDF5仍是已批准的私有前缀。主程序
+SHA256为1f9b247033955cca7ad75bfe2d83fd59e09fc09725d8e68b09e5518630c87327。
+
+登录节点仅额外运行纯CPU KEEP哨兵：污染后的表对象仍保持前后哨兵，
+294项/85基函数及序列化散列与本地NVHPC结果一致。本项不是DCU GPU
+算子执行；没有在登录节点运行GPU探针、普通GPU算例或性能测试。
+
+本地证据为dtk2604/wall_me6_bc42_build.log、
+keep_probe_compile_measured.log/.time、wall_me6_bc42_remaining_build.log、
+wall_me6_bc42_runtime_links.log和keep_guard_bc42_20261114.bin。
+这些结果更新了10.11的构建范围，不补足DCU设备数值验证。下一批
+实际GPU任务仍需明确授权，10.13的存储区初始化及普通壁面恢复接线
+也仍待批准/实现；原MB6/MB7 goal不据此收口。
+
+### 10.20 bc50零梯度外推与bc60几何对称状态/阶段链
+
+先运行冻结CPU/旧GPU的新匹配参考，再实现新设备命令，未改CPU公式。
+bc50对速度/压力采用(4*f1-f2)/3；x方向外推T后由EOS重建rho，y/z
+方向外推rho后重建T。bc60先外推速度，再用单位几何法向n施加
+u_w=(I-n*n^T)*u_e；压力与T外推，只有z+沿原CPU/旧GPU规则外推rho、
+重建T。两者都重建五变量q，并在原boucon相位将指定面的RHS清零；
+不把这一清零误放到完整体RHS装配之后。bc41/42状态命令仍不改RHS。
+
+symmetry_basic复用既有设备度量行并在核内单位化。geom原bnorm也是
+同一度量行单位化后统一朝向，投影不依赖法向符号，因此无需新增
+全场或六面法向数组。零梯度外推与对称处理共用模板核的相同索引/
+重建段，但保留上述不同标量闭合。没有引入坐标轴清零来代替投影，
+也没有新增吹吸、化学、多面交线或高阶边界公式。
+
+状态检查各108项，覆盖x/y/z、两参考、三个RK阶段、两同步和单/双面。
+bc50最大缩放差5.585e-16，bc60为5.362e-16；非目标物理节点/halo
+逐位不变，预置非零RHS只在所选面变为+0。bc60另有36项非轴对齐
+法向诊断，覆盖三方向/两侧/两同步以及法向缩放-2、1、3。采用独立
+3x3投影矩阵计算目标，最大状态差2.221e-16、法向速度残差6.004e-17。
+这检出轴分量清零、未单位化或法向索引交换，并非一项曲面CFD验收。
+
+四步16³、dt=1e-5、KEEP、固定驱动1e-4的设备阶段链保留原x齐次
+施加规则；每个下列配置均覆盖三个物理方向、NP=1/2 x/y/z及两同步，
+合计1008个rank阶段。表中q/缓存/RHS均为逐变量最大缩放差：
+
+| 边界与组合 | 最大q / 缓存 / RHS |
+|---|---|
+| bc50，643e/643e+ME6，无滤波；pinned/device各检查 | 1.430e-15 / 1.553e-15 / 1.895e-15 |
+| bc50，643c/643c+ME6+compact10；scalar/pinned与full/device各检查 | 5.558e-14 / 7.054e-14 / 1.031e-13 |
+| bc50，643e/643e+标准节点黏性+explicit10 full，pinned | 2.884e-15 / 3.328e-15 / 2.384e-15 |
+| bc60，643e/643e+ME6，无滤波；pinned/device各检查 | 1.331e-15 / 1.331e-15 / 1.895e-15 |
+| bc60，643c/643c+ME6+compact10；scalar/pinned与full/device各检查 | 5.558e-14 / 7.188e-14 / 8.987e-14 |
+| bc60，643c/643c+标准节点黏性+explicit10 scalar，pinned | 2.502e-15 / 3.106e-15 / 2.821e-15 |
+
+两边界各自的无滤波通信对照及紧致存储/通信对照，均取得对应168个
+终态物理q包逐位一致；两种节点黏性/显式滤波各84包的同步比较亦
+逐位一致。紧致系统独立残差最大8.675e-16、LU差5.719e-15，紧致
+轨迹梯度差最大6.077e-13，不冒称同状态误差。bc50单位memcheck与
+模板版initcheck、bc60含非轴对齐诊断的memcheck均零错误，memcheck
+零泄漏；bc50 NP=2 y和bc60 NP=2 z紧致滤波一个完整步的initcheck
+两rank均零错误。bc41/42原状态项仍保持原误差。
+
+证据在native/bc50_me6_reference、bc50_me6_compact_filter_reference、
+bc50_nodal_filter_reference、bc60_me6_reference、bc60_me6_compact_filter_reference、
+bc60_nodal_compact_explicit_filter_reference及各自bc50_*/bc60_*运行/工具日志。
+run_wall41_steps.py沿用原名，以--boundary-type 50/60显式选择；本节
+全轨迹结果均使用KEEP对流，不把下一节尚未收口的普通中心项混入。
+这些新接口/代表阶段尚未DTK重编和执行；10.19只覆盖此前至bc42的
+版本。普通主程序准入、输出/恢复及其他MB7消费者仍待完成。
+
+### 10.21 普通中心对流区域修订与待决定诊断合同
+
+本节诊断提案已在10.30获批并实施，原full含义保留，以新增post_source
+完成普通中心物理端同相位比较；以下保留原问题定位过程。
+
+核对CPU convrsdcal6后发现：普通中心对流的三个方向都只累加到
+[is:ie,js:je,ks:ke]共同内点盒，黏性则分别限制本方向。新C++此前的
+物理端普通中心入口和紧致kind=2回写均沿用黏性的逐方向范围；该
+物理端消费者尚未准入普通主程序，不影响已交付周期范围。
+
+新增标准对流的阶段选择后，在冻结普通中心+ME6、bc60波纹参考上
+复现第一阶段x面密度对流RHS差2.400951741e-5。只修订新C++的对流
+回写为共同盒；黏性回写范围、系数、全局紧致矩阵和RHS行均不改。
+CPU和旧GPU实现未改动，没有用CPU推进替代新设备入口。
+
+为不依赖旧标签，新增根目标astr_backend_boundary_flux：单位Jacobian/
+度量、恒定rho/u及线性压力构造解析Euler通量散度。盒内预置RHS=7
+应减去[0,dp/dx,dp/dy,dp/dz,gamma/(gamma-1)*(u dot grad(p))]；共同盒
+外所有字保持7。显式、紧致各256项覆盖64种边界区域选择、包含/
+排除端点和两同步，最大缩放差3.834e-16/5.112e-16。显式initcheck
+零错误，紧致memcheck零错误/零泄漏。紧致只预求解
+一次完整非周期系统，再对不同所有权盒回写，不截短矩阵或转CPU
+求解；64种盒不等同64种完整CFD拓扑。工具记录见下方。
+
+普通主程序周期标准紧致TGV NP=2 y另对照已有匹配不可变参考，最大
+终场/缓存/分项RHS差2.643e-14、4.397e-14、1.719e-12，仍满足2e-10。
+新源未改变周期可用范围，不据此宣布普通中心物理端已闭环。
+
+后续完整阶段比较暴露的是旧诊断合同差异，而非上述区域误差：
+
+- CPU rhscal在普通中心、低阶边界路径的full标签于src_chan之前
+  写出，旧GPU则已包含源项。三方向第一阶段conv原参考彼此仅差
+  6.662e-16；y/z的full差3.027956707e-6，恰为fixed force*Jacobian。
+  只读分析用实际q/J计算该已知源项后，相位差残余分别6.662e-16、
+  5.565e-16。未修改原参考或把扣源数据回填推进/伪称full比较通过。
+- 旧CPU普通中心/普通黏性的bc41-y虽然完成四步并写出检查点，但
+  mainloop只在选定格式/流型写pre_rhs_primitives，本夹具没有该缓存
+  快照；标准对流滤波也缺post_filter。不能把缺少观测误报为物理失败。
+- 普通中心/普通黏性的bc60新式检查点、普通中心紧致/普通黏性的
+  bc41-y还分别被旧输出/全局紧致准入拒绝。未放开这些限制或将被
+  拒绝的组合算作参考通过。
+
+已提交、尚未批准的最小诊断提案：保留旧full标签，另增CPU/旧GPU
+同相位的非反应post_source，统一现有验证请求下的pre_rhs_primitives/
+post_filter输出，再仅以诊断增量重新冻结参考，先核对旧参考已有量。
+不改源项顺序、离散或生产默认。批准前不改src/mainloop.F90、solver.F90
+或冻结二进制，不继续声称这一普通中心物理端全轨迹验收。
+
+证据为standard_boundary_mask_initial_failure、standard_bc60_me6_wavy_corrected、
+standard_bc50_me6_compact_corrected及其匹配原参考；前两种差异按上述
+真实相位区分，不收集为通过计数。只读归因在standard_snapshot_phase_analysis.log，
+解析门槛为standard_body_flux_explicit/compact.log及对应工具记录；普通
+周期回查为standard_periodic_after_body_range_matched。早一次仅误指向
+不含cpu/old_gpu的C++结果目录，在启动前即停止，原记录保留。
+
+本轮未操作Git或远端任务。10.13的未使用存储区初始化与本节诊断提案
+为两个独立待决策项；均不以已批准的KEEP表初始化替代。原MB6/MB7
+目标保持完整，物理端普通主程序/恢复、NSCBC、高阶边界、MP7、低精度
+及新原位消费者和DCU设备矩阵均未因此收口。
+
+### 10.22 新C++私有原位采样组件
+
+本项推进不依赖10.13的求解器外区初始化或10.21的旧CPU诊断改动。
+新增src_gpu/insitu_sampling.cu/.h/.F90，复用设备状态、流、度量及C ABI；
+不加载CUDA Fortran数组，不改原位产品定义，也未新增渲染器。
+
+采样依次复制物理节点rho/三动量，按x/y/z将高端共享节点替换为下一
+rank的低端唯一所有者，再计算速度；不平均、不改写求解器状态。
+因此不能在共享节点规范化前用本地重复节点的rho作除数。速度按已有
+产品的(3,N)交错布局供给；需要梯度/流线才分配私有三层SoA halo，
+需要派生量才分配(14,N)诊断或单个(1,N) Q数组。完整诊断为九个物理
+速度梯度、Q_rs=-0.5*tr(grad(u)^2)、散度和三涡量；Q-only与完整诊断
+的Q逐位一致。全九分量度量投影保持原定义。
+
+内点/MPI接口为六阶中心导数；物理端可选择旧2/4/6阶闭合或已有七节点
+六阶单边/偏置闭合，均为后处理私有算子，不改变流体求解器离散。
+q四分量临时数组在生成速度后先释放，再分配halo；仅流线所需halo而
+不需要打包速度的调用，在复制halo物理区后释放临时速度。输出借用视图
+到下一次capture/destroy失效，消费者须先完成；父状态不能先于采样对象
+销毁。未放宽既有生命周期，不把设备指针映射为主机Fortran数组。
+
+通信使用私有重复通信器及固定设备包槽，pinned模式在多rank时另分配
+固定页主机包；device-aware直接传设备地址。应用计数分别记录包传输、
+状态标量、显式测试观测和所拥有数组的当前/峰值字节，不将此峰值称为
+驱动全显存峰值，也不增加预算上限。生产capture不回读全场，探针的
+显式download单独计数；每次成功capture只回读4或8字节状态标量。
+
+旧CUDA Fortran参考先由原根构建目标insitu_device_fields_probe生成并
+冻结到results/multi_backend_mb7_insitu_20261114/legacy_reference；源码、
+二进制散列与构建记录一并保存，旧采样代码未改。旧路径NP=1/2 x/y/z
+pinned及NP=2 x设备通信的解析检查最大差1.111e-15。新旧各自对照独立
+解析/唯一节点参考；没有把旧二进制的通过计数当作新C++通过。
+
+新根目标astr_backend_insitu_sampling的本地实际结果：
+
+| 检查 | 结果 |
+|---|---|
+| 32³周期三角函数，NP=1/2 x/y/z，pinned与双卡device-aware，两同步 | 每rank每运行16次capture；梯度/Q/散度/涡量最大绝对差5.108e-15，速度和全部私有周期halo与唯一节点参考逐值相等 |
+| 非周期三方向物理端，二次多项式，旧闭合，NP=1/2 x/y/z pinned | 诊断最大绝对差1.990e-13，物理域与有效MPI halo的速度逐值相等 |
+| 非周期物理端，含六次项多项式，七节点闭合，NP=1及NP=2 x/y/z device-aware | 诊断最大绝对差5.196e-13；该制造场实际检查六阶闭合系数，不只检查线性场 |
+| 重复节点、同状态隔离与按需存储 | 重复节点预置不同状态，第二帧rho=0；规范化后的临时四分量与唯一所有者逐位相同。求解器所有已分配数组逐位不变；Q-only逐位相同；未请求的输出不分配；device模式应用层主机中转字节为0 |
+| 单rank非法所有者状态 | 两同步下仅rank0的一个所有者rho=0，双卡均返回原非物理状态码；求解器q不变，失败对象可释放，不隐藏失败或切换后端 |
+| 内存工具 | NP=2 y周期memcheck及NP=2 y旧物理闭合/失败释放memcheck均零错误、零泄漏；NP=2 z七节点闭合initcheck两rank均零错误 |
+
+证据为上述新目录的np*_pinned/device*.log、walls_np*.log及memcheck*/
+initcheck*；构建日志为build_sampling_*.log。首轮夹具hm=3却请求需hm=5
+的显式滤波工作区，在采样前返回-1；只将探针求解器halo改为5，采样halo
+仍为3，未改滤波准入。失败记录np1_pinned_initial.log保留。
+
+主程序astr及探针已通过本地根构建。本组件尚未接到普通主程序原位事件、
+累计统计、精确恢复或Catalyst产品；当前C++启用正式原位时的拒绝仍保留。
+因此本项不是新后端已能出图的声明，也不是实际CFD轨迹/曲线网格产品
+验收。普通事件供给及既有二维/等值面/流线消费者是下一接线项，DCU
+渲染仍属MB9。
+
+随后只在既有login09工作树重编本批增量。DTK26.04/GNU12/gfx906的
+astr_backend_insitu_sampling、astr_backend_boundary_flux、astr_backend_wall41
+均编译、设备链接及最终链接成功；新采样二进制ldd没有缺失项，MPI、
+Fortran和HDF5仍解析到既有GNU12私有栈，设备运行时解析到DTK26.04。
+记录为build_sampling_dtk.sh/.log、source_sampling_delta.tar.gz及上传日志。
+保留DTK对合法void例程的缺return告警和现有forward-unknown参数告警，
+没有为此更换编译器、加重试或改数值公式。这里只是构建/依赖证据：未在
+登录节点执行GPU、未替换冻结作业副本，新的设备数值矩阵仍待单独授权。
+
+本轮再次执行已批准的KEEP初始化哨兵探针，前后哨兵不变、294项/85基函数
+不变，完整表散列仍为115e8ef52fc1502c3cdc19a608b22dc4cd7e9bfd319d1e343f916012207e3469，
+见native/keep_guard_insitu_checkpoint_20261114.log/.bin。没有修改KEEP公式、
+待批准诊断提案或未使用求解器外区初始化；没有Git写操作、Slurm操作或
+生产任务干预，完整MB6/MB7 goal仍在进行。
+
+### 10.23 普通C++主程序的数值截面与原位代表产品
+
+本节更新10.22时点的“仅采样组件、尚未接通产品”限制。正式输出实际
+走动态产品清单，因此没有另建展示专用渲染通路。新增
+src_gpu/insitu_index.cu/.h/.F90及insitu_index_runtime.F90，复用现有
+index_slice_provider的全局选点、唯一源所有者、私有通信邻域和七节点
+Lagrange导数；同样供给(N,fields)结果及(3,N)交错坐标。C++核消费父状态
+的当前原始量缓存和度量，不改q、RHS或求解器梯度，也不调用CPU推进。
+在当前主程序周期路径中，缓存已在完整RK结束后重建，数值对照使用这一
+相位，不能把这些缓存与10.22的独立q四分量快照接口混为同一种状态合同。
+
+已接五守恒量非反应流的瞬时rho/u/v/w/p/T，以及速度梯度、Q_rs、散度、涡量、密度/温度梯度、
+分子壁面输运、lambda2/lambda_ci的设备计算接口。壁面材料公式保持既有
+Sutherland/Fourier定义，涡判据复用既有CPU/CUDA共用特征值实现；本轮实际
+CFD产品只使用周期非反应TGV，不能据组件公式认领壁面或AIR5算例完成。
+AIR5布局、时间平均/脉动/时序源仍不实现；未实现的动态产品按既有机制
+登记拒绝，不再因“所有C++渲染都未实现”的旧总检查中止合法瞬时产品。
+正式累计统计入口仍明确拒绝C++设备统计，不静默读取陈旧主机流场。
+
+静态坐标首次被设备产品需要时上传，由父状态的私有IndexPlan复用，
+分组结果和通信工作区在调用者消费后释放，静态坐标随父上下文释放。
+没有为未启用消费者预分配全场坐标。原Fortran设备指针使用处以ISO C
+指针接入新提供者，不将设备地址映射为主机数组。流线复用10.22的私有
+速度halo；目前接通完整rank局部体积的瞬时笛卡尔源，物理坐标halo和
+裁剪子体积明确尚未实现。选定的MPI后端实际为pinned或设备缓冲，均无
+自动后端切换。数值存档的显式host通信条带与设备渲染的传输须分别统计。
+
+根CMake现将原生CUDA渲染能力与CUDA Fortran分离：新CPP=cuda可链接
+既有Catalyst/Viskores产品，CPP=gpufusion不因此取得DCU渲染准入。
+正式图像仍由原有标准设备/设备几何直连管线生成，没有替代渲染器。
+首个新CUDA主程序链接暴露Python嵌入库被GNU as-needed丢弃，按既有
+渲染探针方式明确链接并保留Python；随后CUDA默认g++15与C++ g++13
+组合产生__cxa_call_terminate链接失败，另以显式CUDA host g++13构建，
+与既有ParaView/Catalyst开发环境保持一致，最终构建和依赖解析成功。
+没有补符号兼容层、修改第三方源码或添加自动重试。
+
+旧CUDA Fortran的根目标astr在消费者修改前重新构建并复制到
+results/multi_backend_mb7_insitu_20261114/index_reference；其中保存消费者
+修改前的源文件、CMakeCache、构建日志和二进制散列。其核心仍为2df6d1d
+基线及已批准的KEEP初始化修订；新旧均使用现有实际TGV输入，不将旧图片
+当作新后端图片。新CUDA构建为build_backend_cpp_insitu_gcc13：CUDA13.1、
+CUDA host/C++ GCC13、NVHPC26.1 Fortran及既有HPC-X/HDF5，未启用CUDA Fortran。
+继承了原渲染开发构建的ptxas快速编译参数，本节不是性能基线或提速结论。
+
+| 实际门槛 | 结果 |
+|---|---|
+| 设备组件，NP=1/2、两同步、非周期二次场及九分量度量投影 | 30个原始/派生/壁面/涡判据字段最大绝对差1.426e-13；私有邻域逐值相等；pinned和真实设备MPI均通过。涡特征值对照既有CPU数学组件，梯度另有解析参考，不冒称独立物理验证 |
+| 组件memcheck，NP=2 pinned | 两rank均0 errors、0 bytes leaked；父q不变，分组工作区及父静态坐标均释放 |
+| 材料参数可容许域 | 两同步、两rank均拒绝负Re与负温度系数相消所得的伪正黏度，保持CPU原有合同；该项及正常30字段的设备MPI复验通过，最后memcheck仍零错误/零泄漏 |
+| 普通16³ TGV、dt=1e-3、4步，NP=1及NP=2 x/y/z | 三方向数值截面各输出0/4步，含26个已定义字段；各变量缩放差最大2.939e-13，终场最大1.547e-15，几何差0。输出开/关state.h5的权威数据集逐字节相同；本项数值条带显式走host，不伪称设备MPI |
+| 数值截面精确续算，NP=2 y，连续4与2+2 | 权威状态及第4步截面逐字节相同；恢复原产品清单/时钟，未采用磁盘上另写的压力产品 |
+| 普通32³ TGV、4步，切片/Q=0.25/瞬时line16，NP=1 standard+pinned、NP=2 x standard+device-aware、NP=2 x direct+pinned | 各产品实际生成0/2/4步JPEG及每rank收据，产品状态active；字段和几何回读字节为0，设备通信两类提供者的应用层私有中转字节亦为0。主推进halo在本轮仍为pinned；不混写为全程序无传输 |
+| 同上图像的来源与隔离 | 新主程序打印backend=cuda；开关图像的完整权威场逐字节相同，新旧终场最大缩放差1.768e-15。已查看实际三类图片。像素差仅报告：切片为0，双卡Q为0，瞬时流线平均绝对像素差最大0.02045/255，不用图片相似代替数值误差门槛 |
+| 新图像精确续接，NP=2 x、standard+device-aware，连续4与2+2 | 恢复后只出第4步三张图，权威状态逐字节相同、三张JPEG逐像素相同，保存的清单和事件时钟一致 |
+
+参考及组件记录为index_reference、index_np1/2*.log、index_memcheck_np2.log；
+普通数值证据为index_main_np1_catalog、index_main_np2_x/y/z及
+index_main_np2_y_restart_same_schedule；图像证据为images_cpp_np1_unlimited、
+images_cpp_np2_x_aware/direct及images_cpp_np2_x_restart，各有report.json。
+材料合同复验见index_material_np2_device.log、index_material_memcheck_np2.log；
+收口重编后的单卡三产品复核为images_cpp_np1_final，未因小修重跑整组矩阵。
+根驱动为tests/gpu_backend/run_cpp_insitu_gate.py；--images走实际动态产品，
+--restart检查保存的清单/调度而非只恢复q。EPS显式关闭，使用项目已有
+unlimited_budget_bytes的正整数表示及reserve=0，不自设测试资源上限。
+现有旧产品包络不接受-1拼写，catalog_stats又要求开启统计，不能借开启
+空统计或改原生产默认绕过；这些输入失败记录均保留。
+
+本轮还处理了测试中定位的C++格式检查错误：公共effective_filter_scheme
+已将省略的显式格式滤波确定为explicit10，旧C++入口却直接检查原始空串。
+只改入口读取公共解析结果，不新增默认、格式、容差或兼容层；格式公式、
+工作区和调度不变。16³四步的省略选择与已保存explicit10权威数据集逐字节
+一致，记录为implicit_filter_selection.log。其他测试夹具修订为关闭旧诊断整场sample前缀，以及
+保持2+2恢复的检查点间隔一致，没有放宽原来的精确恢复条件。
+
+仍待完成：新的物理边界主程序/恢复及普通中心诊断合同；新C++壁面/CURVE
+产品与物理坐标流线、裁剪体积/预览、Reynolds/Favre及选定时间统计、
+动态新增/停用的完整资源生命周期、自动步长产品代表检查和新DCU设备矩阵。
+本轮未证明跨MPI分区的常速度解析流线门槛，也不把TGV图像当作该门槛。
+新Index源尚未DTK重编/设备执行；10.22的DTK构建记录不覆盖本节增量。
+未操作Git、Slurm、生产任务或第三方库，MB6/MB7完整goal保持进行中。
+
+### 10.24 选定速度包、物理坐标halo与CURVE产品
+
+本节更新10.23的物理坐标流线限制。核查并冻结旧
+insitu_device_velocity.cuf及根目标insitu_device_velocity_probe后，明确
+两种不同端点合同：选定速度包保留其实际物理上端值，速度halo可按
+流动周期性延拓；坐标halo只交换内部MPI面，全局端不作周期回绕、
+平移或外推，私有域外填零。不能把旧q采样的上端canonical规则套在
+选定Index速度上，也不能把物理坐标按速度的周期规则绕回零坐标。
+
+insitu_sampling增加显式选列/步幅的sample_capture_vector，以及同一
+sample上下文中的sample_capture_coordinates。前者直接消费Index设备
+值包，不重读q或以rho重建速度；后者复用现有私有通信器、XYZ顺序、
+send/recv槽和pinned暂存，新增的只是按需物理坐标halo。坐标不改变
+速度halo，不另算一次frame，不为halo-only请求分配q快照或重复速度向量。
+Index暴露借用的typed view，宿主仅传设备地址，不将其解引用为主机数组。
+父q、选定值包和静态坐标均保持不变。各产品结束后释放私有halo/槽，
+父静态坐标仍按10.23随父状态释放。
+
+根目标astr_backend_insitu_vectors用32³、两种映射、两同步、两次更新
+检验该合同：五列中压力为未选中的NaN，三个速度列有明确独立索引；
+父q刻意与速度包不同，以防误从q取值。选中列非有限则各rank一致拒绝。
+NP=1/2 x/y/z的速度/坐标数组与解析唯一所有者逐值一致，pinned与真实
+device-aware数值检查均通过；设备当前/峰值、固定packet槽、按需分配、
+每frame标量回读及捕获次数均检查。该项是组件验证，不是流线解析轨迹。
+
+| 普通主程序短测 | 已取得结果 |
+|---|---|
+| 静态周期非正交32³、4完整步、NP=2 x，三方向数值截面 | 保持共享CURVE源已准入的21字段；各字段最大缩放差1.4164e-14，终场1.9880e-15，坐标差0；观察开关的权威数据集逐字节相同 |
+| 同网格、固定dt=1e-3、slice/Q=0.25/物理坐标line16、NP=1/2 standard+pinned | 各产品在0/2/4步输出；字段/几何回读0；切片/Q与旧GPU逐像素相等，流线平均绝对像素差最大0.0914/255，仅作显示比较 |
+| NP=2 x、direct+device-aware、连续4与2+2 | 权威状态逐字节相同，保存的清单/时钟恢复后只输出第4步；三张续算图与连续图逐像素相同；产品字段/几何回读及应用层私有host中转均0。主推进halo仍是pinned |
+| NP=2 x、standard+pinned、自动步长及物理时间触发、连续4与2+2 | cfl_target=.5、initial_dt=.001、max_dt=.002、growth=1.1；实际dt为.001/.0011/.00121/.001331，末时刻.004641，最大C_upper=.23932075683344894。时间间隔.002实际触发0/2/4步，收据时刻与完整步日志相同；终场对旧GPU最大缩放差2.2089e-15；开关权威状态及续算权威状态逐字节一致，三个续算JPEG逐像素一致。新旧切片/Q像素差0，流线差最大.09521/255，不当作解析门槛 |
+
+该实际网格Jacobian解析范围[.79103125,1.24271875]、非对角映射导数
+幅值.15。最早一次请求26字段被新旧共享源的CURVE热量/涡量新增字段
+限制拒绝，后按成熟21字段验证；src/index_slice_source.F90未被放宽。
+自动测试首轮误将list_steps放进run_control，启动读入即拒绝、未推进；
+仅修测试驱动使其位于logging，失败目录保留，不计为数值门槛失败或通过。
+自动步长的四步只检验增长约束和调度/恢复，不据此宣称逼近CFL上限的
+自适应控制、长时物理或生产规模性能已验证。
+
+内存工具结果须与aware功能结果区分。NP=2 pinned的memcheck为零错误/
+零泄漏，initcheck为零错误；默认UCX CUDA IPC下，initcheck对新旧
+两种提供者的接收halo均报告未初始化读取，但解析数组仍逐值一致。
+显式诊断UCX_TLS=self,sm,cuda_copy后，新提供者initcheck为零错误；
+默认协议日志确认使用cuda_ipc及zero-copy write。这支持“跨进程IPC
+写入的工具影子状态跟踪”这一解释，但不是厂商已确认的误报结论。
+aware memcheck另有MPI/UCX驱动API探测错误，默认IPC记录还有未释放
+分配；不将其称为干净的aware工具验收，也不擅自归因或忽略。
+未添加接收memset、抑制规则、自动切换、重试或生产MPI修改。
+
+全部证据位于results/multi_backend_mb7_curve_products_20261114：
+legacy_coordinate_reference保存旧二进制/两源/SHA及其实际对照，
+vectors_*与vector_*保存组件及工具/协议日志，curve_data_mature_np2_x
+保存三截面，curve_images_np1_standard、curve_images_np2_standard、
+curve_images_np2_direct_restart保存固定步长图像及报告；
+curve_images_np2_auto_restart_correct_input保存自动步长闭环及report.json。
+NP=2实际流线/Q图片已查看，不把文件生成或像素一致当作物理证明。
+
+仍未完成：新普通消费者的常速度跨rank解析轨迹、裁剪子体积/预览、
+壁面CFD产品、Reynolds/Favre/选定时间统计及动态更新完整生命周期，
+以及10.13/10.21待决策的普通物理端主程序接线/诊断相位。
+新Index/vector接口已列入DTK构建脚本，但未DTK重编或设备运行，
+不沿用10.22的旧版本编译证据；DCU渲染仍属于MB9。
+本轮无Git写操作、Slurm或生产任务干预，完整MB6/MB7 goal仍active。
+
+### 10.25 FP64时间统计设备组件与空间归约
+
+本项继续MB7中非反应平均统计的提供者迁移，不依赖10.13/10.21的
+待批事项。先保存未修改的insitu_velocity_statistics、insitu_time_integral
+和insitu_statistics_gpu源及SHA，再新增insitu_moments.cu/.h/.F90。
+未修改旧CPU数学组件、旧GPU消费者或主程序统计准入，不把组件结果
+当作真实CFD平均产品已交付。
+
+时间积分沿用公共clipped_trapezoid的两端权重，在窗口交界处截断；
+端点的rho/u及非线性积分量保持旧定义，不改成样本算术平均或先插值
+rho/u再求积。设备内更新Reynolds与Favre均值、两个完整对称中心矩阵，
+使用与CPU相同的(total/new_total)*weight及分步乘法次序。直接只读
+当前q，不依赖主机流场或旧CUDA Fortran的设备模块。
+
+状态布局和生命周期如下：
+
+- 常驻30个FP64/唯一节点：前一rho/u、时间与质量权重、两套均值及
+  两个3×3中心矩，另有一个状态整数。物理上端可按现有所有权增加
+  一个节点；MPI/周期重复面和未使用ghost不参与统计。
+- 显式空间归约请求才上传一份静态节点测度，并分配六个设备归约
+  标量；设备求出加权的当前速度及时间Reynolds方差。保留Fortran
+  负责全局归约/归一化的接口，本轮组件不自行创建新MPI协议。
+- 每次采样只回读一个状态整数；每次空间归约回读六个FP64。
+  34分量状态打包沿用旧格式：三项时间/窗口、30分量状态和有效标记。
+  只有显式保存/恢复才下载/上传30分量，重复元数据在主机填写。
+- 41分量结果只在显式导出时临时分配，复制完立即释放。未启用
+  提供者时不分配统计场；不为普通采样保留41分量结果或q快照。
+  独立计数设备当前/峰值、状态/标量回读、显式观察及恢复传输。
+- 统计上下文借用父设备状态/stream，存活时父析构被拒绝，销毁后
+  解除借用。不加失败重试、回滚或默许CPU计算；设备采样失败后的
+  状态不复用，保持旧入口失败不继续消费的合同。
+
+根目标astr_backend_insitu_moments在NP=1/2 x/y/z、两同步、半开所有权/
+含真实物理上端两种盒中，分别检查非均匀时序、窗口无覆盖、恒定速度
+制造解。每rank有72次有效采样、12条第三次采样后恢复的分支。
+冻结CPU数学组件逐点给出34分量参考及41分量结果；恒速另有解析
+均值、零方差/应力和截断覆盖时长.0038的独立检查。
+
+| 检查量 | 最终本地结果 |
+|---|---|
+| 34分量状态对CPU最大缩放差 | 8.2139894237241722e-17 |
+| 41分量均值/协方差/密度加权应力及RMS平方对CPU最大缩放差 | 8.2149770750035494e-17；RMS原值差另报6.8521577301083880e-17 |
+| 节点测度加权空间归约对host直接求和最大缩放差 | 1.7306402202995638e-16；重复调用逐位一致 |
+| 同输入第三次采样后恢复再推进 | 其后三个时刻的34分量状态逐位一致，含时间与窗口 |
+| 隔离与生命周期 | 父q全部字保持不变，含未使用NaN halo；无隐式整场回读；输出临时场释放，私有常驻/峰值及传输计数符合实际大小 |
+| 有限/可容许域 | 非正rho返回nonphysical；重复采样时刻、负中心矩对角的恢复在提交前拒绝，后两种拒绝不改变原统计状态；不把失败采样当作可续用状态 |
+| NP=2 y Memcheck / NP=2 z Initcheck | 最终两rank均0 errors，Memcheck均0 bytes leaked |
+
+最初512线程启动发生CUDA 701：资源dump显示新push核152寄存器/线程，
+超过本卡该块大小的寄存器容量。补齐旧核已声明的launch_bounds(512)，
+重新编译后push为128寄存器/线程；不改变线程数、权重或统计公式。
+这是可执行性修订，不是性能优化或占用率收益结论；初次失败日志与
+前后resource dump均保留。共同父状态增加统计借用计数后，原选定
+速度/物理坐标halo的NP=2 z复核仍逐值一致。
+
+证据为results/multi_backend_mb7_moments_20261114：reference保存旧源/SHA，
+moments_final_np1/np2_x/np2_y/np2_z.log为最终矩阵，
+moments_final_memcheck_np2_y.log及moments_final_initcheck_np2_z.log为
+最终工具记录，kernel_resources_before/after.log为启动资源证据。
+测试并未运行普通CFD、执行真实统计检查点I/O或给出物理定常结论。
+
+下一步仍须接通普通主程序的采样调度、几何测度及区域归约、已有
+statistics.h5消费者/精确续算、Index平均源、平均流线与统计窗口生命周期，
+再做真实周期/静态CURVE的同相位CFD对照。当前统计总准入未解除，
+因此不能据本节声称这些消费者已完成。DTK构建脚本已列入该目标，
+本轮未DTK编译/设备运行；无Git写操作、Slurm或生产任务操作，goal保持active。
+
+### 10.26 普通主程序时间统计、平均截面和平均流线
+
+本节接通10.25的设备组件，不改变旧CPU数学或旧GPU参考。新增
+src_gpu/insitu_statistics_runtime.F90，把已有insitu_session的完整步采样、
+区域统计、statistics.h5及结束导出调用连接至C++提供者。CPU及CUDA
+Fortran仍走原分支；C++普通主程序只在显式statistics请求时分配30分量
+设备状态。窗口、非均匀采样权重、34分量检查点布局及同后端精确恢复
+合同保持原样，没有新增配置选项或额外附属文件。
+
+空间测度沿用原组件：均匀网格用cell_volume，槽道接口保留原y梯形
+权重，静态CURVE用insitu_volume_weights的2×2×2 Gauss单元测度及唯一
+节点归并。后两者不由程序当前迭代场重算；首次区域归约时只上传
+一次节点测度。设备回读6个局部量，Fortran继续作7个量的MPI求和和
+体积归一化，区域速度的时间统计仍使用原CPU数学组件。
+本轮实际普通CFD只用周期TGV及静态周期CURVE，不据接口认领槽道主
+程序已准入。已有显式预算在分配/导出事件按物理设备聚合检查，新增
+PCI身份C ABI查询，不增加每步预算查询、重试或自动后端切换；测试
+用既有unlimited表示和reserve=0，不自设资源上限。
+
+Index提供者增加只读借用的30分量统计视图，直接从中选取Reynolds
+密度/速度或Favre速度。沿用既有唯一源所有者及私有MPI条带，不先
+下载均值再上传。周期上端和MPI重复面的平均原始量从已完成交换的
+邻域中心取值，不能直接索引半开统计数组的越界端。梯度、Q_rs及
+涡量仍沿用七节点私有后处理导数和完整物理度量投影。
+平均源的Q是Q_rs(mean(u))，不是瞬时Q_rs的时间平均；未累计的平均
+压力/温度、Favre密度及旧solver-samples/selected-time源没有以瞬时量
+代替。现有产品错误隔离继续生效，测试中的平均压力单独记为
+invalid-configuration，合法Reynolds/Favre产品继续输出。
+
+| 普通主程序矩阵 | 已取得结果 |
+|---|---|
+| 16³、dt=.001、12步、NP=1统计/NP=2 y/z含平均截面 | 对冻结CPU/旧GPU逐变量权威场、34分量统计状态、区域状态、41分量导出结果均满足E<=2e-10。已测终场最大2.776e-15，平均截面含全部速度梯度/Q/涡量最大3.301e-15；RMS按平方作门槛并另报原值差 |
+| 静态周期CURVE 32³、NP=2 x、12步自动时间步、CFL目标.5/增长1.1，含平均截面 | 权威场/统计状态最大5.551e-15，平均截面最大2.024e-14，41分量结果最大2.110e-15。使用真实几何测度和窗口截断；不是把CURVE当均匀网格归约 |
+| 上述连续12与5+7精确续算、统计/观察开关隔离 | 权威state.h5、statistics.h5、41分量最终输出及后续time/dt逐值一致；平均截面续算只输出第9步，对应同相位场逐位一致。均值窗口未覆盖的0步不冒用瞬时场，正常连续输出为1/5/9步 |
+| 32³笛卡尔、NP=1、standard+pinned，Reynolds切片/Favre切片/Favre流线，4步 | 三产品在有覆盖的1/3步出图，字段/几何回读0，图像开关不改权威场或统计状态；2+2恢复只出第3步，权威/统计状态及三个JPEG逐像素一致。新旧平均切片像素差0，流线平均绝对像素差最大.01310/255 |
+| 静态周期CURVE 32³、NP=2 x、direct+device-aware，同上三产品 | 字段/几何回读0，私有Index与流线的应用层host中转0；主求解halo仍pinned，不冒称全程序无传输。2+2恢复的场、统计及三个JPEG一致；新旧切片像素差0，流线差最大.07661/255，仅作显示比较，不代替解析轨迹门槛 |
+| 真实16³、NP=2 z、12步及平均截面的Memcheck | 两rank均0 errors；该主程序工具调用未指定full leak-check，不把它写成零泄漏门槛。10.25组件的完整泄漏检查仍为零 |
+
+平均图像来自新C++普通astr，不是旧图片复用，实际CURVE平均流线和
+平均切片已查看。字段数学对照与图像比较分开：不同后端的流线像素
+差只报告；同后端续接要求像素完全一致。现有line16和RK45参数未改，
+不据此新增常速度跨rank解析轨迹通过记录。
+
+测试驱动为tests/gpu_backend/run_cpp_statistics_gate.py及
+run_cpp_mean_images_gate.py；前者--means检查数值截面，--automatic使用
+现有自动步长，--mapping periodic生成原32³非正交网格，--memcheck只
+插桩新后端实际统计运行。后者--pipeline/--transport明确选择既有两类
+渲染管线/私有通信，EPS关闭。首个关闭统计基线误写enabled=t，触发
+既有采样入口；已将该基线改为enabled=f，未改求解器采样策略。
+平均续算的首轮比较还误把新分段geometry.h5的创建step/clock要求与
+旧段相同；核查后仅坐标/索引/字段保持逐位要求，创建标识分别必须
+精确匹配各自段的首帧。没有放宽同一时刻场或统计的误差门槛。
+
+证据根仍为results/multi_backend_mb7_moments_20261114：
+main_np1_disabled_baseline、main_means_np2_y_segment_clock、main_means_np2_z、
+main_curve_means_np2_x_auto及main_means_np2_z_memcheck各有report.json；
+images_means_np1、images_curve_means_np2_direct_aware保存实际图片、逐rank
+收据和连续/续算报告。旧参考分别使用reference_fixed_keep/bin/astr_cpu
+及10.23预先冻结的index_reference/astr_cuda_fortran，未重编或覆盖它们。
+新根构建build_backend_cpp_native及build_backend_cpp_insitu_gcc13均通过。
+
+仍待完成：旧solver-samples、selected-time和时序累积、动态窗口/产品
+更新的完整统计生命周期、普通物理端壁面统计与恢复、预览/裁剪体积，
+以及新源的DTK编译/设备执行；当前不宣称DCU统计或渲染已验证。
+物理边界初始化及旧诊断相位的10.13/10.21待批事项保持不动；未修改
+mainloop/solver或CPU数值公式，无Git写操作、Slurm或生产任务操作。
+本节是MB7消费者增量，完整goal仍active，不以这些短窗代替物理统计收敛。
+
+### 10.27 选定时间统计的按需设备组件
+
+继续迁移既有selected-time提供者。先冻结未修改的
+insitu_sample_moments、insitu_selected_statistics、insitu_selected_runtime
+和旧insitu_sample_moments_gpu源及SHA，再在现有insitu_moments.cu/.h/.F90
+层增加独立稀疏状态接口，没有把旧宿主统计类重设计为另一套框架。
+本项尚未解除普通主程序的catalog_stats限制。
+
+布局沿用原sample_moment_size：n个请求字段需要3+3n分量，可选速度
+协方差再加12分量；包括前一rho/字段、时间/质量权重、Reynolds/Favre
+均值和两套各六个速度中心矩。它与10.25的固定30分量全域速度统计
+不是同一布局，不能因最大分量数相同就共用存储解释。只为显式请求
+的节点和字段分配状态，不新建整域三维统计场。
+
+- 索引在创建时上传一次；普通采样只读父q的请求节点，压力/温度
+  按原const2/const6解码，无需的能量或系数即使NaN也不读取/拒绝。
+  更新权重由原公共clipped_trapezoid提供，保留乘法次序和重新播种语义。
+- 外部设备包沿用无协方差的wall-source合同：首列rho，其后选定量，
+  目标行由唯一的一基positions给定。支持真实SoA/交错步幅及分块行数，
+  不回读字段再更新，也不从独立的父q偷偷重建外部包。
+- 按需剖面归约沿用128线程和原profile terms定义；只返回归约后的
+  terms×ny及状态标量。静态展向测度只上传一次，不回读逐点矩阵。
+- 显式保存/恢复才复制原始状态数组；借用视图不映射成主机数组。
+  空支持仅保留与旧实现一致的一行零存储，既不采样也不传输。
+  父状态由已有统计借用计数保护，销毁时释放全部私有缓冲。
+
+根目标astr_backend_insitu_selected已在本地NP=1和NP=2 x/y/z验证。
+每rank、两同步合计144次有效选点采样、24条第三次采样后的状态恢复
+分支及18次外部包更新。覆盖0--5字段的九种有/无协方差布局；额外
+无覆盖、重新播种、恒定解仅在代表五字段协方差布局检查，不展开
+全开关笛卡尔积。CPU数学组件逐点给出参考，恒定解另检查均值原值
+及精确零协方差；未选q/halo保持NaN以核对真正的读取范围。
+
+| 量/行为 | 最终本地证据 |
+|---|---|
+| 逐分量稀疏状态最大缩放差 | 2.2181412978197888e-16 |
+| 归约profile terms最大缩放差 | 1.8775358577242429e-16；重复归约逐位一致 |
+| 外部设备包更新 | SoA分块与交错包对CPU最大缩放差0；求解器q保持独立且不变 |
+| 同状态保存/恢复后再采样 | 其后三个时刻的全部原始分量逐位一致，含重新播种的代表情况 |
+| 传输与按需资源 | 普通更新仅回读4字节状态；索引不重复上传；剖面只回读terms和状态；未请求剖面不分配缓冲；GPU当前/峰值及实际传输计数核对通过 |
+| 非法状态/描述符 | 不支持字段描述符返回invalid_argument，非正rho返回nonphysical；失败采样不复用、不重试或回填CPU结果 |
+| 最终NP=2 y Memcheck / NP=2 z Initcheck | 含下述分配失败清理检查，两rank均0 errors；Memcheck均0 bytes leaked |
+
+本轮发现并修复了新代码的一处部分分配清理缺口：剖面权重分配成功、
+结果缓冲分配失败时，原新代码保留权重指针，会把不完整工作区当作
+可用对象。native测试链接专用cudaMalloc包装器，仅注入第二次分配
+返回memory-allocation错误，先复现current bytes未归还，再按旧CuF
+规则释放部分分配并清空描述符。故障后统计状态逐位不变，后续显式
+请求可正常分配。包装器只链接native测试目标，不进入生产库，也不
+改变DTK目标；没有生产自动重试、数值回滚或真实OOM压力测试。
+
+证据根为results/multi_backend_mb7_selected_20261114：reference为冻结旧源，
+selected_cleanup_np1/np2_x/np2_y/np2_z.log为最终矩阵，
+selected_cleanup_memcheck_np2_y.log和selected_cleanup_initcheck_np2_z.log
+为最终工具记录，profile_allocation_failure_injected_before.log保留
+修复前真实注入失败。更早一次链接包装器选项错误后误运行了旧可执行
+文件，profile_allocation_failure_before.log不含注入证据，不计入该门槛。
+既有全域速度统计组件在同库重链接后仍保持10.25的误差结果。
+
+尚待接线：旧Fortran选定统计对象的设备句柄/移动/序列化生命周期、
+主程序选定采样调度、Index selected-time/脉动源、剖面消费者及其实际
+产品/恢复/动态更新矩阵；当前不把这些组件记录当作普通selected-time
+已交付或新通信后端已验证。
+
+本轮另外完成DTK26.04/GNU12/gfx906的隔离构建，目录为
+~/weiph/mb67_selected_build_20261114.IuKKNT。普通astr、前序探针以及
+新增Index/vector/全域moments/selected四个探针均编译、设备链接及
+最终链接成功。这更新10.23--10.26的“尚未DTK重编”记录，但不纳入
+MB9的DCU渲染。首轮在Index探针参数数组初始化处遇到GNU12错误：
+implied-do变量i在初始化之后才声明，NVHPC此前接受了该写法。
+只把该声明移到使用前，30字段列表、权重和核不变；本地复验最大
+绝对差8.5571e-14。随后仅重编四个未完成探针，不重跑已完成的构建。
+
+主程序和四个新探针的ldd均无缺失项，MPI/HDF5指向原私有GNU12栈，
+libgfortran指向GCC12，设备运行时指向DTK26.04。六个新增/改动的核心
+Index/moments及宿主接线文件上传SHA与本地一致。构建和依赖记录为
+build_selected_dtk.sh/.log、build_remaining_dtk.sh/.log、dtk_runtime_links.log
+及dtk_upload.log；保留首轮编译失败、原有void-return和
+forward-unknown工具链告警，没有改SDK或添加忽略错误的兼容层。
+这只是构建/依赖证据，新的DCU设备矩阵仍需单独授权。
+未在登录节点运行GPU、未查询Slurm、未修改既有作业或冻结二进制，
+所有远端新增内容均在上述工作目录。本轮无Git写操作，goal仍active。
+
+### 10.28 普通主程序选定时间统计与动态生命周期
+
+将10.27的按需设备状态接回原insitu_selected_statistics对象和
+insitu_selected_runtime调度。新增src_gpu/insitu_selected_device.F90只提供
+不透明句柄、借用设备视图、移动/释放、显式保存/恢复及实际工作区
+字节查询；原分组、clipped_trapezoid权重、覆盖区间、重新播种、产品
+启停和版本2序列化布局不变。未增加整域统计场或在普通采样时回读q。
+
+Index增加selected Reynolds/Favre及其脉动源5--8：依据原有有序节点键
+查找稀疏状态；压力、温度及当前脉动按原const2/const6从设备q解码。
+缺少所选支持时返回非法采样，不改用瞬时场或零值。选定均值的速度/
+温度梯度、Q、散度、旋度及Reynolds密度梯度继续使用原私有后处理
+差分和交换流程；station_profile在设备归约，只回读terms×ny和状态。
+静态读入网格的笛卡尔证明使用已有主机坐标，不下载整域设备坐标。
+
+普通根astr以16³周期TGV、dt=0.001、12完整步验证，窗口
+[0.0005,0.0115]，参考仍为先前冻结的CPU/旧GPU二进制。NP=1基础组及
+NP=2 x/y/z扩展组覆盖六种原始量、R/F均值、派生梯度/Q、固定j脉动和
+含协方差/RMS的剖面；x分解还覆盖station支持在某rank为空的情况。
+端点梯形积分及剖面投影独立使用实际输出的原始样本，不编写另一套
+流体推进器。RMS仍比较平方量，另外报告原始RMS差。
+
+| 检查 | 本地结果 |
+|---|---|
+| 独立端点时间积分 | 最大缩放差9.9921e-16 |
+| CPU/旧GPU字段及派生量 | 最大缩放差8.5266e-14，来自近零压力脉动 |
+| 独立剖面投影（最终x/z组） | 最大缩放差6.6614e-16；z组原RMS差1.5125e-17 |
+| 脉动加均值恢复瞬时量 | z组最大缩放差6.3229e-17 |
+| 统计开/关与5+7步精确续算 | 权威状态/步长记录不变；续算统计原始字、数值截面及剖面逐值一致 |
+| NP=2 z实际主程序Memcheck | 两rank均0 errors；该运行未启用全泄漏检查，不替代10.27组件泄漏证据 |
+
+另用NP=2 y实际动态产品更新：step3首次加入一个P/T选定支持，step7
+停用、step9重新启用。保留前一段历史，但不积分停用间隙；独立按
+[3,6]和[9,12]步区间积分并裁剪统计窗，有效时长0.0055、segments=2，
+最大缩放差5.9375e-16。CPU/旧GPU同样动态执行；新后端9+3步续算的
+权威场、完整统计状态及多输出段的数据逐值一致。没有通过删除失败
+产品或把间隙当成连续区间来取得该结果。
+
+实际出图采用32³、NP=2 x、direct-device+pinned：选定Reynolds速度、
+Favre温度、固定j的Reynolds压力脉动三种截面，step1/3出图。新旧GPU
+及同后端2+2步续算图片均逐像素一致；收据field_d2h_bytes和
+geometry_host_bytes均为零。渲染开关对照采用相同支持/字段的数值
+产品，不以关闭渲染后已被禁用的图片产品冒充继续采样。已查看真实
+JPEG；短窗压力脉动接近零，在固定色标下很淡，不更改数据增强对比。
+
+共享Index改动后另复验32³周期曲线网格、NP=2 y、standard-device+
+device-aware的完整velocity-time均值截面/Favre流线。终场/统计最大差
+1.9880e-15/1.6654e-15；两截面新旧逐像素一致，流线平均像素绝对差
+最高0.10082/255，记录为实现间图像差，不作解析轨迹门槛。同后端
+续算三种图片均逐像素一致，实际流线已查看。EPS关闭。
+
+原CPU数学组件的单rank sample_moments和NP=2 y selected_statistics探针
+另复验，参考误差均为零。直接启动前者遇到HPC-X安装前缀初始化
+错误，使用匹配mpiexec后正常；未修改MPI/SDK或加入自动重试。
+
+证据根为results/multi_backend_mb7_selected_main_20261114：
+basic_np1_disabled_baseline、expanded_np2_y、expanded_np2_x_independent、
+expanded_np2_z_memcheck、lifecycle_np2_y、images_selected_fixedj_np2_x和
+images_velocity_curve_np2_y各有report.json。出图测试的早期失败目录
+保留：无渲染却选择严格渲染管线、selected-time流线及非固定j脉动
+均是超出旧合同的测试配置；没有为它们放宽生产规则。根native及
+Catalyst构建均已重建，未修改冻结参考。
+
+当前selected-time仅迁移原来支持的产品，不新增selected-time流线或
+Q等值面；完整velocity-time流线另有上述证据。选定壁面外部采样、
+旧solver-samples、时序消费者、预览/裁剪体积及普通物理端主程序仍未
+闭环。10.27的DTK构建不覆盖本节新增宿主接线/Index变更，本节没有
+DCU设备或渲染证据。10.13/10.21两项人工决策保持不动，无Git或远端
+任务操作，完整MB6/MB7 goal仍active，不把短窗统计当作物理收敛。
+
+### 10.29 新设备源的一维时序、频谱与图表
+
+10.28的Index/selected-time源接线通过后，按依赖接回已有
+insitu_temporal_runtime消费者。先保存只读temporal_reference源码，
+实际复现新C++的两种产品均被临时未实现分支拒绝，再只删除
+index_slice_archive中的该分支。时序历史、Welch数学、归约/存档、
+图表代码和其余FP64非反应笛卡尔准入均不修改。
+
+run_cpp_temporal_gate.py以16³、12完整步测试：NP=2 x固定步长检查
+瞬时线/测点及Welch；NP=2 y增加Reynolds/Favre均值及原合同允许的
+脉动；NP=2 z再联合自动步长。固定dt=0.001；自动采用CFL=0.5、
+initial_dt=0.001、max_dt=0.002、growth=1.1，终时约0.0194358881。
+统一统计窗[0,1]、每步采样、每3步发布、4样本存档块；Welch沿用
+周期Hann、8样本段、50%重叠、每段去均值及单侧谱密度。
+
+- 固定步长末次频谱有效段数2，与SciPy Welch逐列检查；瞬时末行另从
+  正式检查点守恒量独立解码u/p。基础独立检查最大缩放差1.9861e-16。
+- 均值/脉动按原始一维瞬时样本和真实时间戳独立端点积分，固定/自动
+  两组独立检查最大缩放差4.2633e-14/2.8422e-14。对冻结CPU/旧GPU
+  全部时序列最大缩放差5.6844e-14，来自近零Reynolds压力脉动。
+- 自动步长保留真实非等间隔时间戳和原始测点序列，Welch明确
+  available=F、valid_segments=0、数值谱为空，产品状态为
+  waiting-for-statistics；未插值为等间隔或输出貌似有效的谱。
+- 三组观测开/关的权威场及步长记录逐位一致。5+7步同后端恢复的
+  权威场、statistics.h5、完整拼接时序所有列逐值一致，频谱CSV文本
+  和数值逐值一致。恢复使用保存的动态产品清单，不用空磁盘清单
+  丢掉已有历史。
+- 13次采样中瞬时线为17节点×3量，共5304字节D2H；双量测点共
+  208字节。选定均值/脉动各自仅在实际覆盖的12步回读请求的一维量。
+  这些日志计数不含私有halo中转、状态标量、元数据和显式检查点。
+  没有为主机时序算法下载二维或三维整场。
+- 自动/均值组合的12步实际主程序Memcheck两rank均0 errors，未开启
+  全泄漏检查。该运行最初被测试脚本误要求频谱状态active而拒绝；
+  核对原合同后，原数据按waiting-for-statistics重新分析通过。未改
+  生产代码或重复运行该内存工具，随后另运行完整参考/恢复矩阵。
+
+另在含Catalyst根构建上用NP=2 x运行实际压力时空图及压力频谱图：
+时空图step0/3/6/9/12，频谱图step9/12，共7张800×600 JPEG，EPS关。
+收据确认仍调用已有existing-host-matplotlib一维图表，不新建渲染器；
+每次仅至多17节点、4行当前块。与旧GPU图片逐像素一致，图片开关
+不改变权威场；5+7恢复的权威场、统计及图片逐值一致。图像已查看，
+频谱量级约1e-17，仅验证短窗实现，不解释为物理湍流频谱。时空图
+沿用当前块展示，因此末块只有一个时刻时是一排点，不声称图中
+覆盖整段累计时长。
+
+证据均在results/multi_backend_mb7_selected_main_20261114：
+temporal_reference为未修改历史/分析/消费者源码；temporal_before保留
+移除拦截前结果；temporal_fixed_np2_x、temporal_selected_velocity_np2_y、
+temporal_auto_selected_np2_z和temporal_images_np2_x各有最终report.json。
+temporal_auto_selected_np2_z_memcheck保留内存工具及修订测试预期前记录。
+早期temporal_selected_np2_y误请求Favre压力脉动，违反原有只允许Favre
+速度脉动的合同；修订测试字段而非扩大准入。没有删除失败证据。
+
+本节只改新后端的临时拦截，原时序算法和CPU/旧GPU参考不变。
+静态CURVE时序、solver-samples及外部壁面统计等不由本节闭环；
+新源仍未DTK重编/执行，DCU渲染仍属于MB9。10.13/10.21两项待决定
+内容保持不动，无Git写操作或远端任务操作，完整goal继续active。
+
+### 10.30 两项物理边界授权修订与同相位闭环
+
+用户明确批准10.13的首次外区初始化与10.21的诊断补接。先保存改前
+七份相关源文件；没有把此前KEEP表初始化授权扩展成这两项授权。
+
+在现有fluid_explicit.cu/.h/.F90增加initialize_exterior入口，只在新C++
+首次q/几何上传后调用：真实物理边界外q/rho/vel/prs/tmp设为+0，q的
+双、三方向越界角区也设为+0。物理端由实际bctype及全局节点所有权
+确定，不把单rank周期MPI邻居的编码误判成物理端。物理节点、有效
+MPI面halo、几何和CPU不修改；没有整场额外缓冲，未改每阶段更新。
+cpp_import_host_state保持原样，恢复上传文件原值后不再次初始化外区。
+
+根目标astr_backend_exterior_initialization用不同非零标记填满源数组，
+逐位核对64种低/高物理端组合及explicit/dependency两同步，共128项。
+包含单面、交线、角点及纯周期情况：应清零处为正零，其余物理/
+MPI数据的全部位保持不变。Memcheck零错误/零泄漏、Initcheck零错误。
+普通周期TGV另做NP=2 y、单分量滤波的正式检查点精确续算；完整
+state.h5字保持一致、输出开关物理q逐位不变，说明初始化没有在
+恢复后覆盖文件状态。该周期检查不代替尚未接入普通主程序的壁面恢复。
+
+诊断增量如下，均不改变公式、源项顺序或默认输出：
+
+- CPU/旧GPU原full标签含义保持不变。新增非反应post_source，位于
+  case/UDF源项及边界RHS装配之后、阶段保正限制之前，作为统一观测相位。
+- 仅原有验证请求下，非反应pre/post_filter不再限于KEEP/高阶壁面；
+  pre_rhs_primitives也不再依赖流型或格式。旧GPU只在该请求下额外
+  复制用于新快照的RHS，没有新增正常生产回读。
+- 新C++阶段探针的普通中心源项后改用post_source对照；KEEP继续
+  使用已处于同相位的旧full。未扣除源项后冒充完整RHS比较通过。
+
+通过根CMake重建CPU/旧CUDA Fortran，将二进制、诊断源增量、当前
+源补丁和构建/链接记录重新冻结到reference_diagnostics，原冻结参考
+不动。其reference.json保留基线、散列、实际范围和诊断相位。
+与改前同配置bc60-y波纹、standard643e/ME6、固定驱动力1e-4的四步
+结果比较：每后端initialized1份，pre_rhs/post_update/物性/conv/full
+各12份，合计122份既有物理区快照逐位一致。没有用未定义外区做
+跨实现数值证据，新增post_source也不冒称在旧文件中已有对应量。
+
+重新冻结匹配的16³、dt=1e-5、4步参考后，普通中心设备阶段链结果为：
+
+| 配置 | NP及代表分解 | q/物性/RHS最大缩放差 | 梯度最大缩放差 |
+|---|---|---|---|
+| bc41-y、standard643e/643e、explicit10标量滤波、fixed force=1e-4 | NP=1，NP=2 x/y/z | 2.3292e-15 / 2.3478e-15 / 1.8874e-15 | 2.0356e-14 |
+| bc60-x/y/z各自波纹网格、standard643e/ME6、无滤波、零驱动力 | NP=1，NP=2 x/y/z | 1.4296e-15 / 1.7746e-15 / 2.0503e-15 | 7.4544e-15 |
+
+两组共1344个rank阶段，包含CPU/旧GPU对照及两种同步；最终物理q
+包的两同步结果逐位一致。通过的是普通中心物理端设备阶段链，
+不是普通主程序壁面统计、正式输出/恢复或整个MB7已完成。
+
+证据根为results/multi_backend_mb7_physical_approved_20261114：
+before、reference_diagnostics、standard41_explicit_reference/stages、
+standard60_me6_wavy_reference/stages、standard60_wavy_matched_previous、
+diagnostic_previous_reference_comparison.json、exterior_memcheck/initcheck.log
+及periodic_restart_after_exterior_verified_reference。首次CMake新目标尚未
+重新配置、一次目标名称多写s，以及一次将只有模板的reference_fixed_keep
+错作完整TGV证据根，均在实际相应运行前停止；纠正命令/证据路径，
+没有增加忽略错误或自动重试。原失败目录未清理。
+
+两项人工决策已解除。下一步应把已验证的物理端梯度/滤波/边界状态/
+对流/黏性/驱动力阶段链接入普通C++主程序，再核对其统计、完整步
+输出及精确恢复；不是继续以组件代替主程序。MP7尚未开始修改，
+NSCBC/高阶边界、低精度及DCU新矩阵等原目标保持未完成。本轮没有
+Git写操作、远端任务或数值容差调整，完整MB6/MB7 goal仍active。
+
+### 10.31 低阶物理端普通主程序与检查点续算
+
+在10.30授权和同相位阶段检查之后，将已有物理端算子接回普通
+fluid_runtime，不再只运行阶段探针。沿用Fortran主流程/拓扑与C ABI，
+实际use_gpu=t进入新CUDA C++推进；不调用CPU RHS，不将冻结场作为
+每阶段推进输入。FP64、单组分、无湍流模型的TGV/channel入口现在
+可调度已有低阶41/42/50/60设备状态命令，但实际准入证据按下表区分。
+bc42仍无z分支；未把可按轴索引等同原CPU已有该边界。
+
+- 物理端滤波/梯度/物性更新、共同对流盒、逐方向黏性及ME6壁面并集
+  节点带均复用已有设备实现；边界类型/全局所有权决定实际低高端。
+- 槽道保留原massfluxchan、fbcxchan和wrmscal的节点选择与归一化。
+  只上传一次静态y坐标单分量，不上传每步整场；局部积分/剪切/方差
+  在设备归约，MPI合并后调用原chanfoce，保留target/frozen等既有历史。
+  源项沿用原“仅channel且x齐次”规则及动量/速度功，不另定义驱动力。
+- 初次外区定义和旧六分量物性缓存的完整步相位接入现有输出接口；
+  恢复上传原值，几何/边界设置重新建立设备提供者，不重置权威数据。
+- SBP63/高阶边界、有效吹吸、海绵和浸入边界尚无本入口对应操作，
+  明确报告未接入，不能静默改用普通KEEP、静止壁或省略源项。吹吸
+  参数由原配置程序读取，沿用原1e-10激活阈值；没有新增截断或调参。
+
+新run_cpp_physical_gate.py直接复制被冻结参考的网格、初始场及
+input.case，仅设置既有固定步数、输出与通信选项。16³、dt=1e-5、
+4完整步；每阶段pre_rhs、六分量物性及post_source与冻结CPU/旧GPU
+全域数据按真实origin/upper切块比较。正式检查点step2/4，另作
+2+2精确恢复和关闭检查点对照。不是依靠测试向求解器回填参考结果。
+
+| 实际普通主程序配置 | 分解/通信 | 对CPU/旧GPU的最大缩放差 |
+|---|---|---|
+| bc41-y、standard643e/643e、explicit10单分量滤波、F=1e-4 | NP=1；NP=2 x/y pinned及z device | q/物性约2.348e-15，post_source最大2.528e-15，终场1.968e-15；标量3.444e-16 |
+| bc42-y、KEEP643c/643c、ME6、compact10、F=1e-4 | NP=1 scalar+pinned；NP=2 y full+pinned与device，后者PCR同时device-aware | q/物性最大6.001e-14，post_source最大9.811e-14，终场4.705e-14；标量4.663e-16 |
+| bc60-y波纹网格、standard643e/ME6、无滤波、零F | NP=2 x pinned | q/物性1.775e-15，post_source1.200e-15，终场1.251e-15；标量3.288e-16 |
+
+所有上述成功运行均核对输出开关不改变最终物理q/步长。连续/恢复的
+state.h5所有数据集逐位一致，恢复标量序列逐值一致；另对10个已有
+成功目录读取完整1569字节control.bin，均逐字节一致，包含步长/
+输出调度及六个槽道驱动历史值，不只用打印出的force代理这些历史。
+读取核对属于本地测试，不加入生产写盘回读或CRC。
+
+最终普通主程序bc41-y/NP=2 y及bc42-y紧致/full/pinned/NP=2 y的
+Memcheck均为两rank零错误；这些运行不含full leak-check，不扩大为
+全工具/全部通信都通过。当前版本另做普通周期TGV NP=2 y、scalar
+的精确恢复及输出开关回查，保持通过。
+
+紧致主程序接线时发现并修正了三处新消费者问题，未改CPU数值公式：
+
+1. 周期ME6不需要节点应力包，原入口不分配；物理端ME6还需节点带，
+   首测返回not_allocated。现仅对应路径分配既有sigma/qflux工作区并
+   将halo包容量设为六分量，周期ME6的分配不变。
+2. 同模块直接调用BIND(C)交换包装在本地NVHPC优化生成代码中丢失
+   实参。GDB在首个应力交换看到handle=NULL，field为地址值而非11；
+   对应汇编没有设置字段/轴/模式寄存器。此处改为直接调用原C ABI，
+   仅显式请求验证时接原交换快照；不加兼容分支、重试或编译器替换。
+3. 紧致黏性的物理节点带必须使用已有commit_wall_band入口，否则
+   会与ME6内部贡献重叠。仅将阶段探针已验证的入口接到普通紧致
+   宿主包装中，默认全域回写不变；未改矩阵、RHS或PCR算法。
+
+证据根仍为results/multi_backend_mb7_physical_approved_20261114。
+主要最终报告为main_standard41_final_np2_y、main_standard41_np1/np2_x/
+np2_z_device、main_keep42_compact_np1_direct_abi、
+main_keep42_final_np2_y_full_device、main_keep42_final_np2_y_memcheck、
+main_standard60_wavy_np2_x及main_control_bytes.json。
+main_standard41_np2_y_memcheck另存实际内存工具记录；
+periodic_restart_after_main_boundary为当前周期回查。
+main_keep42_compact_np1、*_wall_buffers、*_band的首阶段失败及三次
+GDB记录、me6_call_before/after_disassembly.txt保留，不当作数值通过。
+GDB第三次在取得参数和返回值后结束被调试进程，MPI随之报告未正常
+finalize；该退出不是另一个CFD失败或生产作业事故。
+
+本节完成时，边界指令在库中的实现范围大于普通主程序实测范围：
+41x/z、42x、50各方向、60x/z和多物理轴交接仍缺主程序检查；
+其中60x/z随后补齐的代表结果见10.32，其余缺项不据此消除。
+本节完成时，普通物理端的三维场/独立截面文件及原位壁面消费者尚未
+核对，后续代表证据见10.32--10.33，不能由检查点通过代替。
+反馈/冻结驱动模式、自动步长和其余入口/源项
+历史也仍需代表性联合证据；本表固定驱动力不代替它们。
+
+本轮没有计时或CPP-P优化。槽道标量当前复用既有归约并保留公共
+max/min流程，首阶段统计和RHS也各调用梯度；同状态复用留待原定
+MB8之后的性能阶段。新主程序变化尚未DTK重编/执行；完整MB6/MB7
+目标及其余能力不缩减，没有Git或远端任务操作，goal保持active。
+
+### 10.32 物理端正式场、独立数值截面及另两方向主程序
+
+run_cpp_archive_gate.py现可直接接收冻结的physical-fixture和壁面轴，
+复制匹配CPU/旧GPU初始条件，不用周期TGV模板代替壁面输入。
+16³区间、四个完整步、dt=1e-5，实际输出step2/4两份三维场，
+以及i/j/k三个方向各0/8/16的九个截面在step0/2/4的27份HDF5。
+逐数据集核对字段、时间与索引元数据；跨rank共享节点只按原所有权
+写入，输出开关不改变最终物理q的位模式。
+
+| 真实普通主程序配置 | 新C++分解 | 全部存档浮点数据对冻结参考的最大缩放差 |
+|---|---|---|
+| bc41-y、standard643e/nodal643e、explicit10 scalar | NP=2 y | 3.6923e-14 |
+| bc42-y、KEEP643c/ME6、compact10 full | NP=2 y | 6.5077e-13 |
+| bc60-y波纹、standard643e/ME6、无滤波 | NP=2 x | 1.8190e-14 |
+
+均低于2e-10。表中最大值包括派生截面量，并非只比较温度/速度。
+正式三维场保持原read-grid/channel提供者的六个原始分量，不擅自
+扩展其尚未准入的整场派生量；独立数值截面包含九个字段，即六个
+原始分量、Q、散度和密度梯度模长。该区别在测试配置与报告中明确。
+
+传输检查随已有输出实现更新，不再要求“截面共用整场下载缓存”：
+三维场事件下载六分量缓存，独立Index截面只下载所选二维数值结果。
+对NP=2 y实测，两次整场共2659392字节，27个九字段截面结果共561816
+字节；测试按实际局部extent、halo与字段数算精确预期，不放宽为
+近似上限。此口径不包含MPI、状态标量、几何或显式检查点传输。
+
+另补真实bc60-x波纹/NP=2 z及bc60-z波纹/NP=2 z普通主程序：
+与冻结CPU/旧GPU同相位q/缓存最大差1.33094e-15，post_source最大
+1.23350e-15，终场最大1.25090e-15；两者均通过输出开关隔离、2+2
+精确恢复的state.h5、control.bin及槽道标量逐位/逐字节比较。
+结合10.31的bc60-y，三种物理端方向均有普通主程序代表证据，
+但不扩展为多物理轴交接、高阶壁面或NSCBC支持。
+
+证据：results/multi_backend_mb7_physical_archives_20261114下的
+standard41_final_np2_y、keep42_np2_y_full、standard60_wavy_np2_x/report.json；
+三维场和27截面原文件与CPU/旧GPU运行均保留。
+results/multi_backend_mb7_physical_approved_20261114下的
+main_standard60_wavy_x_np2_z、main_standard60_wavy_z_np2_z/report.json
+记录新增普通主程序检查。未改输出格式、频率默认值或生产写盘校验。
+
+### 10.33 原生壁面物性时间统计、剖面与实际图像
+
+在修改消费者之前，使用10.30冻结二进制生成bc41-y四步CPU/旧GPU
+原始壁面、六种平均剖面和平均壁面数值截面，配对检查后设为只读。
+本轮源码前状态另留在reference_source。不是用新C++实现自制参考。
+
+新增接线范围为现有selected-time壁面提供者，不新增物理定义：
+
+- 原生Index保留的设备包经insitu_selected_device送入已有稀疏矩统计；
+  仅索引上传和状态标量回读，不把整壁面流场先拷回CPU再累计。
+- rho、T以及原有壁面剪切/热流/黏度字段按字段身份取已累计均值，
+  不用平均温度重新计算平均黏度，不以平均速度梯度代替平均剪切。
+- 保留原时间窗端点裁剪/梯形积分、覆盖时长、产品分组、空rank、
+  所有权和实际z方向几何权重。原CSV/HDF5/渲染消费者继续使用；
+  完整步主状态与统计存档均走现行恢复合同。
+
+run_cpp_wall_consumers.py首轮使用16³区间、bc41-y、dt=1e-5，
+四个完整步，统计窗[0.5dt,3.5dt]。产品为六字段原始壁面、
+全展向/半展向/单点及黏度单独/剪切单独/热量单独六种平均剖面，
+另有Reynolds平均壁面数值截面。独立后处理用原始采样及端点权重
+重建均值，最大绝对/缩放差均3.3307e-16；与冻结CPU/旧GPU字段
+最大缩放差1.9965e-15。NP=1、NP=2 y的空壁面rank以及NP=2 z
+真实私有设备通信均通过。连续与2+2恢复的状态/统计位模式、
+控制字节、数值截面与CSV内容相同，关闭观察不改变q或步长。
+
+实际设备壁面采样没有整流场D2H：NP=2 z跨五次采样的私有交换
+1811040字节；两rank分别返回120/80字节状态值，索引上传10240/
+16384字节。最终选中产品输出和显式检查点仍按各自合同传输，
+不能把上述采样计数称为整个运行零D2H。
+
+Catalyst开启的普通新C++主程序另做NP=2 y瞬时/平均wall_shear_x
+二维图，800×600、JPEG only、固定色标[0,3e-9]。瞬时step0/2/4，
+平均step1/3；已有设备直连渲染，receipt的字段D2H与几何主机回读
+均为零，非空所有者提供实际单元。五张新/旧GPU图像逐像素一致，
+同后端恢复图像逐像素一致；图像开关不改变状态/时钟。已查看实际
+图像，壁面场及色标可辨；共有旧渲染模板的底部x轴标签轻微裁切
+仍保留，不在本次数学消费者接线中顺手重排模板。
+
+工具状态单独记录：NP=2 y、显式ob1/pinned主通信的Memcheck两rank
+零错误；此分解壁面私有交换字节为零，不能代替跨rank设备通信工具
+验收。NP=2 z、UCX实际设备通信的数值/续算检查通过，但其Memcheck
+exit99；首个cuCtxSetFlags INVALID_CONTEXT在MPI_Init、首个ASTR核前
+出现，后续包含UCX指针属性查询错误。两日志18883/32931错误且打印
+被截断，不能断言所有错误无害或全部内核已干净。保留失败记录，
+未屏蔽CUDA API报告、修改公共MPI或加入自动通信降级。
+
+证据根：results/multi_backend_mb7_wall_consumers_20261114。
+frozen_wall为只读原始参考；main_np1、main_np2_y、main_np2_z、
+main_np2_y_ob1_memcheck及images_np2_y各有report.json；
+wall_transfer_analysis.json保留原采样计数；main_np2_z_memcheck保留
+失败日志。壁面图像用已有Catalyst开启的只读index_reference/astr_cuda_fortran，
+不误用Catalyst关闭的数值参考来认领渲染。
+
+当前证据限笛卡尔j=0、bc41瞬时/平均/剖面/图像；不代表曲壁法向、
+壁面单位/完整边界层参数、痕量组分或湍流统计定常验收。MP7/传感器、
+NSCBC/高阶边界、其他源项/历史、原生FP32/混合精度、旧样本统计、
+其余物理端消费者和新的DTK编译/NP=1/2/4设备矩阵仍在原goal内。
+本轮无性能优化、Git写操作或远端作业操作；MB6/MB7仍未完成。
+
+### 10.34 原始Ducros传感器的原生组件与真实halo
+
+先冻结再迁移：prepare_sensor_components.py使用10.30只读CPU/旧GPU
+二进制，运行16³区间、dt=1e-5、一个完整步的周期三维Shu--Osher，
+543e/643e、MP7重构编号3、无黏性/滤波/特征分解；显式启用原有
+传感器诊断，关闭不属于此夹具的正式输出/检查点。三阶段的原始
+传感器、字节标记、对应压力及梯度一同保存，CPU/旧GPU传感器最大
+缩放差8.57695e-14，标记逐点一致。各阶段峰值约0.7，4046/4913个
+节点被标记，不是全零传感器或全未激活标记的空对照。新参考目录
+生成配对报告之后设为只读，二进制散列沿用10.30的独立来源。
+
+新src_gpu/shock_sensor.cu/.F90/.h保留成熟定义，不引入新的传感器：
+散度平方、三个涡量分量平方、压力三方向曲率与1e-30正则项；物理
+端相邻索引钳制；原始ssf只更新halo而不平均共享节点；三个轴上
+-hm+1至hm的最大值膨胀；严格使用maximum>shkcrt。此前默认关闭的
+H1“仅压缩激活”候选未接入，也没有改变压力分母或增加保正截断。
+
+设备状态增加按需的FP64原始传感器字段和单字节物理节点标记，
+沿用现有设备流及两种同步模式。普通中心格式不请求该组件，因此
+不分配它们。原始传感器复用现有pinned/device halo通信；主计算核
+不访问CPU流场。字节标记暂只有物理节点，紧致黏性所需标记halo
+刷新及MP7界面重构接线尚未交付，不把组件API当作完整MP7主推进。
+
+astr_backend_shock_sensor实际检查：
+
+| 配置 | 冻结状态检查数/每rank | 独立解析检查数/每rank | 结果 |
+|---|---|---|---|
+| NP=1、pinned | 12 | 10 | 原始量零差，字节标记精确相同 |
+| NP=2 x/y/z、pinned | 各12 | 初轮各8，x/y补至10 | 同上；包含真实跨rank halo |
+| NP=2 z、device | 12 | 10 | 同上；MPI直接传入设备传感器包 |
+| NP=2 x、pinned、Memcheck | 12 | 10 | 两rank零错误、零设备泄漏 |
+| NP=2 y、pinned、Initcheck | 12 | 10 | 两rank零错误 |
+
+12包含CPU/旧GPU各三个阶段和两种同步。解析检查使用
+p=2+x²+y²+z²的离散曲率闭式值，分别赋正/负相同大小散度，验证旧
+定义对两者响应相同；另用纯旋转及恒压验证零响应与阈值0的严格
+比较。随后增加全非零梯度张量，trace=15、curl=(2,-4,2)，独立
+乘子为75/83，单独检查非零涡量分母；该项使解析检查由8增为10，
+与只检查纯旋转零响应不同。物理外压力和计算前的传感器halo以NaN作探针标记，计算不得
+将其带入物理结果。MPI交换前后物理原始传感器的位模式不变。
+这些是测试输入，未向生产路径添加NaN上传、额外整场拷贝或补零。
+
+根CMake的普通astr及新组件已构建。当前普通周期TGV另作NP=2 y、
+scalar的精确恢复和输出开关隔离，均保持通过。没有因为增加状态
+字段就重跑完整长期流动或认领物理精度。编译脚本也显式纳入新
+传感器及此前新增的exterior_initialization目标；DTK结果另据实登记。
+
+证据根为results/multi_backend_mb7_sensor_20261114：
+frozen_shuosher_no_budget_cap为只读有效参考；native_np1、native_np2_x/y/z、
+native_np2_z_device及final_np2_z_memcheck、final_np2_y_initcheck为初轮。
+补齐稠密张量后的tensor_np1、tensor_np2_x_memcheck、tensor_np2_y_initcheck、
+tensor_np2_z_device各有最终报告；核函数未因增加测试而改变。
+periodic_main_unchanged记录普通主程序续算。首次TGV入口没有旧GPU
+传感器观测、测试输入误将diffterm写在numerics组，以及Shu--Osher
+输出配置/预算字段不完整的准备失败均保留，修正测试准备后才
+冻结参考；没有修改旧求解器准入或靠忽略失败产生参考。
+
+下一步仍需完成MP7/MP7-LD的原始分裂通量、选择性Roe重构、界面差分，
+紧致所需扩展标记halo、普通主程序状态/输出/恢复及其他既定能力。
+本节不能据传感器一致性宣称激波捕捉、保正/crashfix或MB7已完成。
+
+### 10.35 截至传感器增量的DTK构建与依赖核对
+
+只在login09、~/weiph/mb67_sensor_build_20261114.iLrwIU下构建，
+沿用DTK26.04/GNU12/gfx906、原私有ROCm-aware MPI和匹配并行HDF5。
+普通astr及build_gpufusion.sh列出的全部组件完成设备编译、设备链接
+和最终链接，包括新exterior_initialization、shock_sensor与既有紧致、
+KEEP/ME6、物理端阶段链、Index/vector/moments/selected。这更新
+10.28--10.34“尚未DTK重编”的状态，不是这些模块的DCU数值通过。
+Catalyst关闭，未执行登录节点GPU、未操作Slurm或A800任务。
+
+初次配置发现CMake自动找到公共MPI启动器，而程序链接原私有MPI。
+本轮未用该启动器执行任何测试。构建脚本现显式设置
+MPIEXEC_EXECUTABLE=$mpi/bin/mpiexec，保持传入的同一MPI前缀，
+最终缓存与重新配置输出均确认私有启动器。未更换MPI/SDK或增加
+运行时探测回退。普通astr及sensor、Index、selected、wall41_step、
+channel六个代表二进制的ldd与离线散列另存checks.log；核心源码
+13个文件的上传散列与本地一致，包含本轮稠密梯度张量探针。
+
+同步时曾误包含tests/gpu_validation/out历史输出。已终止该次本地
+rsync进程，仅移除本轮新建远端目录内误传的out副本，改为只同步
+源码并排除out、__pycache__和.pytest_cache；随后确认副本不存在，
+源码快照约126 MiB。本地原始结果、已有远端结果/二进制与任务未改。
+构建保留既有合法void例程缺return、forward-unknown参数和登录节点
+rocm_smi路径告警，没有为消除告警更换依赖或改数学实现。
+
+记录：远端build.log、checks.log及work/build/CMakeCache.txt，
+本地results/multi_backend_mb7_sensor_20261114/dtk2604及check_dtk_build.sh。
+当前仍缺新模块的DCU NP=1/2/4实跑；新的具体Slurm操作须另获授权。
+MP7主程序、NSCBC/高阶边界、其他源项/历史、FP32等原范围继续保留，
+不因全目标构建成功而标记MB6/MB7完成。本轮没有Git写操作。
+
+### 10.36 MP7/MP7-LD与选择性Roe的原生对流组件
+
+prepare_upwind_components.py先用10.30只读CPU/旧GPU二进制冻结三个
+匹配夹具，各16³区间、一个完整步、三个RK阶段：周期Shu--Osher
+物理空间MP7、选择性Roe MP7，以及743e/643e拉伸平板MP7-LD。
+后者保留11/21/41/50边界、Mach2、Re1000、Tw=1、参考温度273.15，
+使用受控压缩初值激活标记，不作为真实边界层/激波物理验证。
+其初始下游rho=1.25、流向速度乘0.8，外加小横向速度；密度/温度
+保持正值。Ducros阈值0.001，平板每阶段2567/4913个节点激活，
+周期夹具4046/4913。两种MP7用dt=1e-5，平板用dt=1e-6。
+
+冻结了实际q、六分量物性、九分量速度梯度、原始传感器/字节标记
+和完整对流RHS。Jacobian与九个网格度量来自原ASTR_GEOMETRY_DUMP，
+不是用新C++格式重新计算参考几何。CPU/旧GPU对流RHS最大缩放差
+2.7756e-16；参考输入和输出配对后设为只读，才修改新消费者。
+
+新增upwind_operator.cu/.F90/.h复用原算法：
+
+- Steger--Warming声速从当前温度缓存求sqrt(T)/Mach，保留0.04平滑、
+  亚声速/双向超声速分支、Jacobian及完整度量行；不重构另一相位物性。
+- MP7与MP7-LD分别保留原限制条件、长小数系数和bfacmpld；物理端
+  接近边界的重构按原二阶平均、三阶SUW及五阶MP/MP-LD处理。
+- 只有lchardecomp且界面被标记时进入Roe特征空间，保留原平均和
+  切向基选择；其他界面仍在物理空间。它不是把Steger--Warming
+  通量换成另一种Roe Riemann求解器。
+- 正负分裂值在界面线程内形成；只按需分配一份五分量界面工作区，
+  三方向复用，不增加两份十变量整场分裂通量缓存。只计算实际RHS
+  所需的界面，再按方向差分累加负散度；默认中心路径不分配该工作区。
+
+astr_backend_upwind每rank核对72组对流组合：三夹具、CPU/旧GPU各三
+阶段、两种同步、冻结/新GPU梯度两种输入。NP=1、NP=2 x/y pinned
+及NP=2 z device通过，最大RHS缩放差2.22045e-16，新梯度差最大
+6.51331e-15，标记逐点一致。q物理节点位模式不变，工作区地址复用。
+另有NP=2 y Memcheck、NP=2 x Initcheck两rank零错误；这些是pinned
+工具检查，不宣称UCX所有工具问题已解除。
+
+证据根为results/multi_backend_mb7_upwind_20261114：frozen_all及
+native_np1、native_np2_x/y、native_np2_z_device、native_np2_y_memcheck、
+native_np2_x_initcheck。periodic几何按原规则填充halo，物理端不借用
+跨域周期坐标；数据包保留真实物理端点值。此处不认领一般非对角
+CURVE迎风、metric_consistent_eps=1或高阶边界覆盖已验证。
+
+### 10.37 完整预备RK阶段及普通TGV主程序
+
+传感器需要交换ssf，不能等黏性应力已在同一transport发出后再交换。
+fluid_advance_prepared_stage新增可选sensor_operator，位于当前梯度
+之后、黏性应力打包/发出之前；无黏性时由该回调先计算当前梯度。
+无传感器的既有路径不调用它，原应力交换与对流重叠顺序不变。
+没有额外通信管理rank、CPU RHS或整场物性往返。
+
+prepare_upwind_steps.py只重新打包上述不可变原结果中的stage1保存
+状态、完整RHS和post_update，不运行Python推进器，也不重跑参考。
+每rank另做36组真正ASTR预备RK阶段：无黏性MP7/选择性Roe，以及
+平板MP7-LD的Sutherland节点黏性、应力/热流MPI、SSP-RK3更新。
+边界施加前后的状态取原冻结夹具，因此不是新C++入口/壁面/出口
+主程序已经接通的证据。
+
+NP=1、NP=2 x pinned与z device的完整阶段最大RHS缩放差2.22045e-16，
+更新q最大3.55272e-16。NP=2 x完整阶段Memcheck两rank零错误/零设备
+泄漏，NP=2 y完整阶段Initcheck两rank零错误。包含真实传感器通信和
+随后黏性应力交换，未靠换成另一通信对象掩盖次序冲突。最终记录为
+prepared_np1、prepared_np2_x_memcheck、prepared_np2_z_device、
+prepared_np2_y_initcheck；先前仅算子报告仍保留。
+
+普通fluid_runtime现可调度543e/743e的MP7/MP7-LD；需要传感器时接
+上述stage回调。实际普通主程序证据仍按下表区分，不用选择器存在
+认领所有组合。含传感器且difschm=643c时，原展开标记halo尚未接入，
+明确报告未连接，不静默改成非展开规则。
+
+在接主程序之前另冻结CPU/旧GPU周期TGV参考，16³区间、dt=1e-3、
+四个完整步、MP7、关闭特征分解；两种配置分别是无黏性/无滤波，
+以及ME6/643e黏性+十阶显式单分量滤波。
+
+| 新C++普通主程序实测 | 最大同相位RHS缩放差 | 最大终态q缩放差 |
+|---|---|---|
+| 无黏性，NP=1及NP=2 z device | 6.67911e-13 | 8.87906e-16 |
+| ME6+显式滤波，NP=2 x/y pinned | 6.11440e-13 | 1.33214e-15 |
+
+两种配置均通过检查点开/关的q和时间控制位模式比较，以及2+2
+连续/精确恢复的state.h5、control.bin和标量序列逐位/逐字节比较。
+ME6组合的原CPU标量与新C++相同，旧GPU约4e-14差异；不是用相同
+标量替代逐场/RHS检查。main_tgv_*为实际普通astr运行，而不是探针
+回填场。新共用stage接口之后，周期中心TGV及bc41-y中心槽道各做
+一个NP=2 y代表回查，状态/控制/标量精确恢复、输出开关隔离保持通过。
+普通MP7+ME6+滤波的NP=2 x另有Memcheck两rank零错误；此项未启用
+full leak-check，不扩大为所有工具或全部通信都通过。
+
+当前尚未收口：平板/SBLI的C++普通主程序边界链、紧致黏性展开
+标记halo、crashfix临界点一阶覆盖及MP通量保正、高阶/HB接口覆盖、
+原传感器文字诊断/统计接线、迎风CURVE与低精度组合。新接口和核
+也尚未DTK重编/实跑，10.35不包含本节新代码。构建脚本已登记
+astr_backend_upwind，后续按原授权边界准备DCU验证。
+完整MB6/MB7 goal保持active；本轮没有Git或任何远端任务操作。
+
+### 10.38 展开标记周期halo缺陷：已批准最小修复
+
+继续接743e/643c标记halo前，发现原CPU与旧GPU共用通信函数的明确
+周期边界缺陷。发现时没有修复或移植此错误路径；新C++普通主程序
+对该未连接组合的报告仍保留，其他10.36--10.37已验证组合不变。
+
+原因链：
+
+1. parallel.F90设置未分解周期方向的邻居为MPI_PROC_NULL，同时
+   npdc=3；这是原程序的本地周期约定，不代表真实物理端。
+2. exchange_shock_mask_faces先把recvbuf清零，再对上述空邻居调用
+   MPI_Sendrecv，接收缓冲仍为零，未做本地周期回绕。
+3. commcal.F90的refresh_expanded_shock_mask因npdc=3，把这些零值
+   覆盖到-1及N+1的展开标记halo。旧GPU的refresh_expanded_shock_mask_gpu
+   调用同一个Fortran函数，也使用同一条件回写。
+4. 该路径按原开关仅用于非反应五变量conschm=743e、difschm=643c。
+   周期halo本应分别来自N-1、1，而不是常零。界面组合读取相邻两
+   个标记时，可能由此改变Roe特征分解或MP7-LD限制分支。
+
+最小复现直接包含从当前parallel.F90机械提取、未改动的原通信
+子程序。各方向模拟npdc=3/周期未分解，端点标记0、相邻内点标记1。
+HPC-X/NVHPC的CPU单rank运行得到三方向所有接收标记0，本应为1；
+七个面采样点、两侧、三个方向共42个界面判定不符。它是通信与
+标记规则的反例，不是完整CFD场误差测量；不能据此宣称所有既有
+算例流场已受影响。当前平板参考的spanwise变化较弱，并不能排除
+真实三维掩码下的该错误。
+
+证据：results/multi_backend_mb7_mask_halo_20261114/cpu_periodic_reproducer，
+含原函数include、调用程序、run.log、源散列与实际二进制。GPU判断
+依据其调用同一函数及回写代码；本轮未运行或声称GPU修后验证。
+
+提案：仅在共用exchange_shock_mask_faces中，对实际周期且该方向
+size=1的分支作本地内点互换：recv(:,1)=send(:,2)，
+recv(:,2)=send(:,1)。CPU/旧GPU由此同时修正；物理端近值复制、
+多rank通信、原始ssf及其膨胀/阈值规则不变。批准后先冻结修正的
+743e/643c参考，再实现C++字节halo及pinned/device验证。不直接将
+该修订扩大到非紧致路线的另一套界面标记规则。
+
+用户随后批准修复。共用函数现按实际周期标志及方向size=1作上述
+两侧互换；其余路径保留原MPI_Sendrecv。旧GPU仍调用这个共用函数，
+无需另写不同规则。没有修改传感器定义、阈值、膨胀范围或物理端。
+
+新增shock_mask_faces_probe.F90与run_shock_mask_faces_gate.py，机械提取
+实际生产函数编译，覆盖三方向本地周期、空邻居物理端、多rank非周期
+及周期交换；两侧使用不同字节序列，避免全1测试漏掉左右接反。
+新探针修前NP=1检出84个错误字节；修后NP=1/2均零错误。证据为同根
+before_fix、after_fix，原42个界面反例保持不变。此处尚不以通信探针
+替代完整743e/643c流场验证；当时C++展开标记halo尚未交付，后续组件
+见10.40。
+
+随后通过根CMake重编CPU、旧CUDA Fortran与新C++普通astr，另冻存
+reference_fixed及compact_flat_frozen_valid。沿用已有16³拉伸平板
+受控压缩夹具，743e/643c、MP7-LD、一完整步、关闭滤波/crashfix，
+CPU/旧GPU各NP=1及NP=2 z：三阶段pre_rhs最大缩放差6.66134e-16，
+物性缓存7.77157e-16，post_source RHS 1.92819e-17；各后端NP=1/2
+分解比较最大3.33067e-16。未把短轨迹一致性当作真实平板物理验证。
+prepare_expanded_mask_reference.py记录实际二进制散列和逐阶段比较。
+一次原始启动因新冻存二进制漏执行位而在MPI启动前失败，其目录
+compact_flat_frozen保留；恢复执行位后在新目录完整运行，不增加重试。
+完整goal保持active，未操作Git或远端任务。
+
+### 10.39 bc11剖面入口与实际bc51上边界组件
+
+在展开标记缺陷待决期间，先独立冻结原CPU/旧GPU的543e/643e、
+bc11/21/41/51拉伸平板一完整步输入与三阶段物性。两参考物理节点
+缓存最大缩放差8.88178e-16。该夹具复用受控压缩初场，不宣称真实
+激波平板验证；冻结目录仍只读，不因随后通信修订覆盖原证据。
+
+boundary_state新增静态入口目标平面：rho/u/v/w/p/T及三分量内法向，
+仅首次需要时分配，不建立全域三维目标副本。bc11支持完整状态指定
+以及按几何法向Mach数分类的mach_pressure模式；亚声速保留原二阶
+内部压力外推、指定速度和温度，超声速及精确声速采用目标状态。
+没有改变原入口模型。bc51此次仅接原代码实际启用的y上边界二阶
+外推，复用既有设备外推核，不将其称为NSCBC或bc52。
+
+新astr_backend_profile_boundary测试从冻结真实阶段输入出发，检查
+6个基本物理字段、q五分量、仅所选面RHS清零、其他节点及halo位模式
+不变、目标平面地址复用。另用非轴对齐法向构造亚/超声速入口，并
+单独检查法向Mach恰为1的分支。两种同步模式均覆盖。
+
+实测NP=1及NP=2 x/y/z分解通过，最大边界缩放差6.66134e-16，入口
+分类合成检查最大2.18724e-16，低于2e-10。NP=2 y Memcheck两rank
+零错误/零设备泄漏，NP=2 z Initcheck两rank零错误。证据根为
+results/multi_backend_mb7_profile_boundaries_20261114：frozen、native_np1、
+native_np2_x、native_np2_y_memcheck、native_np2_z_initcheck。
+
+新增可选平面字段后，普通TGV MP7+ME6/显式滤波、NP=2 y另做四步
+代表回查：最大同相位RHS缩放差5.97564e-13，终态q差1.33214e-15；
+2+2精确恢复的状态、控制和标量一致，输出开关不改变q或时间控制。
+记录为main_tgv_after_plane_field_valid。此前一次调用误将归档根目录
+作为模板目录，准备阶段即因input.tgv不存在结束，未启动计算；记录
+main_tgv_after_plane_field保留，不把它算作数值失败或运行成功。
+
+这是新C++边界组件证据，尚未接通普通主程序平板完整边界链；bc21
+出口、平板专用统计、随机吹吸、NSCBC和高阶边界仍需各自完成。
+DTK构建脚本已登记此目标，但10.35旧快照不含本节源码，不宣称
+其已完成DTK重编或DCU实跑。
+
+### 10.40 C++展开标记字节通信及真实界面消费
+
+在10.38修正参考后，新增按需分配的shock_faces：每方向两张单层
+字节面，轴0/1/2、先下后上、循环横向第一索引最快。原物理节点
+shock_mask布局和下载格式不变；不增加另一份完整三维标记或整场
+CPU往返。每次expand使旧面标记失效，刷新完成后才供上风界面使用。
+
+通信由现有HaloTransport提供拓扑与独立通信器，复用空闲固定槽，
+实际消息为MPI_BYTE。pinned只传面字节，device直接传设备指针；
+未分解周期方向在设备端回绕内点，物理端复制端点标记，多rank
+交换1/N-1内点，不平均共享节点。与普通原始ssf、状态、应力交换
+共用槽但串行占用；异步通用请求活动期间不能调用。没有额外rank、
+机理修改或生产整场观察。
+
+新增astr_backend_shock_mask_halo：24³全周期及x/y物理端-z周期，
+两种同步、两次不同标记，共8组/rank。六面字节与物理节点标记
+严格相同，重展开会正确失效/刷新。仅用原平板RHS不足以证明接缝
+消费：原平板三阶段在z周期接缝均未形成“本地端点0、对侧内点1”
+的区分。因此另用非均匀合成标记检查实际上风核共用的设备界面
+判定函数；测试观察核仅存在于探针目标，不增加生产下载接口。
+
+| 最终界面/面halo测试 | 与非展开规则不同的界面次数 | 检查结果 |
+|---|---|---|
+| NP=1 | 924 | 所有面和界面逐字节一致 |
+| NP=2 x pinned + Memcheck | 1052 | 逐字节一致，两rank零错误/零泄漏 |
+| NP=2 y pinned + Initcheck | 1820 | 逐字节一致，两rank零错误 |
+| NP=2 z device | 1392 | 逐字节一致，真实设备缓冲MPI |
+
+pack_expanded_upwind_reference.py只打包10.38不可变原输出，未用Python
+推进。astr_backend_upwind新增--compact-expanded专用探针范围：原CPU/
+旧GPU各3阶段、两种同步，每rank12组，使用冻结紧致梯度，计算新
+原始ssf、halo、标记膨胀、字节halo和三方向实际MP7-LD对流RHS。
+NP=1、NP=2 x/y pinned及z device最大RHS缩放差2.64546e-17；q物理
+节点位模式不变，界面工作数组复用。NP=2 x Memcheck零错误/零泄漏，
+NP=2 y Initcheck零错误。冻结梯度不能用来宣称紧致完整RK阶段已交付。
+
+证据仍在results/multi_backend_mb7_mask_halo_20261114：cpp_interfaces_*
+为最终逐界面检查；cpp_faces_*保留此前仅面检查；compact_packets为
+打包参考，cpp_upwind_*、consumer_*为实际RHS对照。普通原非展开
+MP7/Roe/MP7-LD的NP=2 z device、每rank72组代表回查保持原精度。
+普通TGV的MP7+ME6/显式滤波NP=2 y四步回查也保持原同相位误差、
+2+2精确恢复及输出隔离，记录main_tgv_unchanged。
+
+当前没有解除普通主程序中紧致上风的未连接报告，也没有以组件
+替代完整平板/SBLI边界、统计及续算阶段链。下一步接完整物理端
+消费者，并用已修正的原参考核对实际紧致梯度/黏性和RK组合。
+新源码尚未DTK重编及DCU实跑；构建脚本登记了新探针，不能将此
+等同已完成DCU验证。完整goal保持active，未操作Git或任何远端任务。
+
+### 10.41 普通静态平板边界、统计及紧致完整RK/续算
+
+新增原bc21 x上出口设备状态：用当前边界温度和几何法向速度分类，
+超声速外推p/T/u，亚声速指定pinf*pout、沿用原x速度声学修正并保留
+原边界温度，最终按EOS重建rho/q。没有替换成bc22/NSCBC，也没有
+改变原平板出口模型。profile_boundary_probe在原冻结输入上增加出口，
+另检查亚声速、超声速和精确声速分支；NP=1/2 x/y/z通过，最大
+边界缩放差6.66134e-16，合成分类差3.72737e-16，非所选节点位模式
+保持不变；NP=2 x Memcheck两rank零错误/零设备泄漏。
+
+flat_statistics_probe新增独立解析检查：16³拉伸笛卡尔、u=3y、
+rho=2、w=0.25、T=1+0.5y，体积积分、底壁剪切/热流/面积和独占节点
+w²和均有闭式值。NP=1与NP=2 x/y/z、两种同步、重复调用全部得到
+零差，q全数组字节不变，几何地址复用；NP=2 x Memcheck零错误/
+零泄漏，NP=2 y Initcheck零错误。它不是用CPU/GPU相等替代解析检查。
+
+正式统计保持原CPU定义：
+
+- massflux：八节点q2平均乘实际cell%vol，MPI求和后除voldom。
+- fbcx、wallheatflux：底壁四节点Sutherland黏度乘du/dy、导热系数
+  乘dT/dy，按原arquad3d面积加权，再除全壁面积。
+- wrms：沿用1:im、1:jm、1:km独占节点的w²归约，并非减去均值后的
+  脉动RMS。只回传五个局部和，保留原日志字段含义。
+
+新增可选cell_volume与wall_cell_area字段，底壁面积只在实际底壁
+rank分配。初始化上传实际CPU单元体积与壁面面积，不上传三维坐标
+副本，不每步重算或回读全场。恢复后由冻结静态资源重建这些派生
+权重；不扩展权威状态文件。仍复用原标量归约工作区，未在本轮
+实施CPP-P专项融合或声称有性能收益。
+
+fluid_runtime现接静态prof入口目标、bc21出口及bc51实际上边界，
+按原1--6面顺序与既有bc41/50协同。743e/643c在真实普通RK调度中
+调用全局紧致梯度、原Ducros/SSF交换、标记膨胀/字节halo、选择性Roe
+MP7-LD、紧致黏性通量散度及可选紧致滤波；已解除10.40对应的未连接
+报告，不再用冻结梯度替代实际主程序。入口平面及几何只在初始化/
+恢复事件上传，主推进保持设备常驻。
+
+算例仍是已有16³受控压缩平板夹具，Ma=2、Re=1000、参考温度273.15、
+Tw=1、域10×1×0.25、拉伸y、ninit=3、dt=1e-6、四完整步，关闭
+crashfix、MP通量保正、吹吸和累计均值。它只检查实现，不认领真实
+激波、转捩或边界层物理验收。预先冻结CPU/旧GPU对应四步参考：
+显式543e/643e+bc11/21/41/51，紧致743e/643c+bc11/21/41/50，及其
+compact10滤波版本；原CPU/GPU终态及标量差均低于2e-10。
+
+首次紧致检查点被原合同拒绝，并非计算崩溃：它原先只登记特定
+二维初场/随机吹吸组合，没有登记当前三维初场、静态prof、无吹吸
+的bc50顶面。用户明确批准扩展后，复用现有Cartesian验证与资源
+清单，允许该743e/643c标准对流/黏性FP64组合；其他格式和吹吸规则
+不变。没有新增文件格式、补偿层或旧格式兼容。
+
+冻结资源为geometry.h5、input.txt、grid.h5、inlet.prof、flowini3d.h5，
+不要求不存在的wallbs.dat。新CPU/旧GPU二进制另冻存reference_output。
+与修订前、关闭正式输出的原参考相比，两后端各24份物理q快照及
+flowstate.dat逐字节不变，记录reference_output_numerics_unchanged.json。
+原CPU及旧GPU都通过有/无紧致滤波的连续四步与2+2步精确恢复，
+状态、control.bin及续算标量序列逐值/逐字节相同。
+
+| 新C++普通主程序组 | 已运行代表配置 | 最大同相位q/缓存/RHS缩放差 | 最大终态q缩放差 |
+|---|---|---|---|
+| 543e/643e + bc51 | NP=1、NP=2 y pinned/Memcheck、x device | 2.66454e-15 | 1.33227e-15 |
+| 743e/643c，无滤波 | NP=1、NP=2 y pinned | 3.99681e-15 | 1.33227e-15 |
+| 743e/643c + compact10 | NP=1 scalar、NP=2 x full/Memcheck、z scalar/device | 9.22487e-14 | 3.99039e-14 |
+
+上述每个正式门槛均通过q/时钟的输出开关隔离、2+2恢复state.h5/
+control.bin/标量严格相同。各组原标量交叉差最多4.64074e-14，包含
+原GPU的归约次序差，不将其说成物理误差。z device的紧致滤波还用
+默认dependency模式复验，与显式同步取得相同误差及恢复结论。
+两个普通主程序Memcheck为两rank零错误，未启用full leak-check，
+不把它扩大为泄漏检查；组件full leak-check另如上记录。
+
+实际证据根results/multi_backend_mb7_plate_20261114：summary.json汇总
+九个正式新主程序运行组；statistics_*、outlet_*为独立组件；
+reference_*为参考，original_compact*_restart为原后端恢复；cpp_*为
+新C++真实推进。早期未建输出根目录的测试准备失败，以及紧致旧
+合同的拒绝记录仍保留，均未计作通过。*_advance_*只证明关闭正式
+输出的数值推进，不用它代替随后正式输出/续算门槛。
+
+新增运行器run_cpp_plate_gate.py与run_original_plate_restart.py。
+既有周期TGV MP7+ME6/显式滤波NP=2 y代表回查继续通过同相位场、
+标量、输出隔离和精确恢复，记录main_tgv_after_flat。
+
+仍待：一般CURVE开放边界、NSCBC/高阶/SBP、随机吹吸与动态入口
+历史、通量保正/crashfix、原累计均值、低精度和本增量DCU实跑。
+新平板原位消费者及正式场/切片产品也尚无本轮实际证据，不能仅凭
+普通主程序数值对照认领。DTK脚本登记flat_statistics目标，但本轮
+没有远端构建/作业或Git写操作。完整MB6/MB7 goal保持active。
+
+### 10.42 静态平板的实际存档、壁面时间统计及设备图像
+
+继续10.41现有16³、四步、dt=1e-6静态平板，不新增物理工况。
+run_cpp_archive_gate.py增加显式profile-fixture来源，复用已冻存输入。
+743e/643c、NP=2 y的两份三维原始量存档及27张数值切片均与原CPU/
+旧GPU对应，最大缩放差7.39519e-14。切片包含rho/u/v/w/p/T、Q_rs、
+速度散度及密度梯度模；不是三维派生量全覆盖。两个正式体积事件
+按既有合同回读六个物性字段及halo，共2659392字节；切片只回读
+选中的二维结果，共561816字节。不能把允许的正式场写盘传输算成
+图片通道的全场回读，也不能把图片零回读说成整个运行无D2H。
+
+新增run_cpp_plate_products.py，先冻结CPU/旧GPU真实壁面产品，再检查
+新C++普通主程序。使用既有通用Cartesian底壁切片/壁面剖面通道，
+没有将槽道两壁框架套到平板，也没有绕过原M12专用提供者的未接线
+状态。八个数值产品包括瞬时rho/T、两分量剪切、入壁热流、黏度，
+完整/部分展向平均、单列及分字段时间平均和平均二维壁面。
+统计窗为[0.5e-6,3.5e-6]，沿用当前selected-time框架；不实施暂缓的
+主程序统计架构重设计，也不认领solver-samples累计均值已移植。
+
+以保存的五个完整步端点和真实展向坐标独立重积，最大误差4.44090e-16。
+743e/643c的NP=2 y产品对原CPU/旧GPU最大缩放差8.88178e-16；
+543e/643e、bc51图像组的同类数值产品最大1.06582e-15。
+观察开/关的state.h5和时间控制不变；2+2续算的state.h5、statistics.h5、
+control.bin、壁面数值存档及剖面CSV严格一致。
+
+实际重编build_backend_cpp_insitu_gcc13后，使用现有Catalyst/ParaView及
+既有产品实现，不自写新渲染器。标准设备管线实跑NP=1、设备直连
+实跑NP=2 x；均输出瞬时速度截面、Reynolds平均截面、壁面剪切图、
+Q_rs=1e-4表面及瞬时流线。每组14张800×600 JPEG，无EPS；正Q阈值
+依据已冻结夹具中的数值范围选定，不称其为已验证的湍涡。
+16个种子采用既有sbli-layered16按物理域归一化分层，避免M12的固定
+x=54/z跨度90预设落到本夹具域外；不修改CFD初场。
+
+每帧每rank的实际回执包含正的图元数、设备管线及field_d2h_bytes=0、
+geometry_host_bytes=0。私有pinned模板邻域交换仍有D2H/H2D；这是
+明确保留的通信，不是静默切回主机处理。动态清单、物理字段和图像
+在新C++实际运行中生成，不使用旧GPU图片替代新后端证据。
+同构建2+2续算的图片像素一致。旧/新后端四种非流线产品的11张图
+逐像素一致；流线的旧策略局限及新策略结果单列10.43，不用小像素
+差掩盖截断轨迹。
+
+实际查看了截面、Q表面和流线图：有场与几何、色条及对应视角，
+但共享三维标尺的部分y轴刻度拥挤。未擅自修改此共享显示问题，
+不将本轮短测说成组会/论文图版排版已验收。
+
+证据根results/multi_backend_mb7_plate_products_20261114：
+archive_compact_np2_y、reference_*_selected*、compact_selected_np2_y及
+其_remaining闭环、explicit_images_np2_x_direct及其_remaining闭环、
+explicit_images_np1_standard。早期只读输入副本无法新增input.insitu、
+以及禁用配置不能展开-1预算这两项测试准备错误已修正；没有为此
+修改生产配置解析器。失败记录保留，已完成运行/参考明确只读复用，
+没有自动fallback、重试或覆盖原结果。
+
+### 10.43 获批的流线RK45步长恢复
+
+10.42的图片暴露出轨迹完整性问题：原策略在第0步两后端都有5/16
+种子因10000步限额而停；第2步新C++为2/16、旧GPU为3/16；第4步
+新C++为0、旧GPU为1。它不影响CFD场，却影响图中轨迹长度和后处理
+工作量，不能仅凭像素平均差小就认领轨迹一致。
+
+核对现有共享insitu_rk45_device.h及本地VTK原源码，确认两项继承策略：
+step达到minimum后不再建议增长；误差比恰为0时把下次建议设为minimum。
+不把这种政策说成新C++对流/黏性的错误。根CMake新增独立实际头文件
+探针：常量及光滑圆周、正反方向、正常与最小初始步长共八组。
+旧源码/二进制已只读冻存rk45_original；最小步长起步时，误差虽仅
+约6.94e-23，10000步只走到弧长0.1而非目标2。这证明策略可能造成
+停滞式小步，不等于已经逐粒子记录了原平板所有触发位置。
+
+用户明确批准修订后，只改共享后处理头文件中的两处选择：
+误差满足时允许从最小步长恢复；零误差建议带原方向符号的当前上限。
+保留Cash-Karp系数、误差估计、上下限、原参数/种子、剩余弧长封顶、
+域外/非有限/零速度/转移及subminimum分类。不修改第三方VTK或CFD的
+RK3/CFL/自动时间步，不新增运行选项或兼容模式。最小步长处误差仍
+超目标时的原处理不在本修订中改变，不能宣称一般严格局部误差上界。
+
+新策略在上述八组解析检查中均到目标2；触底起步由10000步截断变为
+101步完成，圆周位置误差最大7.09433e-14，正常起步100步结果不变。
+FP64 CPU/GPU的一步圆周误差约7.58e-12，FP32 CPU/GPU约1.97e-8；
+各自原异常/终点检查及新增触底增长/完整轨迹检查通过，FP32没有套
+FP64门槛。新CUDA探针Memcheck零错误。原32位构建的RPATH循环警告
+未修，纯RK45探针不依赖这些VTK模块，不将其当成FP32全应用验收。
+额外旧build_insitu_device_probes在生成时缺CUDA::cudart导入目标，
+其VTK单步对照本轮未执行；未修改该无关配置，不写成通过。
+
+重编当前NVIDIA C++渲染程序后，保持平板原参数不变复核两管线：
+最小/最大步长1e-5/0.02、初始0.002、误差目标1e-8、弧长2、
+最大10000步、16种子。第0/2/4步均16/16达到长度目标，因步数上限、
+域外及subminimum停止的粒子均为0；每帧1600条线段，原第0步为51100条。
+这是轨迹工作量差，不冒充CFD整步加速或一般性能收益。
+
+rk45_policy_isolation.json确认：新旧策略前后CFD state.h5及时间
+statistics.h5的各数据集值/位模式不变；新版自身2+2续算的场、统计、数值产品及
+图像仍一致。四类非流线产品仍与原后端像素一致；流线因补全截断
+轨迹不再要求与旧策略逐像素相等。复用未改的旧后端结果，未重跑
+旧参考以掩盖差异。最终图像闭环为rk45_recovery_np2_x_direct及
+rk45_recovery_np1_standard，组件记录为trace_minimum_*、rk45_original、
+rk45_gpu_memcheck.log。共享数值策略已修订，跨构建比较需区分新旧政策；
+精确恢复结论仅针对同构建，不扩张到跨政策图像一致性。
+
+新增源/脚本和构建说明在tests/gpu_backend/。本轮未操作Git、未构建
+或运行远端任务，DCU新能力、NSCBC、高阶边界等仍按10.41保留待办。
+完整MB6/MB7 goal继续active，不以本轮原位消费者闭环代替整个目标。
+
+### 10.44 bc22 x+ NSCBC驻留RHS组件
+
+本轮仅新增边界RHS组件，未将bc22加入C++普通主程序准入。
+boundary_state.cu中的outflow22_rhs及Fortran/C ABI复用现有q、物性、
+Jacobian、完整度量和RHS设备视图，不新增全场或边界暂存，不在核内
+回读CPU。只在实际物理出口所属rank调用该命令。
+
+数学与原已修订的低阶bc22保持一致：三点二阶单边法向通量和对应
+度量导数修正，按局部几何法向速度选择传入波；亚声速压力松弛
+强度3.75，倒流使用完整自由流目标及随流入速度连续消失的恢复率，
+超声速流出保留传出特征。面内项保留原两点中心通量差与物理端
+选择参数；本轮数值对照仅覆盖两个面内方向均为周期/内部的情形，
+不认领壁面/顶面交线。输出RHS使用GPU推进所需的负散度符号。
+
+在修改新设备实现前冻结NP=1实际CPU/旧CUDA Fortran输出；随后补
+NP=2三方向的独立同状态参考。nscbc_outlet_probe.F90通过原构建
+的模块与对象直接调用CPU outflow_nscbc(2,rhs_only=.true.)和旧GPU
+nscbc_outflow_x_rhs_kernel，不复制CPU/GPU公式来冒充参考。原生
+测试目标astr_backend_nscbc_outlet调用新C ABI；两种同步模式均检查。
+rhs_only仅隔离原已有的RHS阶段，不修改原CPU或旧GPU出口实现。
+
+每种布局20组状态：10组笛卡尔均匀状态覆盖亚声速/超声速流出、
+零法向速度、亚声速/超声速倒流、声速及邻近状态、近零倒流和强
+切向速度；另10组加入密度/压力/速度梯度及非对角、沿法向变化的
+度量。后者是组件数据，不声称由某一完整CURVE网格生成。均匀
+状态另用不构造特征矩阵的声学/熵波投影检查两个原参考，最大绝对
+差2.46331e-14。CPU与旧GPU参考最大缩放差2.50133e-13。
+
+| 布局 | 新组件对CPU/旧GPU最大逐分量缩放差 | 工具检查 |
+|---|---|---|
+| NP=1 | 1.87878e-13 | 两种同步模式 |
+| NP=2 x | 1.87878e-13，非出口rank为逐值不变 | memcheck各rank 0 errors、0 leaked bytes |
+| NP=2 y | 1.87878e-13 | initcheck各rank 0 errors |
+| NP=2 z | 1.87878e-13 | 两种同步模式 |
+
+q位模式保持不变，非出口节点RHS与初始值相等；每rank每布局40次
+新命令/非所属面隔离检查。不将切分后上传同一状态的组件比较称为
+真实halo交换或完整MPI时间推进验收。源文件/实际参考二进制散列、
+原调用源副本、原始输出、构建/运行命令及工具日志保存在
+results/multi_backend_mb7_nscbc_x_20261114。首个NP=1冻结早于新增
+独立解析报告，解析报告来自相同均匀状态的NP=2各布局；没有修改
+该只读参考来补写结果。DTK构建脚本登记新目标，但尚未构建/运行
+这一增量，不以统一源或原有DCU结果代替设备证据。
+
+根CMake的普通astr及profile_boundary代表目标重建通过；原bc11/21/51
+的NP=2 y分解组件复查最大缩放差6.66134e-16，六组法向马赫分类
+对照最大3.72737e-16，非选面状态及RHS约束不变。记录在同根
+existing_profile_np2_y；它不补充新bc22的主程序推进证据。
+
+参考审计另确认：通用CPU inflow_nscbc仍是旧bc12松弛；旧GPU入口
+已按ASTR_GPU_NSCBC_PHYSICS_REPAIR_PLAN.md中获批N4策略修订。
+该差异已有存档，不把旧CPU入口当作获批GPU入口的数值真值，也
+不在此轮顺手修改CPU入口。bc12迁移须匹配该获批策略的有效参考。
+
+下一步仍需接出口自身横向滤波与刷新、bc12有效参考、bc52各已
+验证模式及黏性源项/交线所有权，再做普通主程序同相位短窗与
+输出/续算。高阶、SBP和其他MB7可选能力仍按原goal推进。
+本轮没有修改生产默认、放宽误差门槛、操作Git或远端作业。
+
+### 10.45 bc22出口面滤波、真实halo及物性刷新组件
+
+接续10.44，新增nscbc_outlet_prepare/filter C ABI与Fortran接口。
+系数、低阶物理端闭合及平板底壁节点保持规则与原实现相同；
+内部为七点六阶横向显式滤波，近物理端沿用原五点闭合，不把它
+称为已完成的高阶边界版本。滤波不依赖主lfilter开关。
+
+State仅在调用prepare的出口所属rank分配nscbc_outlet_plane，形状
+为1×(jm+1)×(km+1)×5、FP64，字节数40(jm+1)(km+1)。16³组件的
+单面为11560字节，没有为此分配完整qwork或增加公开field编号。
+prepare重复调用复用已有分配；销毁State时释放。该缓冲每次由
+当前q完全覆盖，是派生工作区，不新增检查点权威状态或附属文件。
+两核分别生成新面和回写，沿同一设备流排序，不作原地邻域覆盖。
+
+新增nscbc_filter_probe.F90及run_nscbc_filter_components.py。修改
+新实现前，直接链接原CPU spafilter6exp与原GPU生产滤波核冻结
+匹配参考：周期y和平板物理y两类，各含常量、光滑扰动和高频/
+多项式变化，共6组输入。CPU/旧GPU最大逐分量缩放差2.37995e-16；
+常量保持的最大绝对舍入差4.44090e-16。参考包含当时调用源、
+源码与实际二进制散列，保持只读。
+
+新组件在NP=1、NP=2 x/y/z、两种同步策略下检查实际命令；x/y用
+pinned、y/z另用真实设备缓冲MPI。每次先污染可交换的单方向halo，
+经实际transport作共享节点协调与halo-only刷新，再滤波并再次
+交换，最后用物理端掩码重建物性。原输入、分区和原输出逐变量
+比较，不是把CPU预填的halo直接交给新核。另检查非出口物理
+节点位模式不变，并对内点及有效单方向halo核对rho/u/v/w/p/T
+来自滤波后的同一个q。双、三方向越界角缓存按既有生命周期
+初始化，不把它们当作有效物理节点。
+
+最终corrected_*矩阵每rank 24组（两个原参考、两类物理端、三个
+场和两种同步策略），最大缩放场差/缓存绝对差4.44090e-16。
+corrected_np2_x_pinned_memcheck各rank为0 errors、0 leaked bytes；
+corrected_np2_y_pinned_initcheck各rank为0 errors。既有出口RHS
+组件重查仍为1.87878e-13。普通astr通过根CMake重建；不等于
+bc22已接入主程序时间推进。DTK脚本登记新组件，尚无该增量的
+DCU编译或运行证据。
+
+本轮保留了测试接线和工具联用的失败记录，没有清零接收槽、
+屏蔽错误或修改公共MPI：
+
+- 首版探针仅调用内点primitives，却下载完整缓存，initcheck检出
+  未定义halo；现改为既有exterior初始化与带物理端掩码的刷新，
+  且检查有效halo，pinned initcheck实际归零。这是探针接线修订，
+  不是放宽测试或修改生产物性算法。
+- 首版在MPI_Init后才创建CUDA上下文，工具检出UCX cuCtxSetFlags
+  无效上下文；现仅将探针绑卡前置，与已有组件测试一致。此项
+  不宣称普通主程序的所有UCX/工具初始化组合已验证。
+- 设备MPI+initcheck在unpack接收读取处报告未初始化，停止该次
+  工具运行后保留记录。原生UCX日志明确选中cuda_ipc/cuda；
+  [NVIDIA已知限制](https://docs.nvidia.com/compute-sanitizer/ReleaseNotes/index.html#known-limitations)
+  说明initcheck不支持IPC分配，会出现误报。这里记录为不支持的
+  工具组合，不将该次记为内存检查通过，也不仅凭文档排除其他缺陷。
+- 前置上下文后的device memcheck仍以99退出，41项报告/每rank；
+  堆栈位于UCX的cuMemCreate(Fabric能力探测)、
+  cuMemRetainAllocationHandle、cuIpcOpenMemHandle注册，另报告
+  每rank 208080字节、3个IPC映射未释放。数值检查到达PASS不抵消
+  工具退出。该项保留为UCX/工具联用未通过记录，不修改SDK/MPI、
+  不关闭错误报告，不将pinned工具结论外推成device工具已通过。
+
+全部证据位于results/multi_backend_mb7_nscbc_filter_20261114。
+首版与corrected_*目录不覆盖；CPU/旧GPU参考复用，因为字段构造、
+滤波算法和原函数未改变。此轮仅完成出口滤波的前置组件，
+NSCBC普通主程序的出口/顶面/交线阶段装配、精确续接和其余MB7
+仍未完成；goal继续active，未操作Git、远端作业或生产算例。
+
+### 10.46 已修订bc12特征入口的设备组件
+
+根据已批准的ASTR_GPU_NSCBC_PHYSICS_REPAIR_PLAN.md N4策略迁移
+入口：保留一阶法向通量、度量导数修正和二阶面内项，按局部
+几何法向波速只改传入特征，使用完整自由流守恒目标和0.25a/Lx
+松弛率。超声速流入处理全部五个传入特征，反向/声速/掠流按
+64 epsilon max(a,|un|)的原既定分类处理，出射特征仍来自内场。
+未把通用CPU inflow_nscbc的旧错误公式当作应保持的参考。
+
+boundary_state.cu新增inflow12_rhs和C ABI，Fortran接口直接消费
+设备q、物性、Jacobian、完整度量及RHS，没有新增入口全场工作区
+或CPU推进。x入口/出口复用实际笛卡尔通量和面内装配设备函数，
+仅重用相同数学，不顺手改其他边界。原bc22组件复核最大差仍为
+1.87878e-13。
+
+复用nscbc_outlet_probe.F90的字段构造/上传/隔离检查，以TEST_INLET
+编译出astr_backend_nscbc_inlet和原CUDA Fortran参考。原CPU入口
+模式明确不作为此修订的参考。修改新核前冻结NP=1实际旧GPU输出，
+再补三方向切分参考；参考只读保留源副本、散列和实际调用二进制。
+测试24组（12个均匀状态及对应梯度/非对角度量状态），覆盖正常/
+反向亚声速、超声速、掠流、正负声速和两侧邻近状态、强切向速度。
+均匀场再用不构造特征矩阵的声学/熵涡分解独立检查传入子空间，
+最大绝对差2.48690e-14，不以CPU/GPU相互匹配代替该检查。
+
+NP=1及NP=2 x/y/z，两种同步策略，每rank 48次检查；对旧GPU最大
+逐变量缩放差1.02040e-14。非入口rank/RHS内点和整个q位模式
+保持不变。NP=2 x memcheck各rank 0 errors、0 leaked bytes；
+y initcheck各rank 0 errors。组件切分不冒称实际多rank流场推进。
+证据：results/multi_backend_mb7_nscbc_inlet_20261114。
+
+### 10.47 x向NSCBC普通主程序、检查点及精确续接
+
+fluid_runtime.F90现接通bctype=12/22/1/1/1/1的既有无粘性MP7
+路径，沿用543e/643e、recon_schem=3、不作Roe分解、主滤波关闭。
+该组合之外的NSCBC/算子阶段尚未接通，仍明确报未实现；不把
+这一短窗扩大为高阶边界、紧致/KEEP/ME6组合、黏性或顶面支持。
+runtime use_gpu选择及根CMake保持不变。
+
+每stage先准备原始量并协调/刷新halo，实际出口所有者执行自身
+六阶横向滤波，然后再次交换并重建物性。普通MP7各方向仅计算
+既有body_first/body_last内点，入口和出口在同一驻留RHS中各加入
+一次法向及其面内项，之后RK更新；不与体内y/z核重复装配边界
+横向项。原NSCBC自身滤波不因主lfilter=f而被取消。初次原型在
+同模块直接调用BIND(C)交换包装处返回-1，未进入计算；按10.34
+已经核实的NVHPC问题改用导入的直接C ABI，并保留相同观测。
+没有添加备用路径、重试或改变halo规则。失败目录cpp_np1保留。
+
+新增仅在显式诊断启用时记录post_update的观察点，与旧GPU每个
+RK stage更新后的场直接匹配。旧OpenShock的pre_rhs位置在出口
+滤波之前，不能与新准备完成的场冒称严格同相位，因此本轮只
+使用双方完整post_source RHS与post_update q作阶段门槛。
+
+原参考先由只读f232836cee684ca8...旧CUDA Fortran普通astr执行，
+其正确入口策略已独立检查。采用已有静止正激波初始化：Ma=3、
+64×8×8区间、bctype=12/22/1/1/1/1、pout=10.333333333333333，
+固定dt=1e-5、4个完整步（t=4e-5），主滤波/黏性/crashfix/时间
+均值/海绵层关闭。该例只是既有NSCBC与MP7接线短窗，不是新物理
+激波/SBLI验证，也没有改为CPU旧入口推进以制造匹配结果。
+
+| 普通主程序矩阵 | 完整RHS最大缩放差 | stage更新q最大缩放差 | 其他证据 |
+|---|---|---|---|
+| NP=1 pinned/explicit | 6.24501e-17 | 6.11162e-16 | 时钟一致、观察隔离 |
+| NP=2 x pinned/explicit | 6.24501e-17 | 6.11180e-16 | 时钟一致、观察隔离、memcheck各rank 0 errors |
+| NP=2 x device/dependency | 6.24501e-17 | 6.11180e-16 | 实际设备缓冲MPI、时钟一致、观察隔离 |
+
+各更新stage的物理节点有限、rho及内能严格为正。入口/出口在
+不同rank时仍覆盖对应所有者，不把内部MPI面当物理边界。
+此小网格y/z分解后局部区间只有4，小于固定hm=5，故普通主程序
+矩阵采用x分解；y/z的入口组件及真实出口滤波通信分别由10.46、
+10.45覆盖，不声称本次完成y/z普通主程序矩阵。
+
+随后扩展现有output_runtime对这一静态GPU OpenShock组合的准入，
+不改变字段格式、布尔序列化或精确恢复语义，也不引入新附属文件。
+入口目标从现行输入参数恢复，出口面是完全覆盖的工作区，已有
+driver_config记录/x12-stage-v1，倒流目标沿现有出口记录保存。
+未为旧CPU bc12增加运行或恢复准入，也未改其数值公式。
+
+在本次新构建分别验证NP=1 pinned/explicit、NP=2 x device/dependency：
+每2步写现行检查点、保留2份；关闭观察和关闭检查点分别与基准
+比较，最终q及时间控制位模式不变。连续4步与2+2续算的state.h5
+数据集、control.bin及对应标量日志逐值一致。跨后端标量统计最大
+缩放差4.19656e-13，仍按2e-10门槛，不冒称跨后端逐值相等。
+未用旧GPU未注册的检查点组合来宣称原后端恢复已通过。
+
+构建与测试入口：run_cpp_open_shock_gate.py的--freeze-only先固定
+旧参考；普通检查使用--reference-results，--checkpoint增加输出
+隔离与精确恢复；--memcheck记录主程序内存结果。不创建新的
+资源预算或超时。完整证据在results/multi_backend_mb7_open_shock_20261114，
+cpp_np1_checkpoint及cpp_np2_x_device_checkpoint为实际恢复闭环。
+尚无这个增量的DTK/DCU结果，未重复运行10.45已知不支持的
+device+Sanitizer组合，亦未据原生数值通过宣称该工具问题已修复。
+
+为检查共享runtime与新增stage观察点未影响已有非NSCBC路径，
+复用未改的CPU/旧GPU参考，补跑16³ TGV、MP7/ME6与主滤波、
+NP=2 y的四步/输出/精确恢复代表组。最大完整RHS缩放差
+5.97564e-13、末场1.33214e-15，输出隔离及状态/控制/统计精确
+续算仍通过。证据为同根existing_tgv_me6_filter_np2_y；没有重跑
+全部旧脚本或重建不受改动影响的昂贵参考。
+
+本轮不修改主计划目标或CPU入口，不操作Git、远端任务及生产
+算例。后续继续NSCBC顶面各成熟模式、交线、黏性源项与更广
+组合，并补全原MB6/MB7其他缺项；整个goal仍未完成。
+
+### 10.48 bc52三种模式、几何目标及法向Mach归约组件
+
+boundary_state.cu/F90/h新增upper-y驻留RHS接口，当前覆盖0 compatibility、
+1 target relaxation（incoming_only及原sbli_shock目标）和2 nonreflecting。
+保留原三点二阶法向通量/度量导数、特征矩阵、局部几何法向波速、
+两点面内对流及负散度装配。compatibility按局部传入特征和局部Mn
+松弛；target relaxation沿用原顶面全局最大法向Mach平方的sigma_out，
+有流入时用sigma_in。sbli_shock保留原零波速容差，其余模式保留
+64 epsilon max(a,|un|)分类；未重新设计松弛参数或更换物理模型。
+
+nonreflecting按原几何/切向源项平衡传入特征，不等同于把法向传入
+LODI简单设零。物理x端的原单边面内项也保留。keep_corner=0已在
+周期/物理x两类组件中实测；非零交线所有权分支按旧核移植，但尚未
+获得联合交线验证，不在普通主程序中启用。GRCBC的完整RHS闭合及
+非反射黏性源项投影尚未迁移，不能以当前三个模式认领它们。
+
+入射目标使用显式上传的二维守恒目标面，不增加全域x坐标副本。
+现有CPU nscbc_farfield_target_states在测试参考生成阶段按真实x>
+shock_x选择波前/波后，调用原postshock构造Ma=3、35度目标，再
+将匹配目标面作为新核的只读输入。接口约定由初始化/恢复消费者
+重建静态目标；本轮只有该接口/组件，不声称普通主程序已接该生产者。
+本轮没有把sbli_shock替换为新的sbli_grcbc边界。
+
+State按需持有nscbc_top_target：1个(im+1)×1×(km+1)×5 FP64面，
+16³组件为11560字节，仅shock目标上传时分配，重复上传复用。
+另有按需8字节顶面最大法向Mach平方工作标量；两者随State释放，
+公开field编号仍为20，不新增检查点权威状态或附属文件。
+RHS核读取现有q、物性、Jacobian及完整度量，不整场往返CPU。
+
+新增顶面局部Mach²设备归约，512线程共享内存树加跨block 64位
+CAS最大值，不假定32线程warp；只读取物理顶面。接口回读8字节
+结果，并沿既有fluid_check读取状态，Fortran负责实际MPI_MAX归约。
+不以全域速度模长Mach或完整步CFL替代当前stage顶面法向Mach。
+实际主程序接线时须按原时序在顶面滤波前取得所需的归约值。
+
+修改新算子前，直接链接原CPU farfield_nscbc(4)与旧GPU生产核冻结
+匹配参考；lfilter=t仅用于隔离RHS组件，跳过其自带横向滤波，不改
+生产开关或数值公式。NP=1及NP=2 x/y/z，16³区间；包含周期/物理
+x端、四类选择（compatibility、普通目标、激波目标、nonreflecting），
+12组均匀/梯度/完整非对角度量输入，共96组参考。组件的非对角
+度量数据不是一个已验证的实际CURVE网格，不据此宣称曲线工况闭环。
+原CPU/旧GPU最大逐分量缩放差5.26571e-12；均匀场另用独立声学/
+熵涡投影检查目标松弛、压力恢复和非反射零强迫，最大绝对差
+5.29483e-12，均满足原2e-10门槛，没有放宽容差。
+
+新探针astr_backend_nscbc_top每rank在两种同步策略、两个原参考上
+作384次RHS检查；q位模式、非顶面RHS及非顶面所属rank不变。
+NP=1/2 x/y/z最大对照差5.26571e-12；NP=2 x memcheck各rank为
+0 errors、0 leaked bytes，NP=2 y initcheck各rank为0 errors。
+这些RHS探针上传相同状态的切分，不冒称真实halo交换或完整流动
+推进；顶面标量归约本身实际参加MPI_MAX。
+
+单独的32×16×32区间归约构造场把唯一最大值Mach²=4放在最后
+一个物理顶面节点。NP=2 y中只有上部rank贡献，33×33顶面跨3个
+512线程block；两种同步策略局部/全局最大值误差均为0。
+随后producer_consumer_np2_x/y使用新GPU局部归约及实际MPI_MAX
+直接驱动新RHS的sigma_out，不再注入原参考的归约标量；最大差
+仍为5.26571e-12。没有用单block或CPU归约输入替代这项接线证据。
+
+证据根：results/multi_backend_mb7_nscbc_top_20261114。reference_*保持
+只读，含原始输出、实际二进制/源散列和调用源副本；最初16³参考
+与后加归约测试规格的源版本均保留，没有覆盖参考。命令入口为
+run_nscbc_top_components.py：--cpu-build/--gpu-build先冻结，
+--reference/--binary对照；--reduction-only --plane-intervals 32仅运行
+独立归约构造场。未设置新的资源预算或自动重试。
+
+根CMake的普通astr及旧出口组件重建后，出口原代表组仍为
+1.87878e-13；新State布局下，原x向NSCBC NP=2 device/dependency
+四步及2+2精确恢复、输出/观察隔离仍通过，RHS 6.24501e-17、
+q 6.11180e-16。该记录为existing_x_nscbc_checkpoint，不拿它
+冒充bc52普通主程序、输出或恢复已验证。
+
+仍待：顶面x/z横向滤波及halo/缓存时序、黏性前RHS面快照和
+传入黏性源项投影、出口/入口/壁面交线、主程序短窗及输出/恢复，
+以及GRCBC、高阶/SBP等原MB7范围。当前basic_boundaries仍未接纳
+bc52，不把C ABI组件可调用写成完整bc52算例可运行。DTK脚本登记
+新组件，但尚无该增量的DCU编译/运行证据。未操作Git、远端任务、
+驱动/MPI或生产算例，完整goal保持active。
+
+### 10.49 顶面x/z六阶滤波的连续设备链
+
+boundary_state.cu/F90/h新增nscbc_top_filter_prepare/filter，x/z复用
+一份(im+1)×1×(km+1)×5 FP64面工作区，16³为11560字节。
+仅顶面所有者按需分配，重复prepare复用、State销毁释放；生成面
+与回写分别排在同一设备流上。不新增完整qwork、公开field编号、
+权威历史或检查点文件。旧出口底壁保持规则不混入顶面：顶面物理
+x端保留原五点闭合，内部使用原七点六阶中心滤波，z沿原周期规则。
+模式/主lfilter是否启用这一操作仍由阶段调用者决定，未改生产默认。
+
+先通过原CPU spafilter6exp和旧GPU生产x/z核冻结参考，再实现新核。
+两种x端布局、三组常量/光滑/高频-多项式场，分别记录x输出、
+对应z输入和z输出。参考的z周期halo按唯一节点的索引定义复制
+x滤波后数据，不计算CFD推进；新后端必须通过真实MPI/本地周期
+transport获得它们。没有把这项参考准备称为原CPU完整boucon时序。
+
+复用nscbc_filter_probe.F90的TEST_TOP_FILTER构建，新增目标
+astr_backend_nscbc_top_filter和runner --top。实际新链为初始halo
+刷新→x核/回写→真实halo刷新→z核/回写→halo及原始量刷新，
+x与z之间不再上传参考q。首个输入先污染可交换halo，检查非顶面
+物理q位模式不变，并检查所有物理/有效单方向halo的rho/u/v/w/p/T
+来自更新后的q。NP=1/2 x/y/z、两种同步和代表pinned/device通过，
+每rank 48组，最大对照差6.46732e-16；x memcheck各rank零错误/零
+泄漏，y pinned initcheck各rank零错误。z device用于实际设备缓冲
+交换，不重复10.45已经存档的不支持的device+工具组合。
+
+首次参考生成把两个后端的计算所得z输入误要求逐位相同，在
+4.44090e-16差处停止；不是滤波失败。已改为同后端的z物理输入
+与其前一x输出逐位相同，跨后端沿用原2e-10门槛（未放宽）。
+reference保留初次停止记录，reference_phased为通过后的只读参考。
+原CPU/旧GPU完整x/z最大缩放差4.24481e-16。
+
+根CMake普通astr及旧出口滤波重建；旧出口NP=2 y代表组仍为
+4.44090e-16。DTK列表登记新目标，没有声称该增量已在DCU编译/运行。
+证据根results/multi_backend_mb7_top_filter_20261114。这里完成的只是
+滤波与通信/缓存组件，不代表bc52主程序或续算已准入；下一项原始
+RHS时序问题见10.50，未将它照搬进新主程序。
+
+### 10.50 新确认的CPU顶面第二次滤波后halo时序缺陷（待审批）
+
+CPU farfield_nscbc(4)在x滤波后调用qswap，但z滤波及物理面q2fvar
+之后立即计算顶面RHS，没有再次刷新halo；mainloop在boucon返回后
+才调用的qswap已晚于该次RHS。旧GPU普通分支的明确注释及实际
+顺序也保留“RHS先于第二次滤波后的halo刷新”；尚未运行该GPU
+缺陷复现，不以源码相同顺序冒充其已实测结果。
+
+新增nscbc_top_halo_phase_probe.F90与run_nscbc_top_halo_phase.py，
+直接链接未修改的CPU实际函数与qswap。16³、Ma=1、周期x/z、
+低阶上y bc52 compatibility，制造光滑有限正值场，主lfilter=f。
+先运行原farfield完整自带滤波/RHS，再执行原主循环随后会调用的
+qswap，最后关闭重复滤波，仅重算同一物理场的RHS。没有修改CPU
+函数、滤波系数、边界目标、容差或实际推进生产算例。
+
+| 诊断量 | 实测 |
+|---|---|
+| 原RHS：NP=1与NP=2 z最大绝对差 | 1.335142188777283e-3 |
+| 刷新halo后重算：同一分区比较 | 0 |
+| 各运行刷新前后RHS最大绝对差 | 2.122475426404938e-3 |
+| 刷新前后物理q改变的位模式数 | 0 |
+| 刷新前后物理rho/u/v/w/p/T最大绝对差 | 0 |
+| NP=1/2滤波后物理q最大绝对差 | 0 |
+
+同一物理场和物理缓存下，刷新halo即可消除分区相关RHS差，因此
+不是仅由低阶边界截断、物理状态平均或机器级初始轨迹差造成。
+具体证据为同根cpu_halo_phase及cpu_halo_phase_cache，后者新增
+物理缓存隔离量；源副本、原始二进制输出和实际链接记录保留。
+
+已向用户提交但尚未获批的提案：仅当前三维非反应五变量、主
+lfilter=f且bc52自带横向滤波实际启用的路径，在z滤波后、RHS之前
+由所有rank参加halo/物性刷新；CPU/旧GPU同步修订并重新冻结受
+影响的阶段参考。非反射、GRCBC和AIR5不在提案内，不改公式/
+松弛参数。数值身份与新构建内的精确续算须明确区分，不将旧语义
+检查点切换后称作跨语义精确续算，不新增兼容层。
+
+等待批准期间停止依赖该时序的bc52普通主程序接入与后续结论；
+10.49不计算RHS的滤波组件可独立完成，原x向NSCBC等不受此项影响。
+没有修改CPU/旧GPU生产源码，没有操作Git、远端任务、驱动或MPI。
+整个MB6/MB7目标仍active，本次不是完整goal的完成或暂停。
+
+### 10.51 nonreflecting黏性增量的快照与传入投影组件
+
+本轮不将自动续接解释为批准N7；未修改CPU/旧GPU的滤波时序。
+nonreflecting不执行N7涉及的自带横向滤波，可独立迁移已有黏性
+源项规则。新增nscbc_top_prediff_capture及nscbc_top_viscous_source
+C ABI/Fortran接口，分别保存当前顶面RHS、在黏性装配后投影：
+S=RHS_after-RHS_before，RHS_after减去其传入特征投影J R I_in L S/J。
+保持局部几何法向、原64 epsilon分类及旧矩阵/除法顺序，不投影
+本来就属于对流边界的RHS，也不把后续重力/其他源项当作黏性增量。
+
+按需分配一个(im+1)×1×(km+1)×5 FP64面，16³为11560字节，
+不新增完整q副本或公开field编号。capture完成后快照ready，消费
+后清除；缺失或已消费快照明确返回参数错误，与原CPU禁止无快照
+投影的合同一致。重复合法capture可覆盖，未增加禁止正常捕获的
+围栏。设备流排序保证在黏性前取值，不在核间回读CPU；State销毁
+释放。它只属于单RK stage的派生工作区，不增加完整步检查点权威
+状态；实际主程序调用必须维持同一q/物性相位，且尚未接入本接口。
+非有限增量沿既有fluid_failure路径报错，不静默截断或替换数据。
+
+先直接链接原CPU capture/apply函数及旧GPU生产核冻结24组参考，
+使用原nonreflecting RHS、周期/物理x两类布局、12组均匀/梯度和
+完整度量输入。之后加入零质量分量、空间变化的制造源向量，
+隔离原投影与生命周期；不是声称该向量由真实黏性通量散度产生。
+单组使用精确零源检查投影不改变RHS。CPU测试仅在调用原投影时
+选择其已有适用合同，未第二次执行远场函数或启用横向滤波。
+
+测试复用nscbc_top_probe.F90的TEST_TOP_VISCOUS目标
+astr_backend_nscbc_top_viscous，runner使用--viscous-source。
+均匀状态另用独立声学/熵涡分解验证保留的源项子空间，最大绝对
+差5.30687e-12；CPU/旧GPU最大缩放差1.60757e-12。新后端
+NP=1/2 x/y/z、两种同步、两个原参考，每rank 96组，最大差
+1.60757e-12，沿用2e-10门槛。q位模式、非顶面RHS和非顶面rank
+均保持应有的制造增量；缺失/重复消费被拒绝，零源RHS逐位不变。
+x memcheck各rank零错误/零泄漏，y initcheck各rank零错误。
+这些是同状态/生命周期组件证据，不是主程序真实黏性RHS或恢复
+闭环，也不把无邻域读取的快照当作需要halo通信的权威数组。
+
+证据：results/multi_backend_mb7_top_viscous_20261114。原参考只读，
+源/实际二进制散列、调用源及日志保留。根CMake普通astr及原顶面
+组件重建通过，DTK构建列表登记新目标；没有新增DCU结果、预算、
+fallback或重试，没有修改生产默认或操作Git/远端作业。
+同根existing_top_rhs_np2_y复核普通顶面RHS组件，最大差仍为
+5.26571e-12，非顶面rank为0；不把该复核代替尚缺的完整主程序证据。
+
+### 10.52 完整nonreflecting盒参考统计NaN（待审批）
+
+为从组件进入真实黏性主程序，已准备并运行旧CPU/旧GPU参考：
+16³ TGV初始化，bctype=1/1/41/52/1/1、Tw=1、nonreflecting，
+643e/643e、固定dt=1e-5、4个完整步，黏性开、主滤波/修复/均值
+关。该模式不执行N7滤波，故本次准备独立于尚未批准的N7修复。
+只是现有边界接线的数值盒测试，不宣称真实声学反射率或TGV物理
+适用性已经验收；未启动新C++完整盒或平台作业。
+
+冻结在统计门槛停止：CPU拟涡能/耗散为有限值，而旧GPU这两列
+在3个输出时刻均为NaN，能量有限。物理阶段q/缓存和完整RHS仍
+有限，CPU/旧GPU最大差分别为4.74992e-16、5.93739e-16、
+1.46050e-13，末场3.16660e-16；不据此放行坏统计或声称参考完整。
+数据与rejected_reference.json在
+results/multi_backend_mb7_nonreflecting_box_20261114/reference。
+没有删除NaN、关闭即时标量统计或静默改用另一个来源。
+
+代码已确认入口选择缺项：gpu_write_tgv_statistics调用
+compute_gradcal_gpu；该入口用gpu_physical_boundary_axis选择单轴
+物理模板，而该选择器对y要求bctype(3)==bctype(4)。41/52不等，
+又不是bl/ldc的xyphysical分支，因而落入周期梯度核。这与物理端
+导数统计NaN相符；NaN首个产生节点尚未单独跟踪，未把源码检查
+冒称完整动态归因或修复结果。
+
+独立待审批提案：仅修订旧GPU此梯度入口，按周期性确定唯一
+物理方向、复用现有物理端核，保持模板、CPU和时间推进不变；
+复核真实统计与代表单物理方向后重新冻结参考。不是修改公共
+边界准入白名单，也不顺手重构其他消费者。尚未批准，没有
+修改旧GPU源码；新C++对应主程序接入与完整参考冻结停止。
+原组件10.51有效，不受这个即时全局统计缺项影响。
+
+run_cpp_nonreflecting_box_gate.py的--analyze-reference仅复用已
+完成原运行来检查数据，不重新推进CFD；首次分析误用新C++布局
+日志解析旧GPU记录，已改为直接读取NP=1原始阶段数据，原运行
+不重复。非有限检查保留错误退出并记录拒绝原因，不制造通过。
+N7与本项均等待明确人工决定，完整goal仍active；未清理既有
+证据、执行Git写操作或变更远端任务。
+
+### 10.53 低阶411/421状态核及主程序代表闭环
+
+新增slip_wall_y状态命令与slip_mask_upload静态二维字节掩码，
+复用已驻留的度量第二行构造单位法向，不上传整域坐标或保存新的
+法向体数组。411下壁以x<=xslip选择绝热滑移，其余下壁和整个上壁
+为无滑移等温；421两壁为绝热滑移。保留原两点外推和几何投影，
+仅五变量、无吹吸、低阶分支；高阶/SBP及吹吸并未因本次接线准入。
+状态命令不改RHS，与CPU状态函数及已有C++41/42接口一致；旧GPU
+直接核另清零面RHS，故组件比较其q/物性而非非零RHS。主程序在
+边界前按既有合同清零RHS，完整RHS另由阶段对照检查。
+
+私有掩码只在下壁411所属rank分配，每个面节点一字节；初始化和
+恢复后从现有静态坐标重建并上传，destroy释放。没有每核主机往返，
+没有新增权威场、检查点文件或公共字段编号。411/421入口继续拒绝
+未连接的非零吹吸；其余已有高阶/物理范围约束不变。
+
+先链接原CPU slipisotwall/slipadibwall与旧GPU生产核冻结24组：
+笛卡尔/恒定倾斜/变化法向、两种壁面、上下壁、两种温度，411覆盖
+切换点两侧和等号。新后端NP=1/2 x/y/z、两种同步、两个原参考，
+每rank96组，q/六物性全数组最大缩放差4.33109e-16；独立法向
+零速度、温度/无滑移分支检查最大绝对差2.22045e-16。非所属rank
+及非目标面保持原值，RHS=7逐值保留。双rank y Memcheck零错误/
+零泄漏，双rank x Initcheck零错误。
+
+真实主程序均16³、dt=1e-5、4完整步、固定驱动力1e-4：
+
+| 配置 | 实测范围 | CPU/旧GPU最大缩放差 |
+| --- | --- | --- |
+| 411、KEEP643e、nodal643e、显式十阶滤波 | NP=1及NP=2 x/y；pinned/device；scalar/full工作区 | 阶段q/物性/RHS不超过2.98280e-15，末场不超过1.96570e-15 |
+| 421、KEEP643c、ME6、643c梯度、紧致十阶滤波、平直网格 | NP=2 y，普通halo device及PCR device-aware | 阶段量不超过8.29075e-14，末场不超过3.48464e-14 |
+| 421、standard643c、ME6、643c梯度、紧致十阶滤波、y-wavy | 仅NP=1 | 阶段量不超过2.47605e-13，末场不超过6.14725e-14 |
+
+上述通过项均核对输出开关不改变末场/步长，以及同构建同拓扑2+2
+恢复的权威状态、控制字、标量和驱动历史逐值一致。411单rank主程序
+Memcheck零错误。没有把这些四步测试解释为物理长期验证或DCU证据。
+411主程序使用xslip=10，即周期x上统一的下壁滑移分支；混合分段
+目前仅有组件证据，尚缺非周期入口/出口组合的主程序覆盖。
+
+保留两个准备失败：main411_reference把切换点设在周期x域内，
+周期两端得到不同壁面类型，qswap平均后两端压力闭合缩放差
+2.56874e-7；内点约8.88e-16。这是本轮夹具边界互相矛盾，不修CPU，
+不删除失败记录。main421_reference的KEEP643c/wavy在原几何准入
+被拒绝；未放宽其平直张量网格要求，改用已有standard/ME6路径。
+之后真正多rank wavy联合检查仍失败，原因及停止范围另列10.54。
+
+证据根为results/multi_backend_mb7_slip_wall_20261114，组件参考
+reference_np1/reference_np2_x/y/z，主程序参考与成功目录在summary.json。
+根CMake已构建astr和astr_backend_slip_wall，DTK构建脚本仅登记目标，
+没有声称新DCU编译/运行通过。未操作Git、远端作业或生产默认值。
+
+### 10.54 N9：公共几何共享平均后halo过期（待审批）
+
+10.53的421 y-wavy双rank y联合测试停止在2e-10阶段门槛。
+初始pre_rhs物理q最大绝对差6.07515e-13、物性2.43361e-13；
+有效q/物性接口halo同样一致。首个对流RHS就出现0.1561193520的
+绝对差，集中在MPI接口附近；故不是先由后续RK轨迹放大得到的差异，
+也不把它直接归因于新滑移投影或黏性源项。单rank相同配置通过。
+
+check_geometry_face_halos.py读取原有geometry.h5及其rank_extras，
+按现有分区/Fortran序恢复局部几何，只比较有真实全局所属节点的
+内部面halo，不将物理外侧或双/三方向填充区当作有效数据。
+当前C++几何中dxi(2,1)/dxi(2,3)的halo与已发布所属节点最大绝对
+差0.5999978661294731，最大缩放差0.4612578779936091；Jacobian
+本夹具差0。原CPU冻结二进制另做相同NP=2 y运行，得到完全相同的
+两份几何halo失败记录，排除了“仅C++上传/布局错误”的解释。
+原CPU新运行只用于复现缺陷，不作为通过的完整多rank参考。
+
+源码时序已确认：geom.F90先dataswap(jacob)再datasync物理节点；
+归一化后先dataswap(dxi)，再对九个分量datasync，后者平均周期及
+MPI共享面节点，但不会更新此前已交换的halo。本夹具的显著差值位于
+周期x/z共享端点对应的y方向halo，和后续共享平均改变其所属值一致。
+这证明公共几何状态不一致；追加刷新能否消除完整RHS差仍须修复后验证，
+不提前声明唯一根因已完全排除或多卡CURVE通过。
+
+独立提案已提交人工决定：在两处全部共享平均结束后，分别追加一次
+只更新halo的dataswap(jacob)/dataswap(dxi)，不再次平均物理节点，
+不改模板/物理值/容差；公共初始化服务CPU、旧GPU及C++。获准后先
+证明所属节点位模式不变、有效halo与所属值一致，再重冻受影响参考，
+检查代表CPU/GPU和多rank阶段，并明确区分修订前后的精确恢复身份。
+目前没有修改geom.F90，也没有通过新后端独自刷新来绕过公共CPU问题。
+
+失败目录main421_np2_y_pinned/continuous、original_cpu_np2_y_geometry，
+诊断为cpp_geometry_halo_failure.json及original_cpu_geometry_halo_failure.json。
+相关多卡wavy紧致消费者停止；10.53的组件、411及平直421结论保留，
+不外推到所有CURVE范围。N7、N8、N9均尚待明确批准，完整goal继续active。
+
+### 10.55 既有RTI固定端面与重力源项的设备接线
+
+本项推进MB7的已有源项及对应边界，不依赖N7/N8/N9，也未修订
+那些待审批的CPU/参考逻辑。只迁移原fixbc的y面实际分支及src_rti：
+下端rho=2、p=1，上端rho=1、p=2.5，速度全零，T=p/rho*const2；
+每阶段在对流/黏性后累加y动量rho*J和总能量rho*v*J，无其他分量。
+能量乘法沿CPU顺序，旧GPU的(rho*J)*v末位差仍按既有门槛比较。
+这里的重力在原无量纲模型中沿+y、幅值1，不是新增可配置的重力模型，
+也不能与槽道按体积施加的固定力混为同一项。
+
+C ABI为fixed_rti_y与fluid_rti_source，Fortran编排调用新后端函数；
+不在每核回读或调用CPU源项，不新增整场、面工作区、权威历史或
+公共设备字段。bc31状态命令保持RHS，与CPU fixbc一致；旧GPU直接核
+清零面的RHS，所以组件冻结用零RHS作状态参考，新命令另用非零RHS
+检查不修改。源项组件用非零起始RHS检查累加和其余分量不变。
+RTI沿用原通用极值输出，不进入TGV专用的参考速度/长度归一化；
+不因复用设备统计入口而对未输出的RTI能量量施加TGV定义。
+
+先冻结原CPU/旧GPU实际函数，比较两组gamma/Mach、上下端和重力源，
+包含空间变化的rho/J、正/零/负v。新组件NP=1及NP=2 y、两种同步、
+两个参考，每rank24组；全q/六物性及源项RHS最大缩放差5.55112e-17，
+独立固定状态/EOS和重力增量检查最大绝对差同为5.55112e-17。
+非目标面/非所属rank不变；源项不改q；双rank y Memcheck零错误/
+零泄漏，单rank Initcheck零错误。
+
+真实主程序使用原RTI初始化与自动生成的0.25×1×0.25平直网格，
+16³、3D展向挤出、Ma=0.3、bc=1/1/31/31/1/1，dt=1e-6，
+4个完整步，黏性、crashfix、累计均值关闭。入口并非人工重造的
+TGV状态；保留原上下两层密度、分段静水平衡压力和余弦竖直速度扰动。
+只有数值格式选择当前已支持的KEEP路径用于迁移检查，不把示例原
+543c默认为本轮格式。先冻结匹配的CPU/旧GPU完整结果。
+
+| 实测配置 | 范围 | 最大缩放差 |
+| --- | --- | --- |
+| KEEP643e/643e，主滤波关闭 | NP=1及NP=2 x/y/z；pinned/device及explicit/dependency代表组合 | 阶段物性不超过3.55272e-16，阶段RHS不超过5.34874e-19，末场不超过5.84225e-21；极值统计不超过2.48690e-13 |
+| KEEP643c/643c，紧致十阶滤波scalar | NP=2 y、device普通halo及device-aware全局PCR、dependency | 阶段q/物性不超过4.07374e-14，阶段RHS不超过6.64869e-17，末场不超过2.03478e-14；极值统计不超过4.82772e-13 |
+
+五个成功主程序组合均检查关闭检查点不改变末场及时间控制，2+2
+同构建同拓扑精确恢复的全部state.h5、control.bin及极值统计逐值一致。
+最终main_final_*五组另逐条核对CPU/旧GPU的四个完整步时刻、dt_used/
+dt_next序列完全相同；最终普通程序散列与各report.json相符。
+双rank y显式完整主程序Memcheck各rank零错误。沿用现有KEEP简单
+物理边界输出合同，没有更改HDF5格式、增加附属文件或开启生产CRC。
+完整步时刻/步长及有限正状态由现有推进检查与原位快照共同核对。
+
+紧致测试第一次误把--reference-results指向未滤波的显式参考，
+在阶段门槛退出，保留main_compact_np2_y_device目录，不作为算法缺陷
+或通过项。脚本现先核对冻结reference.json的variant，格式/滤波不匹配
+即在MPI启动前报告；没有混用两种数值定义、放宽容差或覆盖旧证据。
+正确匹配参考的结果在main_compact_np2_y_device_matched。
+
+证据为results/multi_backend_mb7_rti_20261114，summary.json登记源码/
+实际二进制散列、只读参考、组件和五组完整主程序结果。根CMake构建
+astr与astr_backend_rti通过，DTK构建清单仅登记目标，未新增远端证据。
+本项不扩张为2D准入、3D湍流/长期RTI物理验收、新渲染产品准入、
+MP7/其他源项或所有组合通过；N7/N8/N9仍未修改，完整MB6/MB7 goal
+保持active。未操作Git、远端作业或生产默认选项。
+
+### 10.56 LDC顶盖与多轴物理边界主程序
+
+本项接通既有三维LDC弱扰动夹具，不依赖N7/N8/N9。读取并冻结
+原user_define_module/userdefine.F90中的udf_bc、旧GPU顶盖核及完整
+主程序结果后，新增ldc_top_lid_y状态命令：顶面速度(1,0,0)、T=1，
+压力用两内点(4*p1-p2)/3，rho=p*const2，能量为p*const6+rho/2。
+该命令不改RHS、不分配工作数组；主程序按原CPU的x-/x+/y-/y+
+顺序执行，顶盖最后处理，故顶盖与侧壁交线按既有合同取u=1、T=1。
+没有把它解释为消除理想顶盖角点的不连续性，也没有新建光滑化模型。
+
+bc0仅接入随仓库提供的LDC顶面规则，不代表任意用户定义Fortran
+函数已能在设备执行。其余壁面复用已迁移的41命令，梯度/对流/黏性/
+滤波复用现有多轴接口与全局紧致/PCR链。LDC沿用原通用守恒量极值
+输出，不执行TGV专用归一化。未改CPU/旧GPU公式、HDF5格式、默认
+格式或高阶/SBP开关，没有新增权威状态或恢复附属文件。
+
+采用run_keep_simple_boundary_gate.py已有16³、1×1×1、Ma=0.3、
+Re=3000、三维弱扰动初场；bc=41/41/41/0/1/1，x/y非周期、z周期。
+静壁温度1，顶盖温度/速度1；dt=1e-5，4完整步，黏性和十阶滤波开，
+crashfix和累计均值关。这里不是原ldcavityini的完全静止初场，也不
+宣称四步即可达到定常腔流；弱扰动用于检查真实三维数据和阶段链。
+
+先用两个只读原二进制分别冻结explicit_reference与compact_me6_reference，
+原CPU/旧GPU阶段最大缩放差分别3.10181e-15和5.18679e-14，独立
+速度/温度目标检查最大绝对差4.44090e-16。
+
+| 新后端实测配置 | 范围 | 最大缩放差 |
+| --- | --- | --- |
+| KEEP643e/643e、nodal黏性、显式十阶滤波 | NP=1及NP=2 x/y/z；pinned/device、scalar/full及两同步模式按代表组合覆盖 | 阶段q/物性不超过3.32357e-15，RHS不超过5.82865e-17，末场不超过3.10187e-15，极值统计不超过4.28740e-13 |
+| KEEP643c/643c、ME6、紧致十阶滤波 | NP=2 y、full工作区、普通halo device、PCR device-aware、dependency | 阶段q/物性不超过6.51024e-14，RHS不超过2.12722e-15，末场不超过4.28911e-14，极值统计不超过4.90824e-13 |
+
+五组均检查输出开关的末场与时钟隔离，2+2同构建同拓扑精确恢复
+的完整state.h5、control.bin、极值统计逐值一致。逐条核对原CPU/
+旧GPU的四个完整步时刻与dt序列一致。双rank y完整主程序Memcheck
+各rank零错误；未在真实device MPI上重复已知工具不支持的IPC检查。
+
+check_cpp_ldc_walls.py按各rank全局坐标检查全部12个RK阶段，分别
+检查静壁和顶盖、显式保留顶盖交线所有权。NP=1每阶段检查1088个
+物理面节点，其中顶盖289个、顶盖/侧壁交线34个；MPI共享节点在
+各本地副本检查，不把副本相加当作唯一物理节点计数。速度/温度
+最大绝对差不超过4.44090e-16。
+
+首个准备目录explicit_np1在MPI启动前因输入复制继承只读权限而停止，
+没有数值运行。run_cpp_physical_gate.py现以copyfile复制输入内容、
+为新工作datin目录设置可写权限；原冻结目录仍只读。不是放宽计算
+门槛、修改参考或添加运行失败后重试，失败目录保留。
+
+证据根results/multi_backend_mb7_ldc_20261114，summary.json登记实际
+候选二进制、源码散列、只读参考、每组阶段与独立壁面记录。这里只
+认领本地FP64三维代表接线，不认领2D、一般UDF、非张量曲线腔体、
+长期物理/统计验收、新LDC可视化产品或新DCU数值结果。完整MB6/MB7
+仍active；N7/N8/N9与其余未迁移子集未因本项通过而关闭。
+
+### 10.57 高阶壁面可信参考准备（尚无新C++高阶实现）
+
+为下一项高阶壁面接线，先用prepare_high_wall_reference.py复用既有
+HB1初场准备函数，冻结原CPU/旧GPU实际主程序：16³平直张量网格、
+y物理壁面、x/z周期、standard643e/643e、RK3、黏性开、主滤波关，
+dt=1e-5、4完整步，固定驱动力0、crashfix/累计均值关。41、42、421
+分别选择原hermite7模式，不将KEEP与Hermite7组合；现有CPU明确未
+实现该组合，KEEP的SBP路径是另一项，不能混称为同一边界格式。
+
+三组均保存12个RK阶段q/物性/RHS、梯度诊断、终态检查点、极值/
+槽道标量及完整步控制序列，比较两个原二进制后设为只读：
+
+| 原参考壁面 | 阶段最大缩放差 | 末场最大缩放差 |
+| --- | --- | --- |
+| 41等温无滑移 | 1.72432e-15 | 3.46945e-17 |
+| 42绝热无滑移 | 1.76595e-15 | 3.47524e-16 |
+| 421绝热滑移 | 2.23173e-15 | 1.73762e-16 |
+
+完整步时刻和dt序列相同，输入及日志核实实际进入对应高阶模式。
+未执行旧测试文件的整套pytest参数矩阵；只复用初场准备和输入
+转换。输入输出改用当前合同，主机/设备预算不设本轮人为上限。
+这一步只建立迁移参考，不是独立高阶收敛证明，也没有新C++高阶
+核、主程序准入、滤波/续算或DCU数值结果。
+
+后续仍须迁移动态密度的壁面状态、近壁梯度/通量行、完整壁面RHS
+及RK后约束，再接已有local-f6滤波并核对输出/精确恢复。不能只
+调用低阶41/42/421核后关闭高阶拒绝条件，或将原GPU结果当作新
+后端交付。证据为results/multi_backend_mb7_high_wall_20261114，
+各reference目录及summary.json保留实际参考二进制来源。
+
+### 10.58 41演化密度状态投影组件（未接主程序高阶模式）
+
+新增wall41_evolved_density_state，仅对应原高阶等温无滑移壁面的
+代数状态操作：保留q的密度，速度设零，p=rho*Tw/const2，
+E=p*const6，重建六个物性。它没有空间导数，不能因名称或状态
+满足壁温就认领高阶壁面完整离散。没有RHS参数、邻域读取或新数组。
+主程序的高阶/SBP拒绝条件保持不变，没有将此函数接到低阶入口。
+
+astr_backend_high_wall_state直接读取10.57中41的原CPU/旧GPU
+initialized和首个pre_rhs数据，用初始化q调用新状态核、比较处理后
+物理q及六物性。测试前把两个壁面的物性缓存设为77，以区分权威
+q密度与旧缓存；不是在真实CFD推进中使用不一致物性。
+新核仍由q恢复正确壁面状态。两同步模式、两个原参考共四组，
+最大缩放差2.17691e-16，独立rho/零速度/Tw检查误差0。
+全数组密度位模式、目标面外q位模式以及RHS=7均不变。
+Memcheck零错误、零泄漏。
+
+当前只有NP=1、y轴、Tw=1组件证据；通用轴索引尚不等于x/z完整
+高阶支持，42/421投影、近壁梯度/通量、高阶壁面RHS、RK后约束、
+local-f6滤波、主程序与续算仍待实现/接线。没有新DTK数值证据，
+本轮在DCU编译的冻结快照截至10.56 LDC，不包含后来加入的本组件。
+记录在results/multi_backend_mb7_high_wall_20261114/cpp41_state_memcheck
+及summary.json。没有修改CPU/旧GPU公式、默认格式或操作Git。
+
+### 10.59 八节点近壁梯度组件（未接高阶完整阶段）
+
+新增fluid_gradient_high_wall，先计算现有基础梯度，再只对指定轴
+两端各三层修正其法向导数贡献。24个系数逐项来自
+boundary_high_order_body.inc的boundary_derivative6_weights，保留
+匹配内部D6第七矩的原八节点六阶行；没有换用另一套通用单边公式。
+修正经原有九分量度量投影到物理方向，不分配整场工作区，也不
+写入速度、温度、q或RHS。所需常量表192字节，物理外侧不参与
+模板。双物理端少于八节点的输入不能满足该模板；单物理端仍可
+读取调用者已准备的MPI halo，不把局部MPI接口当成物理端闭合。
+
+pack_high_wall_gradients.py只从10.57的41只读参考重排数据，不
+推进CFD：取首步三个RK阶段的六物性、原几何资源的物理度量和
+实际梯度。用原astr_backend_boundary_gradient的显式测试框架新增
+hermite7诊断选择，原explicit/compact选择保持不变。
+两参考×三阶段×两同步×物理外侧正常/NaN两输入，共24组，
+最大缩放梯度差5.66214e-15。速度/温度数组位模式不变，NaN外侧
+输入仍产生有限正确梯度。Memcheck零错误、零泄漏。
+
+独立二次场使用8×9×10区间、两种halo宽度、三方向单物理轴的
+代表端面选择、两同步，共40组，最大绝对投影差7.86698e-15。
+全度量制造张量只检查投影代数，不冒充可积的真实曲线网格。
+该hermite7诊断不穷举多物理轴组合，原低阶诊断仍保留既有组合。
+当前目标的explicit选择另复用原不可变低阶参考检查未改变的基础
+路径，不为这个源码增量重跑旧CPU/旧GPU轨迹。
+
+首次打包把header元组直接按numpy向量加1，准备脚本报TypeError，
+未运行GPU或CFD；修订为显式整数数组后仅重新打包，失败目录
+gradient41_reference保留，正确包为gradient41_reference_fixed。
+原参考不变，没有放宽门槛或隐藏数值失败。
+
+本项仍只认领组件：实际参考为NP=1 y/41，制造场覆盖其他轴索引，
+42/421实际参考输入、跨rank阶段、通量端行、壁面RHS、RK约束、
+local-f6和高阶主程序/续算尚待。主程序高阶/SBP开关仍未放行，
+不把该梯度替代完整高阶壁面链。DTK正在编译的LDC快照不含此后
+新增的本组件。证据同根gradient41_memcheck、basic_gradient_unchanged
+及summary.json；未操作Git、Slurm或修订CPU/旧GPU公式。
+
+两个新组件加入后，已重新构建当前源码的普通astr，并以相同16³/
+4步低阶LDC做NP=2 y短窗检查：最大阶段缩放差仍3.32357e-15，
+末场3.10187e-15，输出隔离及2+2精确状态/控制/极值统计一致。
+这是未启用高阶时的受影响代表检查，不是高阶主程序结果；原五组
+LDC基线保留不覆盖。记录为同根low_ldc_after_components_np2_y。
+
+### 10.60 DTK截至LDC快照的构建/链接闭环（没有新设备运行）
+
+通过ssh cancon在登录节点新建
+~/weiph/mb67_boundary_build_20261114.W6i1Ke，全部源码、构建、HOME、
+临时文件与编译缓存均位于该工作区。原旧目录和正在排队/运行的作业
+未修改。只编译与读取本次构建进程/日志，未执行任何Slurm操作，
+也未在登录节点运行GPU探针或CFD程序。
+
+冻结包包含1860个构建源码/输入文件，压缩包8348887字节，
+SHA256为6416d6a666ca2f061ef08b19287f4d89292381a16a65bda346906d1be0249933；
+不含Git元数据、chem、结果树、手册/演示或渲染产物。快照截至10.56
+LDC，故包括此前紧致/KEEP/ME6、上风/传感器、NSCBC组件、滑移壁面、
+RTI和LDC；不包括之后10.58/10.59的新高阶组件，不能把本构建归给
+那两项。源文件逐项散列及压缩包保存在本地dtk_build目录。
+
+采用现有已资格化DTK26.04 GPUfusion、gfx906、GNU12.2.0、私有
+OpenMPI4.1.5/GNU12 HDF5 1.14.6、CMake3.20.4，经根CMake、
+ASTR_GPU_CPP_BACKEND=gpufusion、ASTR_WITH_CUDA=OFF、Catalyst/AIR5关，
+使用同一套C++数值源码，未加入厂商专用数学分支或SDK补丁。
+普通astr和脚本声明的全部36个探针都取得最终Built target记录，
+并核对实际37个可执行文件。末尾MB0的ldd列表中MPI、GNU Fortran、
+HDF5和DTK运行库均解析，无not found；不是声称全部可执行文件均
+已运行或真实四卡通信、数值、内存和性能矩阵已完成。
+
+过程并非编译卡死：默认build_gpufusion.sh会逐个构建所有探针，
+DTK链接器为每个探针重复整库设备LTO，已观察到活跃LLD及持续推进
+的目标记录。下一批按实际受影响目标直接使用根CMake的--target，
+避免再为局部增量无条件重链全部旧探针；本轮没有改变脚本默认、
+工具链、编译优化等级或增加自动重试。
+
+全量目标和末尾依赖检查自然完成后，原本地SSH观察连接仍未退出。
+另一次只读检查确认本次构建进程已结束、全部目标和最终ldd产物完整，
+随后只关闭本地旧SSH客户端；未向远端构建/作业发送终止信号。
+原观察通道退出255，原通道的build退出码未收到，因此不伪造
+“命令返回0”；构建/链接结论依据独立核对的全部目标完成记录、
+实际产物及完整依赖列表。传输层未退出的具体原因尚未定位，未改
+SSH配置或公共环境。此前“是否停止额外构建”的询问已无操作对象，
+后续不能据此对复用PID或其他作业执行终止。
+
+本地证据为results/multi_backend_mb7_ldc_20261114/dtk_build，
+包括source_manifest.json、source.tar.gz、build.log、report.json
+及配置记录。本项只关闭该冻结快照的DTK构建/链接缺口，不关闭
+MB6/MB7的DCU数值/通信/输出/恢复矩阵。N7/N8/N9仍待批准，
+任何后续Slurm提交或查询仍需单独明确授权。
+
+### 10.61 高阶恒温41无滤波主程序链（NVIDIA）
+
+在10.58/10.59组件之上接通既有Hermite7恒温壁面：法向前三层梯度、
+对流/黏性通量端行、原压力Hermite闭合、壁面连续方程及能量RHS，
+以及每个RK更新后从权威q密度重建零速度/Tw状态。原Fortran/CUDA
+Fortran公式和默认值未改。高阶开边界/SBP、42/421及ME6的缺项仍
+单独保留；本节只认领643e/643e、标准黏性、滤波关闭的41路径。
+
+fluid_advance_prepared_stage新增可选更新后状态投影回调，未传入时
+保持旧行为。通量修正保留原body范围及物理端所有权；MPI接口仍用
+中心模板。高阶壁面RHS放在体积分项和源项之后，与原快照相位一致。
+没有新整场设备数组、CPU RHS代算或每核主机往返。
+
+复用10.57的只读y向原参考；新增相同16³/4步/dt=1e-5的非零驱动
+1e-4参考及x/z法向旋转参考。旋转夹具按原规则使用flowtype=tgv，
+它是弱扰动壁面离散检查，不称作周期TGV或壁湍流物理验证。
+新增参考首先通过原CPU/旧GPU同阶段检查，最大缩放差1.72432e-15。
+
+新C++实际主程序覆盖NP=1、NP=2 x/y/z分解、pinned/device与两同步
+代表选择，以及非零驱动、x/z法向壁面。逐阶段q/物性/对流/完整RHS
+最大缩放差2.78359e-15，末场最大1.21634e-15；各运行的输出开关不改
+末态/时钟，2+2精确续算的state.h5、control.bin和极值/驱动统计一致。
+NP=2 y Memcheck两rank零错误。独立静止均匀场一完整步的q绝对差
+3.55272e-15，三个RK阶段残差最大5.61773e-16。
+
+当前二进制SHA256为046a873267a9329e89593cd11f2e3fc186e930621cea624254a1c7058a8b9d85。
+同构建的低阶LDC紧致KEEP/ME6、full工作区、device halo/device PCR
+NP=2 y重验，最大阶段缩放差6.51024e-14，输出隔离和精确续算通过。
+结果位于results/multi_backend_mb7_high_wall_20261115；末两项
+high41_wall_z_np2_z_device和low_ldc_compact_me6_unchanged均有最终
+report.json，已核对无遗留运行进程。
+
+本节没有新DTK设备证据，没有执行Git或Slurm操作。N7/N8/N9未获
+批准，原有阻断范围不变。后续local-f6滤波另行冻结原参考并接线，
+不把本节无滤波结果扩张到带滤波高阶链。
+
+### 10.62 高阶41的local-f6滤波与两种工作区（NVIDIA）
+
+先用冻结的原CPU/旧GPU二进制新建三份16³/4步参考：y向恒温壁面带
+1e-4定驱动，以及x/z法向旋转弱扰动夹具。滤波打开、dt=1e-5，
+原local-f6标识与全部步号/time/dt核对；原参考最大阶段缩放差
+3.97209e-15，文件只读。没有用新C++结果反向生成参考。
+
+fluid_filter_axis_wall41复用现有各方向十阶显式核及物理端点保持，
+仅覆盖壁面向内1--4行。九节点闭合逐项来自原boundary_wall_filter6
+的恒温族a0/a2和六阶差分，仍按f(row)+sum(delta*(f(j)-f(row)))
+顺序计算；双端行重叠时保留原低端优先规则。不是新滤波公式。
+两个方向循环之间沿用现有halo交换、共享节点协调及过滤后物性
+重建；单分量和全变量原工作区均可用，不新增整场设备数组。
+新增常量表120字节。未启用高阶墙时原过滤入口不变。
+
+独立五次多项式在三轴、两同步、单/双物理端及外侧NaN检查共252组，
+最大缩放差4.20740e-16；源数组、其他分量及halo位模式不变。原低阶
+滤波504组恒定/多项式/Nyquist检查仍通过，最大误差0。多项式检查
+不单独证明闭合系数等价，下面另用真实非多项式参考逐阶段比较。
+
+实际主程序六组包括NP=1 scalar、NP=2 x/y的device scalar、NP=2 y
+pinned full及Memcheck、x法向NP=2 x scalar、z法向NP=2 z full。
+逐阶段权威q/物性/源项RHS、对流及完整RHS最大缩放差
+4.50931e-15，末场最大1.91138e-15，均低于原2e-10门槛。
+六组均完成输出开关的末态/时钟逐位隔离及2+2精确续接，state.h5
+全数据集、control.bin及极值/驱动统计一致。NP=2 y两rank Memcheck
+零错误。相同y拓扑的scalar/device与full/pinned终态state.h5所有
+数据集逐位一致，包括六个物性及rank_extras。未放宽任何容差。
+
+新二进制SHA256为41347e36f46c59393aff816356c2f800c8e7e2c759ca2186de8dca33c08d0b91。
+关闭滤波后再查NP=2 y，最大阶段差仍2.71235e-15，输出和精确续算
+通过。源与可执行文件快照、组件日志、全部主程序和参考报告已保存
+同根candidate_41347e3及summary.json，不覆盖10.61的旧记录。
+
+本节只认领标准黏性、Hermite7恒温41和显式10/local-f6短窗。42/421、
+高阶开边界/SBP、ME6高阶墙、紧致滤波与高阶墙的联合验证及DCU新
+数值矩阵仍待，不外推物理长窗或生产稳定性。未修改CPU/旧GPU源码、
+N7/N8/N9、Git或远端任务；完整MB6/MB7目标仍active。
+
+### 10.63 高阶绝热42/滑移421同阶段链与local-f6（NVIDIA）
+
+在10.62恒温链上接入原有绝热/滑移公式，不改CPU/旧CUDA Fortran。
+high_wall_math.cuh只共享权威q的温度/温度变化率及原七层Neumann
+重建。绝热状态保持壁面q密度、从严格内部七层重建温度；421同时
+重建两个切向速度。壁面能量RHS从同阶段内部七层qrhs/J计算温度
+变化率，421另包含切向质量散度、切向速度变化率和动能贡献。
+这些读取位于原最小局部法向节点约束内，不需额外整场RHS缓存或
+RHS通信。421的切向q及几何halo仍来自正常阶段交换。
+
+法向对流通量的压力端行采用原boundary_pressure_neumann6；原41
+仍用其Hermite压力闭合。local-f6增加原绝热族a0/a2，保留恒温族、
+九节点差分表达、双端重叠所有权及单/全变量工作区；未增加整场
+设备数组。实际主程序沿用共享CPU既有范围：42为x/y无滑移绝热，
+421为y向滑移绝热；均为FP64、均匀笛卡尔643e/643e、标准黏性。
+没有扩大为其他轴/曲壁/吹吸/高阶ME6或KEEP Hermite7耦合。
+
+先复用10.57的42/421无滤波只读CPU/旧GPU参考，再新增同样16³、
+dt=1e-5、4步的两份带滤波参考及42的x法向旋转参考。新增原参考
+最大阶段缩放差9.96621e-15，先通过对照再用于新后端检查。
+状态组件分别毒化壁面物性缓存，确认只从q重建：42/421各四组，
+最大缩放差2.17691e-16；密度/非目标q位模式和RHS哨兵不变。
+独立法向约束残差分别不超过7.52434e-15/6.68910e-15。
+绝热族滤波的252组独立五次多项式/外侧NaN/源数组检查最大
+4.43099e-16；恒温族252组及原低阶504组仍通过。
+
+首个42主程序high42_np1在新增壁面RHS核启动时报CUDA 701。
+cuobjdump实测该核154寄存器/线程，原512线程需至少78848个寄存器；
+驱动API读取两张RTX 4000 Ada每块上限均65536。仅将新增壁面RHS
+核启动改为256线程，其他核/公式/容差不变；不是增加重试或CPU代算。
+失败目录保留，修订后另建high42_np1_r2完成检查。两次直接启动
+MPI探针也在MPI_Init前失败，改用既有mpiexec命令成功；没有修改
+MPI配置或把启动失败记录为数值通过。
+
+八组主程序包括42/421各NP=1无滤波，42的x法向NP=2 x device，
+42滤波NP=2 y full/pinned及z scalar/device，421滤波NP=2 x
+scalar/pinned、y full/device和z scalar/device。覆盖全部三个MPI
+分解方向的代表链，不做全部开关组合。逐阶段q/物性/源项、对流及
+完整RHS最大缩放差1.06457e-14，末场8.86185e-15；原2e-10门槛未改。
+八组输出开关的末态/时钟位模式不变，2+2精确续算的state.h5全数据集、
+control.bin及极值/驱动统计一致。42的NP=2 y和421的NP=2 x实际
+主程序Memcheck均为两rank零错误；未以此声称完整泄漏检查。
+
+独立一完整步：42恒定静止状态及421非零恒定切向速度(u,w)=(0.1,0.02)，
+均开滤波。场绝对差分别最大2.48690e-14/3.55272e-14，三个RK阶段
+残差分别最大2.22045e-16/6.47619e-16。新通用入口还复验原41带滤波
+NP=2 y及低阶LDC紧致KEEP/ME6 NP=2 y；阶段差分别4.50931e-15和
+6.51024e-14，输出隔离及精确续算均通过。
+
+当前二进制SHA256为6c5f6ab674fe65c0e7e5db8fc2e7226dd452468e79ed1dab81326187ba08a7fa。
+结果位于results/multi_backend_mb7_high_wall_20261115，汇总为
+adiabatic_summary.json，源码/二进制、组件日志和资源报告冻存在
+candidate_6c5f6ab；10.61/10.62原证据保持不变。
+
+本节不外推高阶边界长窗稳定性、未测试的联合组合或DCU数值结果。
+高阶开边界/SBP、原位高阶消费者的受影响覆盖、其他未迁移能力及
+DCU代表矩阵仍按主计划继续。N7/N8/N9未改，未操作Git或远端任务，
+完整MB6/MB7目标保持active。
+
+### 10.64 KEEP SBP63/SAT弱壁面阶段链（NVIDIA）
+
+迁移原keep_sbp63_body/grid_body的既有路径：内部六阶中心，y两端各
+六行三阶SBP闭合、对角H范数及原无穿透/恒温黏性SAT。它不是
+Hermite7六阶强闭合，不能据此声称消除了所有边界降阶。
+sbp63_math.cuh维护原6×9表和六个范数权重，keep_operator.cu复用
+既有KEEP双点通量，fluid_explicit.cu计算带lift的梯度、黏性散度和
+壁面SAT。黏性项复用既有同阶段应力/热流及其halo，未增加整场设备
+缓存或引入CPU RHS代算。所有方向仍沿用正常阶段通信。
+
+边界行按全局jg0+j及ja选择，不在MPI子域端重新闭合。SBP开启时
+跳过普通强制bc41投影：壁面q仍是未知量，SAT作用在梯度/通量/RHS。
+共享CPU既有约束未改：FP64、显式KEEP/标准黏性、两y恒温41壁面、
+x/z周期、滤波关闭、轴对齐张量网格。新后端本节只取得均匀网格
+证据，拉伸组合和DCU另验；测试专用稳态MMS源项尚未接入，新入口
+显式拒绝该测试标志，不以缺少源项的计算代替MMS。
+
+先冻结原CPU/旧GPU的现有KEEP_SBP63_Walls 16³、dt=1e-5、4步
+参考；复用独立张量矩阵、SBP质量/能量/黏性功/壁面热量关系和完整
+RK代数预算核对原参考。另用私有初场扰动激活非零壁面速度/温差，
+保留所有生产方程、边界、输入模板和方法不变：rho/T分别增加
+0.003/0.005 cos(x)cos(z)cos(y)，三速度分别增加
+0.002 cos(x)cos(z)cos²(y)、0.001 sin(x)cos(z)cos²(y)、
+0.0005 sin(z)cos²(y)。这是算子测试夹具，不是新增物理验收工况。
+
+首次变温参考在CPU已完成四步后被独立后处理拒绝，未继续GPU参考：
+完整RHS缩放差2.34645e-8，热量余量3.80030e-8。检查发现旧对照脚本
+硬编码Sutherland=110.4 K，而本机理无反应默认及当前冻结程序实际
+采用110.3 K。仅将对照函数改为可明确指定常数、默认与程序一致；
+未改CPU/旧GPU或物性默认。对同一CPU快照重算后热量余量最大
+1.02620e-16，RHS差7.54121e-13。原失败目录保留，另建
+reference_perturbed_fixed完成CPU/旧GPU参考，独立矩阵/平衡和RK
+预算均通过。原基础参考不覆盖，只补baseline_oracle_corrected.json；
+过去温度近常数的小差值不被扩张为110.4 K假设普遍正确。
+
+新GPU梯度对原CPU/旧GPU前三个阶段、两同步及外侧正常/NaN输入，
+基础与扰动夹具各24组，最大缩放差分别2.66713e-15/2.51609e-15，
+速度/温度源数组位模式不变。独立矩阵检查针对原参考，新GPU再做
+同状态对照；不是把两个实现相等单独当作数学正确性证明。
+
+六组实际主程序包括基础NP=1、NP=2 y pinned/Memcheck，以及扰动
+NP=1、NP=2 x/y device和z pinned。逐阶段q/物性/源项、对流/完整
+RHS最大缩放差3.30696e-15，末场1.11023e-15；每组输出隔离和2+2
+精确续算的state全数据集、control及极值/驱动统计一致，检查点均
+保留/s63sat-v1身份。NP=2 y两rank Memcheck零错误。扰动末态壁面
+最大法向速度0.0009999925531、|T−Tw|=0.004999957026，证实未被误用
+强投影；这些短窗值不被用作物理收敛门槛。
+
+相同构建复验Hermite7绝热42带滤波NP=2 y，阶段差1.06457e-14；
+低阶LDC紧致KEEP/ME6 NP=2 y，阶段差6.51024e-14。各自输出隔离和
+精确续算仍通过。当前二进制SHA256为
+5b4411e5dce529906e39e041836ed1bd2c2ed5305d868630c84c5b06c30d4ef7，
+证据、源码和二进制位于results/multi_backend_mb7_sbp63_20261115，
+汇总为summary.json，快照为candidate_5b4411e。
+
+本节未改变默认方法、关闭原后端或执行Git/远端任务，未新增生产
+过滤/回滚/兼容策略。高阶开放边界、原位受影响消费者、MMS测试源项
+及其余MB7可选能力/联合组合、DCU矩阵继续待办；N7/N8/N9保持待审批，
+完整MB6/MB7目标仍active。
+
+### 10.65 x+/y+海绵层组件、阶段顺序及输出/续算（NVIDIA）
+
+原spongefilter_layer实际是每个RK更新后的六邻点二阶平滑，而不是
+加入RHS的连续时间物理源项。迁移成熟x+/y+区域的原公式：
+q_new=(1−sigma)q+(1/6)sigma*sum(q_neighbour[1:6])，六邻点分别沿
+i/j/k的正负一节点方向。
+sigma仍由原CPU几何/层宽初始化，保留0.05幅度、归一化和原body范围。
+先x+再y+，每个启用方向之前所有rank刷新hm层q halo、不平均共享
+节点，即使本rank没有海绵区也参加通信。没有合并两方向或改系数。
+变系数局部平滑不被当作严格全局守恒物理源项，未来方法预算需单列
+其增量；本节没有重定义KEEP/SBP的守恒结论。
+
+sponge_operator.cu/h/F90维护私有区域系数和一个按两区域最大规模
+分配的五变量打包工作区，先计算再提交，避免原地邻居读写竞争。
+只在初始化/恢复建立时分配和上传，推进中不分配、不回读整场；
+关闭功能不分配海绵数组。原RK后状态回调更名为post_update_operator，
+统一顺序为RK更新→海绵层→已有强壁面投影（若启用）→物理节点
+物性重建/状态检查。未改CPU或旧CUDA Fortran的海绵数值函数。
+用已设置的lspg_im/lspg_jm识别layer，不再用仅circle初始化中设置
+的lsponge来判断layer是否活跃。圆形及其他四面尚未接入，不静默忽略。
+
+原综合MP-LD探针编译在NVHPC fort2中signal 11，未修编译器或改数学。
+本轮临时诊断改动已从原综合文件撤回，新增小型sponge_reference_probe
+直接调用原CPU/GPU函数；经根CMake单独构建成功，不执行其余MP/保正
+测试。沿用原16×12×8局部线性数组夹具，三模式x/y/顺序xy，带
+0.01 rank偏移和不同端点值，刻意检验“不能平均共享节点”。NP=1及
+NP=2 x/y/z原CPU/旧GPU最大绝对差1.77636e-15，21份数组记录只读冻结。
+这不是热力学可容许流场，不把该线性组件当作完整CFD验证。
+
+新C++组件覆盖上述分解的pinned及真实device MPI、两同步模式，
+含pinned NP=2 y全量Memcheck/leak-check：15个rank执行、90组三模式/
+同步检查，整个q（含共享节点和halo）最大缩放差2.96060e-16。
+另90组五个测试常量的独立保持检查误差0；两rank内存检查零错误、
+零泄漏。区域局部缺席的rank仍完成与邻居匹配的交换。
+
+x+普通主程序复用已通过入口检查的旧GPU f232836...参考（不将旧CPU
+通用bc12当作正确入口）：OpenShock、Ma3、543e/643e、MP7物理空间、
+dt=1e-5、4步、主滤波/黏性/修复/均值关闭。层宽40在NP=2 x时跨越
+分区，层宽12使rank0局部无区。五组新主程序覆盖NP=1、NP=2 x
+pinned/Memcheck、NP=2 x device小层，以及NP=2 y device/z pinned。
+横向分解使用64×16×16参考，避免局部区间小于固定hm=5；x组使用
+64×8×8。阶段更新q最大缩放差1.15135e-15，完整RHS1.00614e-16，
+标量统计4.79829e-13，时钟差0。所有组观察隔离、检查点开关隔离和
+2+2精确state/control/标量续接通过，x pinned两rank Memcheck零错误。
+
+y+另设同样四步的既有16³槽道数值夹具、层宽4，按原CPU f347009...
+冻结参考；旧GPU槽道主分支不调用此海绵，故不冒称有第二个整体参考。
+新NP=2 y device阶段/完整RHS最大缩放差2.18715e-15，末场1.09898e-15，
+标量差0；输出隔离和2+2精确state/control/驱动续接通过。此为阶段
+接口检查，不称为有海绵的真实槽道物理验收。
+
+两类局部空区例均实测海绵数值数组逻辑大小为rank0 0字节；rank1
+x小层系数7776/工作38880字节，y层系数9248/工作46240字节。
+这些不是进程/GPU全部显存峰值。静态系数按原输入/几何重建，临时
+工作逐次覆盖，没有新增检查点附属文件或海绵参数指纹；精确结论
+限于同构建/配置/拓扑，输入层宽和几何不改变。
+
+保留两类旧参考配置失败：冻结旧GPU不支持OpenShock正式检查点，
+因此另以正式输出关闭、完整RK诊断打开冻结参考，新后端正式输出
+另外验收；旧CPU检查点要求explicit同步，首次dependency参考被拒，
+另建explicit参考后再对照。首个新y短测在缺少有效CPU参考时未被
+认领，r2才完成对照。没有修改旧准入规则、采用CPU推进备用路或
+放宽容差。失败目录和新的有效证据均保留。
+
+相同构建关闭海绵再查SBP63扰动及Hermite7绝热42滤波NP=2 y，阶段
+差分别3.18468e-15/1.06457e-14，输出/精确续算保持原门槛。
+当前普通astr SHA256为baceb3497c311a9f6e3ca4f4e32006aa50b38103d450b852930d0bf9213a8ff8。
+证据位于results/multi_backend_mb7_sponge_20261115，summary.json区分
+组件、两种主程序参考和未完成范围；candidate_baceb34保存源码/二进制。
+
+未验收完整M12/SBLI、海绵与高阶/KEEP/紧致/主滤波的活跃联合、新增
+原位产品或DCU执行。其他海绵方向/圆形仍未实现；随机吹吸/动态入口、
+保正/修复、低精度、旧均值和其余原goal内容继续。N7/N8/N9不变，
+未操作Git或远端任务，完整MB6/MB7目标保持active。
+
+### 10.66 低阶底壁吹吸、原随机数历史及精确续算（NVIDIA）
+
+接入既有低阶下侧bc41的三种规定速度：current模式的全局索引hash、
+固定相位模态，以及legacy_random。沿用bc.wall_blowing_velocity和
+wall_blowing_random的原Fortran公式/种子/抽样顺序，不另造GPU随机数。
+只在真实底壁状态调用时求值，诊断、标量、输出和恢复取快照不额外
+抽样。legacy模式仍是每rank固有发生器，同一拓扑/编译器才有相同
+随机实现；不把不同分解随机轨迹的差别当成通信误差。
+
+新后端由boundary_state的私有lower_wall_velocity保存标量壁面速度。
+底壁owner初始化时一次分配主机/设备面数组，每次边界调用仅上传面，
+随后GPU按度量第二行归一化的向内法向写三速度及动量；保留原
+pw=(4*p1-p2)/3、指定Tw、rho=pw/Tw*const2及包含动能的守恒能量。
+没有回读CFD场、使用CPU推进、每stage分配或新增全流场缓冲。
+上传后等待该stream完成以允许复用主机面；不把本次工作称为通信
+或吹吸性能优化。关闭吹吸不分配该私有面。
+
+实际主程序参考先冻结原CPU f347009...及旧GPU f232836...：16³、
+4个完整步、滤波/修复/均值关闭。槽道643e/643e、dt=1e-5用于
+hash/模态；静态剖面平板543e/643e、dt=1e-6、MP7物理空间用于
+legacy，边界11/21/41/51/1/1。平板原参考独立覆盖NP=1与NP=2
+x/y/z，不拿NP=1随机轨迹当多rank参考。原CPU/旧GPU最大阶段差
+1.33227e-15以内、更新场1.06582e-15以内，标量3.41949e-14以内。
+这里是接口短窗，不是生产平板转捩或统计定常验收。
+
+最新同一C++构建的七组正式检查：hash NP=1、模态NP=1、legacy
+NP=1、NP=2 y pinned/explicit及device/dependency、NP=2 x/z
+device/dependency。每组逐rank逐阶段检查12次RK更新及对应q/物性/
+完整RHS。相对两个冻结后端最大阶段缩放差2.66454e-15，更新场
+1.33227e-15、标量3.41949e-14；步号/time/dt一致。全部通过观察
+开关和检查点开关的q/时钟逐值隔离，以及2+2精确state.h5各数据集、
+control.bin和标量续接。y分解中仅底壁rank抽样，另一rank保留
+first_call状态；x/z分解中两个rank各自抽样，续接同样逐值一致。
+
+为复用现有随机数保存链，将read_profile_output_candidate的静态
+剖面资源提供者接回上述legacy五变量路径；仍先检查其笛卡尔几何，
+沿用ASTROC09内的拓扑/编译器/种子历史及现有wallbs.dat资源冻结。
+没有新增检查点格式、附属历史文件、参数指纹、CRC或恢复兼容层。
+并非新准入任意CURVE、动态入口或跨编译器随机数精确恢复。
+
+独立wall_forcing_probe以正/负/零规定速度、轴对齐及斜法向、两种
+同步模式检查投影和热力学重构，4组最大缩放差1.37065e-16；壁面外
+q及RHS哨兵不变。这是几何代数检查，不冒称真实CURVE流场验收。
+该组件及NP=2 y pinned主程序的Memcheck均零错误、零泄漏。
+device MPI加Sanitizer的首次运行虽完成四步，但在UCX初始化和
+MPI指针探测中报CUDA上下文/API错误，并留下IPC映射泄漏；失败
+日志保留，不能写成设备MPI内存检查通过。之后无Sanitizer的真实
+device数值/恢复检查通过，未屏蔽错误或更改公共MPI。
+
+实测面数组：NP=1和NP=2 y底壁rank各2312字节，y非底壁rank无分配；
+NP=2 x/z每rank1224字节。这是单份规定速度面，不是进程总内存或
+显存峰值。另保留误选旧海绵版二进制、启动即拒绝吹吸的准备失败
+目录unused_preupdate_case，不将其计入新后端数值证据。
+
+证据根为results/multi_backend_mb7_wall_forcing_20261115，summary.json
+汇总有效矩阵、分配和工具缺项；candidate_1a3b24c冻结本次增量源码、
+主程序/组件二进制和来源清单。普通astr SHA256为
+1a3b24cc9159b1fe873174fe4720fb9477bf255912656865526df29763c16e47。
+该增量未做DCU执行、活跃吹吸的原位图片、高阶/42/滑移壁面吹吸或
+完整M12/SBLI联合；动态入口/保正/修复/低精度/旧均值及其余原goal
+范围继续待办。N7/N8/N9不变，未操作Git或远端，完整goal保持active。
+
+### 10.67 时序入口四槽缓存、GPU插值及输出/恢复（NVIDIA）
+
+新增src_gpu/inflow_timeseries.F90（模块inflow_timeseries_cpp），通过
+boundary_state C ABI管理四个五变量二维入口切片。保留原turbinf=intp
+的文件、四槽排列、均匀时间间隔、三次插值及滚动判据：完整步准备时，
+若time超过排序后的第三个时刻，替换最早槽，再排序。每个入口面rank
+用原hdf5io/mpi_imin读取其局部切片，只在加载/替换时上传该面。
+每RK阶段在GPU插值并加原rho/三速度/T剖面、重构q/物性、清入口RHS；
+保留原负u处理及complete_state/mach_pressure分支，不另改入口模型。
+
+原始剖面与瞬时入口目标不混用：初始化/恢复上传固定剖面及真实法向，
+不把上一帧已插值的rho_in/vel_in当新背景叠加。原主流程更新时刻、
+边界交点所有权及物性/halo处理不变。设备State私有缓存统一释放，
+关闭intp不分配。未每步回读CFD流场、未使用CPU RHS或引入新精度。
+
+先冻结原CPU f347009...和旧GPU f232836...的16³平板参考，低阶
+11/21/41/51/1/1、543e/643e、MP7物理空间，关闭滤波、修复及均值。
+12张非多项式时变入口面间隔1e-5，固定dt=8e-6、4完整步，在最后
+一次推进前真正跨过2e-5窗口并读取第4号新面。另冻结自动步长参考：
+initial_dt=8e-6、max_dt=1.6e-5、CFL目标0.5、增长1.1。固定参考覆盖
+NP=1和NP=2 x/y/z；自动参考NP=1。CPU/旧GPU最大阶段差1.11021e-15，
+更新场7.10541e-16、标量5.18475e-14。
+
+新C++固定步长覆盖NP=1及NP=2 x/y/z；y为pinned/explicit并做完整
+Memcheck，x/z为真实device/dependency。自动步长NP=1的实际四步
+dt为8e-6、8.8e-6、9.68e-6、1.0648e-5。相对匹配冻结后端，最大
+阶段q/物性/RHS缩放差2.66451e-15、更新场1.31398e-15、标量
+5.18475e-14，步号/time/dt一致，实测CFL上界低于0.5。观察与输出
+开关不改变q/时钟；上述精确组2+2续算的state.h5、inflow.h5各数据集、
+control.bin及标量逐值一致，包括滚动后的cursor=4、顺序[1,2,3,0]。
+
+沿用原inflow.h5的role=8、GPU缓存类型1、26分量缓冲及15项元数据，
+没有新文件格式、历史附属文件、CRC或兼容层。src/output_runtime.F90
+只补相应C++提供者分派，CPU与旧CUDA Fortran分派仍独立。
+固定步长非精确2+2恢复的场缩放差1.82934e-21，入口缓存仍逐值一致。
+另从冻结旧GPU实际写出的非精确两步检查点恢复到C++：末场相对
+新后端连续四步差1.06582e-15，入口缓存逐值一致。不是跨实现精确
+续算，也未接CPU类型0入口缓存向GPU类型1的转换。
+
+保留首次自动步长非精确对照失败：旧合同在非精确恢复时采用当前
+input.run并重置first_choice，后两步重新从8e-6起步，因此同一步号
+的物理时间不同。没有放宽identity比较或修改控制器；自动组按精确
+合同检查，非精确场差另用相同固定dt比较。原dt=6e-6四步尚未滚窗
+的准备记录、首次旧GPU生产者缺新布局日志标记的脚本失败也保留；
+后者改为解析旧程序自己输出的实际MPI拓扑，不改生产程序日志。
+
+独立dynamic_inflow_probe对三次多项式、非顺序槽位、两同步模式及
+亚/超声速mach_pressure分支作8组检查，最大缩放差5.22458e-17；
+逐槽上传/下载位模式相同，入口外q和RHS足迹保持。该组件与最终
+NP=2 y主程序Memcheck零错误、零泄漏；未重跑已知有工具问题的
+device MPI+Sanitizer组合。运行时use_gpu=f的实际同一主程序与冻结
+CPU阶段/更新场/标量差均为0，非intp的随机吹吸NP=2 x继续通过
+原门槛及精确续算；这是CPU选择/非活跃路径隔离，不代替全套回归。
+
+设备四槽逻辑大小：NP=1或NP=2 x入口rank为46240字节，NP=2 y/z
+每个入口rank24480字节；x非入口rank无缓存。另有单槽主机暂存，
+分别11560/6120字节，不是进程内存或后处理峰值；检查点事件按原
+26分量合同额外打包。没有新增生产资源上限。
+
+证据为results/multi_backend_mb7_dynamic_inflow_20261115/summary.json。
+初轮二进制0a9d9cd...覆盖完整方向矩阵；仅移除一个未使用c_double
+导入后的最终6374557...重验NP=2 y内存、自动精确、固定非精确，并
+完成旧GPU非精确迁入。两个二进制及对应报告都保留，不混记SHA。
+candidate_6374557保存当前增量源码/二进制，普通astr SHA256为
+63745572172fa47597ab2407a2953fe4565c806fac040956fb3fb41ccda891f6。
+
+本节没有执行DCU构建/任务、真实多rank CURVE、活跃入口的滤波/
+保正/修复/高阶开放边界联合或原位图片消费者，不宣称物理湍流入口
+验收。N7/N8/N9仍待人工决定；其余MB6/MB7及低精度/均值/DCU矩阵
+继续推进，未操作Git，完整goal保持active。
+
+### 10.68 crashfix原参考及C++顺序修复组件（未接主程序）
+
+crashfix不只是一遍邻域平均，还包括crinod历史对后续MP界面通量的
+影响、扩展供体搜索/MPI传播、共享节点协调、滤波/边界/通量前输入
+修复，以及运行开关和检查点生命周期。本节先完成原参考与顺序平均
+组件，不将其认领为完整修复支持。
+
+根CMake新增crashfix_reference_probe，只调用原CPU crashfix和原
+CUDA Fortran repair_crashfix_state_gpu，不修改两者公式。16×8×16
+局部FP64五变量数组，NP=1与NP=2 x/y/z共48份逐rank记录，按实际
+全域/局部原点执行原规则。前四类为相邻坏点及非对称邻居、NaN、
+低温/密度阈值、非流体点；CPU/旧GPU场值及标记一致，最大缩放差0。
+后三类为远处单供体、其他rank供体、大数近邻求和溢出；原CPU没有
+相同扩展算法，旧GPU相对已知供体最大缩放差2.22045e-16。单rank
+不运行其他rank供体类。这些是算子夹具，不是流动物理初始场验收。
+
+新增src_gpu/crashfix_operator.cu/h/F90：扫描及最终物性/最小值归约
+并行；邻域平均保留原k/j/i、kk/jj/ii原地顺序，由一个设备线程处理
+异常区域，后续坏点可读取已修复邻居。保留原26邻点、x/y全域裁剪、
+rho/p/T阈值、两种动能求值次序的可容许性检查和标记规则；不改成
+同时平均、不改变权重、不新增截断或正值下限。无候选时顺序核直接
+返回，不读写RK保存数组或RHS。
+
+流体分类/临界历史用私有字节数组，行范围与诊断工作区一次分配，
+由父State释放；未准备时不分配。只有88字节报告回读，整场下载仅
+用于验证探针。ordered_pass报告candidates/repaired/invalid；API
+执行成功不代表剩余坏点已经修复，扩展搜索/MPI协调待后续接入。
+
+astr_backend_crashfix的四种布局、两同步模式共56个rank/场景对照，
+相对CPU及旧GPU的q/物性最大缩放差均0，标记字节一致；另56次健康
+重复调用的q/历史逐值不变。RHS=7、RK保存量=777的足迹检查通过。
+NP=2仅证明本组件的索引和独立局部计算，不冒称新分布式供体传播
+已迁移。
+
+首次Initcheck发现88字节C ABI报告有4个未初始化的对齐字节，16次
+回读被指出。仅在分配时整体清零一次，结构大小/偏移与数值公式不变。
+修订后方向矩阵仍为0；NP=2 y Memcheck零错误/零泄漏，NP=1
+Initcheck零错误，Racecheck零hazard/error/warning。失败保留在
+ordered_sanitizer，合格结果在ordered_sanitizer_fixed，未屏蔽报告。
+
+普通主程序重连该库后，关闭修复的真实时序入口NP=1仍通过阶段场差、
+观察/输出隔离及2+2精确state/inflow/control/标量续算，最大阶段差
+2.66279e-15。这不是开启crashfix的CFD验证，主程序仍保留原未接通
+提示，没有放开lcracon。
+
+证据为results/multi_backend_mb7_crashfix_20261115/summary.json，
+reference保存原探针与记录；candidate_ordered保存增量源码、原数学
+模块来源及二进制。最终组件SHA256为
+708624dbbb4f80c8da2d79b9945e3cac0fe4ca3b3a62f7f1005ff2cbf3719e73，
+普通astr为e9f44a8d7a3cfc412ad8848c23a5b47d28e13c98d33c299faebc30d53fb9124b。
+
+下一依赖为扩展搜索/真实halo传播和共享节点修复闭环，再接非零
+crinod的MP高耗散通量、检查点/开关生命周期和各阶段调用。未新增
+fallback/重试次数/兼容格式、CPU修复、生产默认或资源上限；未操作
+Git或远端任务。N7/N8/N9仍待审批，完整MB6/MB7 goal继续active。
+
+### 10.69 C++扩展供体搜索及实际跨rank传播组件
+
+在10.68只读原参考上继续接入expanded_repair_kernel等原流程。新
+crashfix_operator扩展轮保留立方壳的访问顺序、累积在线平均、流体
+供体与单面halo选择、双/三向越界供体排除、有限/正值判定，以及原
+已批准的单供体末选处理。没有更改平均权重、添加状态截断或经验
+保正参数；每轮重新扫描物理坏点，但累计修复数/最大修改量不清零。
+
+新增src_gpu/crashfix_runtime.F90作为Fortran协调层：先调用原顺序
+平均，再全局归约invalid；若仍有坏点，所有rank按x/y/z只交换hm层
+q halo，不平均可能含NaN的共享节点，随后设备执行一轮扩展搜索。
+按原规则裁剪物理端搜索范围，周期方向保留hm。每轮全局归约坏点
+及修复进展；全部合法即结束，没有进展则返回未修复，不设任意次数
+上限。串行访问只限异常节点的有序平均，供体查找和状态检查仍并行。
+
+同一维护源配合已有pinned/device MPI，不新增通信rank、全场工作
+数组、每轮分配或CPU修复。仅额外一次分配16字节扩展计数器；每轮
+回读现有88字节报告及4个整数，另有必要MPI halo传输。完整流场
+下载仍仅属于验证。原report的ABI及检查点格式未改变。
+
+扩大astr_backend_crashfix探针：原四种局部顺序场景保持CPU/旧GPU
+对照，扩展三类仅对旧GPU及已知供体检查。主机中转NP=1及NP=2
+x/y/z、两同步模式共96个rank/场景，设备通信NP=2 x/z另56个。
+全量捕获q/物性数组均比较：物理区严格有限；halo的有限/NaN位置
+必须相同，再对定义有限值逐变量比较，没有删除物理异常点或放宽
+2e-10门槛。最大缩放差2.22045e-16，临界历史字节完全一致，健康
+重复调用的全q/历史位模式及RHS/RK保存量足迹保持。
+
+另核对原日志中的扩展轮数、该阶段扩展修复总数、最大半径和单供体
+计数，均逐项相同。跨rank场景由其他rank提供供体，新后端x/y/z
+最大半径分别17/9/1，修复2601个节点，各一轮。大数场景保留原
+近邻求和溢出后转入在线平均的行为，不把Inf静默截成有限上限。
+原单供体末选分支已搬入，但本轮两后端该计数均0，未单独触发验证。
+
+新增全rank均无合法供体的独立拒绝检查，NP=1及NP=2 x、两同步
+模式均一次零进展轮后返回device_nonphysical；q位模式不变，不凭空
+提供替代状态。该探针断言拒绝状态后正常结束，不表示生产程序可
+在无合法状态时继续推进。没有新增失败后重试/回滚逻辑。
+
+最终组件NP=2 y Memcheck零错误/零泄漏，NP=1 Initcheck零错误、
+Racecheck零hazard/error/warning。仅测试驱动加入拒绝场景前的
+独立ordered全方向矩阵仍为0差；GPU算法/普通主程序不因该测试
+分支变化。关闭修复的双卡x随机吹吸主程序复验最大阶段缩放差
+2.66454e-15，观察/输出隔离及2+2精确场/control/RNG/标量续接通过。
+
+证据为results/multi_backend_mb7_crashfix_20261115/expanded_summary.json，
+expanded_final_pinned/device/memcheck、expanded_initcheck/racecheck、
+no_donor_pinned分别保存原始记录；candidate_expanded保存当前源码
+增量和二进制，旧candidate_ordered及summary.json不覆盖。最终组件
+SHA256为f4956d020116f20d9bb41ccbe2d524e4fefc1a8291b1765e6a048fc9ce8a1a2c，
+普通astr为ba599037ced8a6dabcce6f3d7d8c8b723cbe3e94ecb46bcf286b357b3d449a3b。
+
+本节完成的是原始修复调用的扩展搜索/halo供体传播组件，尚未完成
+repair_reconciled_state_gpu对应的共享节点平均后检查、滤波/边界/
+通量前生命周期、非零crinod通量消费者或新后端检查点提供者。因此
+主程序lcracon准入仍未放开，不称为完整CFD crashfix支持。DCU执行、
+其余MB6/MB7及N7/N8/N9不变；未操作Git或远端任务，goal保持active。
+
+### 10.70 共享节点修复闭环及阶段物性（NVIDIA组件）
+
+原GPU repair_reconciled_state_gpu的完整q/物性阶段另行冻结在
+reconciled_reference，不冒用10.69的原始修复调用结果。局部尺寸仍为
+16×8×16，覆盖NP=1、NP=2 x/y/z；排除非流体点场景，因普通C++
+推进未接浸入边界。此闭环无同算法CPU提供者，故记录为旧GPU参考，
+不把CPU单次近邻修复称作完整闭环对照。原参考对物理流体节点逐点
+检查有限且rho/p/T>0，常量供体场景另有已知状态检查。
+
+新crashfix_runtime的repair_reconciled_cpp保留原顺序：先只交换q
+halo，重建修复用面halo物性、停用双/三向越界供体，再运行已迁移
+修复；所有物理状态修复后才平均共享节点，全部方向完成后追加一次
+halo-only刷新，重建原阶段物性，按守恒态可容许性全局复查。
+已经修复的后更新状态可按原already_repaired合同跳过第一次修复，
+但不跳过共享节点平均及复查。本轮验证默认的完整闭环入口。
+
+保留两种不同定义：供体/修复检查要求有限且正的热力学状态，平均
+后复查按原mp_inputs_need_repair的两种动能求值次序判定守恒量，
+不擅自改成新热力学阈值。最终缓存沿用原q_to_primitive_halo阶段：
+已定义的越界角区照常重构，密度为零的未设置对角q不被除；这不是
+对普通全局梯度或新保正公式的修改。整个过程未回读CFD流场，新增
+一次分配的4字节输入检查计数器及必要标量回传，不新增全场工作区。
+
+主机中转两同步模式共82个rank/场景，设备通信NP=2 x/z另48个；
+q/物性整数组及有限/NaN相位、历史标记、RHS/RK保存量均按原门槛
+检查，最大缩放差2.22045e-16。健康重复闭环的全q/历史位模式不变。
+NP=2 y Memcheck零错误/零泄漏，NP=1 Initcheck零错误，Racecheck
+零hazard/error/warning。物理流体缓存另严格检查rho/p/T>0，不能
+仅靠场差门槛容忍零值。
+
+关闭修复的实际自动步长时序入口NP=1复验，阶段差2.44095e-15
+以内，步号/time/dt、观察/输出隔离及2+2精确state/inflow/control/
+标量续算保持。它证明非活跃路径隔离，不是crashfix主程序验收。
+
+记录为results/multi_backend_mb7_crashfix_20261115/reconciled_summary.json；
+candidate_reconciled保存增量与二进制，旧参考和之前summary不覆盖。
+组件SHA256为e3b063965029694cfc03690fdd36ad19534c6d2e3d6f0a9ccb867e557335b51e，
+普通astr为1a87c45618dcb76825fd7c4da48201ce100441e90e8df3682610303b1b8392e0。
+主程序开关、历史检查点/通量消费者仍未接通，且10.71发现新的参考
+缺陷，不能凭本节q/物性闭环放行生产修复路径。未操作Git或远端。
+
+### 10.71 N10：crinod在同一MPI界面产生不同通量（待审批）
+
+检查非零修复历史的消费者发现：原GPU critical_interface_active
+（src_gpu/solver_gpu.cuf:1092）在局部端点无条件max/min夹到本rank
+物理节点，不区分MPI/周期接口；CPU src/solver.F90:868等x/y/z
+同样有此规则。修复闭环交换/平均q，却没有同步更新的crinod共享
+节点及halo。CPU的dataswap(crinod)只见于旧回滚后的扩张，不是每次
+修复后或通量前的更新。CPU本轮仅确认源码，尚未执行CPU配对通量。
+
+用原GPU原算子作控制对照，不改CPU/GPU数学函数：从已冻结的
+NP=2 x合法闭环状态出发，在rank1的共享内点局部(0,4,8)、全局
+(16,4,8)设置一个可持久保存的历史标记，再调用原完整修复闭环。
+前后全q位模式不变；比较两rank都实际使用的内部界面，其全局左
+节点均为(15,4,8)，横向坐标是内点，不是壁面或未参与计算的边界行。
+两个8节点模板的5个q及6个物性值逐位相同，几何均为单位度量/
+Jacobian=1，gamma/Mach/MP-LD权重均1.4/0.3/0.35，传感器标记均0。
+
+原GPU得到的critical选择为0和1，动量通量分别为
+0.04129867619047618、0.04130800000000001，绝对差9.32381e-6；
+能量通量分别为0.004909073333333332、0.004915600000000002，
+绝对差6.52667e-6。其余动量差0，质量差1.11023e-16。
+这确认相同界面的高耗散选择/通量依赖rank历史副本，不是q/物性或
+几何不一致，也不能据此声称它是此前生产崩溃的根因。
+
+主要证据在results/multi_backend_mb7_crashfix_20261115/
+critical_shared_interior_audit/report.json、audit.shared_flux.bin、
+run.log及保存的原程序/源码。前置的横向边界点诊断保留在
+critical_shared_audit_record，但不作为生产内部模板的验收依据。
+
+另冻结了物理端的空/稀疏/全标记、传感器0/1、三方向30个界面值
+六组原GPU参考（critical_flux_reference）。新C++消费者尚未接入，
+新增astr_backend_critical_flux探针按预期在稀疏标记组失败，缩放差
+8.70829e-4；critical_before保存该缺项，不写成准入通过。没有修改
+upwind_operator去照搬已确认的跨分区缺陷。
+
+待人工批准的最小修订：当前非反应五变量路径，共享及周期重复节点
+标记作OR，再刷新hm层标记halo；只有真正物理端夹索引，MPI/周期
+接口读取相邻标记。CPU/旧GPU/新C++同步处理，保留修复平均、阈值、
+EOS及文件格式，重冻受影响参考、更新必要的精确续算身份。首先补
+CPU配对诊断，再检查同一界面通量、代表多方向/双向拓扑及非零历史
+续算。未经批准不执行这项数值修订，不放开依赖它的主程序。
+
+本轮只改组件/探针及文档，没有修订上述CPU/旧GPU数学函数；N7/
+N8/N9仍待决定，完整MB6/MB7目标不缩小，goal保持active。
+
+### 10.72 旧GPU生产均值：FP64设备组件及真实续算参考
+
+本轮不把RK45批准扩展为N10批准；N7/N8/N9/N10均未修订。继续
+迁移不依赖这些缺项的旧生产均值。明确区分CPU的44项体统计和旧
+GPU平板/SWBLI的12项展向积分统计，不将已有insitu_moments或CPU
+44项数组替换为后者，也不执行已暂缓的独立变量开关/统计框架重设计。
+
+新增production_statistics.cu/h/F90，私有ProductionStatisticsPlan由
+State持有、按需求创建和销毁。读取已有设备rho/vel/prs/tmp及dvel/
+dtmp，保留12项原始矩、3项壁面压力/有符号剪切/热流、展向分段
+梯形积分及物理时间端点梯形积分。首样本只建立端点，不增加覆盖
+时长；零值/小切向量的处理沿原函数，没有新增截断或保正策略。
+
+初始化时Fortran从原不可变坐标计算每段的真实弦长，并为底壁所有者
+构造原几何法向/投影切向。只上传一次一个标量段长体数组及六通道
+壁面框架，避免为统计保存三个坐标体数组；采样不回读整场。平面
+measure、累计和及端点为25个二维FP64通道；底壁额外为六个线数组，
+wall_measure复用平面measure的j=0行。reset只清统计，不重分配几何。
+显式传输接口仅供输出/恢复事件使用，几何不允许被恢复接口覆盖。
+尚未连接完整步调度，因此没有在主程序解除lavg准入。
+
+先对原compact_statistics_probe加可选捕获，不改原核或独立积分
+参考，原无捕获/捕获两种执行均通过。六份输入/输出、源码及原
+二进制只读存于results/multi_backend_mb7_legacy_statistics_20261115/
+reference，原探针SHA256为
+61b81edfbcadb3eb838e92a944d639798a6b348059cdc6e233c59fe39d94bf2c。
+参考覆盖非均匀z及变化弦长、三个不等时间间隔端点、倾斜壁面
+完整速度/温度梯度。新探针比较measure、累计量及端点，清零后
+重采样、保存第二端点后重建对象恢复均要求最终统计位模式一致；
+q/RHS/RK保存量、物性及梯度另逐位检查采样不改写。
+
+NVIDIA NP=1共28个采样/模式实例，NP=2另56个，最大缩放差
+1.35868e-16；NP=2是在两设备上独立消费相同参考，不冒称三向
+空间分解或MPI展向归约。显式/依赖同步都覆盖，原无底壁/有底壁
+按需分配分别执行。Memcheck零错误/零泄漏，Initcheck零错误，
+Racecheck零hazard/error/warning。components/report.json、各run.log
+及sanitizer日志保存实际证据；新探针SHA256为
+b6456a74b00554e683357ca1aa7b02bba91c583d278dc8c5e70313ca09415ed1。
+普通astr根构建完成；关闭本统计的16³固定步长TGV两同步模式，
+末场对冻结CPU/旧GPU最大缩放差分别1.22125e-15/1.26665e-15，
+步号/time/dt一致，当前CPU分支对冻结CPU场差为0。
+
+另冻结真实平板的统计生命周期参考：原有16³静态剖面、743e/643c、
+bc11/21/41/50/1/1、无滤波/修复/吹吸，固定及自动步长各四步，
+CPU和旧GPU各完成连续、采样关闭、2+2精确恢复。各后端启用统计
+后的完整state/statistics/control恢复逐位一致；CPU/旧GPU末场差
+固定7.99360e-16、自动1.15463e-15，时钟一致。CPU44与GPU12统计
+不直接视作同一数组交叉比较。reference_main_compact_phase/
+reference.json及只读原记录保留，供下一步主程序接线使用。
+
+前置失败记录不删除：reference_main首先被冻结版本的743e/643e
+检查点准入拒绝，未扩大该旧准入；改用原已批准的743e/643c。
+reference_main_compact的观察测试误要求整个rank_extras不变。
+源码及数据确认旧CPU/GPU采样dataswap只刷新速度/温度的周期z面
+halo；5个守恒量含全部halo、11项物理节点字段、rho/prs缓存halo
+均逐位不变，越界角区及非周期面不变。最终采样隔离按这些字段
+含义逐位检查，另记录刷新缓存数量；没有改变生产源码、放宽
+2e-10门槛或把检查点缓存差说成轨迹误差。启用统计的连续/恢复
+比较仍严格检查整个state.h5及statistics.h5，而不是只检查物理区。
+
+未完成：主程序统计窗口/计数器、采样前halo与正确梯度阶段、现有
+role5的32通道输出/恢复及重分区历史、真实MPI空间分解与DCU，
+以及FP32/混合精度统计。当前组件含原有量纲壁面公式，但本轮
+数值证据仅覆盖无量纲FP64，不扩大到有量纲或其他物理模型。
+未操作Git或远端；完整MB6/MB7仍active。
+
+### 10.73 旧生产均值的完整步、窗口及检查点接线
+
+在10.72设备组件基础上新增production_statistics_runtime.F90；
+src/mainloop.F90沿用poll_mean_statistics的公共调度，只为GPU分支
+接入该适配层。保留CPU44项及旧GPU12项的区别，不重设计统计变量
+开关。新NVIDIA C++的lavg现在接入既有平板统计合同，而不再整体
+拒绝。crashfix主程序仍未开放，N7/N8/N9/N10仍待原有人工决定。
+
+采样前由cpp_refresh_mean_fields只交换vel/tmp的面halo、不平均
+共享节点，然后调用原已迁移的梯度选择器（紧致/显式、高阶壁面或
+SBP各走其原分支）。新的梯度工作区用于壁面统计，没有CPU梯度
+回退。刷新使设备halo改变，故同步清除host_primitives_current，
+保证后续精确检查点取得同一完成步的实际缓存，而不是先前主机副本。
+重复步号不重采样；窗口重置清累计量、端点及计数，保留静态几何。
+首样本仍只建立端点，后续按实际采样时刻差作时间梯形积分。
+
+output_runtime接回现有role5、32通道及14项元数据：geometry measure、
+12项累计量及端点、3项壁面累计量及端点、样本数、首末步/时刻和
+覆盖时长。沿用statistics.h5、control.bin及既有独立统计输出事件，
+不增加文件或格式版本，不读取已废弃的旧sidecar。常规采样没有
+整场D2H/H2D；只在输出/恢复事件传输二维/一维统计数组。既有重分区
+历史算法已接入适配层，但本节没有验证相应继承分支，不认领完成。
+
+实际主程序使用原16³静态剖面平板、743e/643c、bc11/21/41/50/1/1，
+关闭滤波/修复/吹吸。复用10.72只读CPU/旧GPU参考；新增物理时间
+采样参考也先在原两后端完成连续/2+2恢复及采样隔离检查后只读冻结。
+新后端的代表矩阵为：
+
+| 统计采样时钟 | 步长 | 分解及通信 |
+|---|---|---|
+| 每完整步一次 | 固定/自动 | NP=1；NP=2 x；主机中转 |
+| 每完整步一次 | 固定 | NP=2 y主机中转、NP=2 z设备MPI |
+| 每物理时间1.8e-6一次 | 固定/自动 | NP=1主机中转 |
+| 每物理时间1.8e-6一次 | 自动 | NP=2 z设备MPI |
+
+两同步模式有代表覆盖，不作全部组合。每组实际比较阶段q/物性/
+RHS、末场、32通道统计及时钟，并做采样关闭、关闭中间发布、
+连续4步与2+2步精确恢复。展向分区先按源z分区维归并统计量再
+对照，不将其当成三维物理节点维。最大缩放差：末场1.44329e-15，
+阶段q/物性/RHS为3.99681e-15，统计3.05312e-16；沿用2e-10。
+各同构建/同拓扑的完整state.h5、statistics.h5、control.bin及
+续算标量序列逐位一致。关闭中间写出不改变最终场/统计；关闭采样
+时，守恒量含完整halo及全部物理缓存仍逐位一致，仅允许并记录
+速度/温度有效面halo的原有刷新，不要求不同新鲜度的派生halo相同。
+
+| NP=1终态统计窗口 | 样本数 | 覆盖时长 |
+|---|---|---|
+| 固定步长、按步采样 | 5（0/1/2/3/4） | 4e-6 |
+| 固定步长、按物理时间采样 | 3（0/2/4） | 4e-6 |
+| 自动步长、按物理时间采样 | 3（0/2/4） | 4.641000000000001e-6 |
+
+NP=2 z自动步长取得相同的时间窗口。按物理时间采样不把未达到
+阈值的中间步算成新端点，也不因重启重复累计第2步。旧GPU第2步
+批次向新后端的非精确恢复已做固定及自动步长：保留相同统计合同
+和现有历史。自动步长测试显式将当前input.run的initial_dt设为
+来源批次dt_next，以建立同一观测时钟；这是测试配置，不把非精确
+恢复说成自动保留旧控制器。恢复后的场、统计及采样时钟满足门槛，
+不承诺跨实现逐位轨迹一致。当前C++构建中的CPU路径另跑固定及
+自动4步，其完整场和CPU统计对冻结CPU文件的最大差均为0。
+
+内存检查先在NP=2 y主程序通过Memcheck，零错误/零设备泄漏。
+首次NP=1 Initcheck记录失败：624240个未初始化读，首批打印均
+来自测试用snapshot_axis_kernel。应力在物理节点构造，而物理
+x/y外侧的通量halo不参与偏置差分，也未定义；旧诊断却连同MPI/
+周期halo一并读取。首个线程映射到应力第6分量、局部(18,12,2)，
+超出im=16的真实x+端。这不是新统计核读取无效物性，也没有用
+整数组初始化、过滤sanitizer错误或降低门槛来掩盖。
+
+已局部修订测试快照C ABI，使调用者显式传入真实物理端标志；仅
+回读物理节点及有效MPI/周期面halo，物理外侧和角区为诊断padding。
+更新全部现行调用者，无旧签名兼容层，不改变求解器字段、数值核、
+交换或检查点。独立24组探针故意不写无效区，三轴/双侧/单侧及
+两同步模式检查有效值、signed-zero与padding逐位一致，Initcheck
+零错误。修订后完整平板主程序Initcheck零错误；对应场/统计、采样
+隔离和精确/非精确恢复再检通过。RHS/壁面/传感器等受影响探针
+均已重编，但未因此把它们的全部旧数值矩阵称作本轮重跑通过。
+
+证据位于results/multi_backend_mb7_legacy_statistics_20261115：
+lifecycle_summary.json及各main_*的report.json；reference_time为
+新增只读参考。失败main_np1_initcheck_migration保留原日志和
+failed_astr；snapshot_bounds/final_initcheck.log为独立修订检查。
+预修订主程序SHA256为
+1d412571e89e922c290670911bc75f49df80ccd27f12ef31d3860d69301e43e8；
+最终主程序SHA256为
+1a69d50e413296c94759269e843db453c7f0c6cf65e1890a1bc33716078cfcf8。
+两版本的有效场/统计证据区分记录，不采用前版未定义外侧快照值。
+
+后续：运行中统计配置变更/窗口重置的主程序定向检查、role5重分区
+继承历史、更多已迁移边界/算子联合，以及DCU和FP32/混合精度。
+本节不是新物理算例、统计定常验收或全MB7交付。CPU/旧GPU参考
+数值函数未改，未执行Git写入、远端登录或Slurm操作；完整goal保持active。
+
+### 10.74 运行时窗口及Cartesian重分区继承历史
+
+本轮不再修改生产源码，继续验证10.73已接通的生命周期。复用
+现有checkpoint_fault_preload.c的只读、指定路径输入回放，不添加
+主程序等待/轮询、UDF或新测试钩子。原生数值推进和正常input.run
+解析/广播/接收控制的流程未改。新增test helper仅用于启动与分析。
+
+先用原CPU/旧GPU冻结两类匹配参考：
+
+- reference_repartition：16³ Cartesian剖面平板，543e/643e、
+  显式十阶滤波、bc11/21/41/51/1/1、ninit=0，固定dt=1e-6，
+  六个完整步。原两后端分别通过采样隔离及2+4步精确恢复；场差
+  2.15984e-15以内。沿用原已注册的role5/version4/32通道继承合同。
+- reference_windows：复用现有run_adaptive_mean_statistics_gate，
+  16³无翘曲拉伸平板、543e/643e及显式滤波、Ma=0.3，自动步长，
+  initial_dt=1e-6。原两后端连续10步与从第5步恢复到10步的窗口、
+  场及控制检查通过，另核对CPU体矩沿z积分后的均值/应力与旧GPU。
+
+原记录、数据和来源二进制均保留，只读冻结；不以新C++结果生成
+它自己的黄金参考。测试文件仍按既有keep=2保留最近批次，无新
+磁盘/显存上限，不删除既有失败记录。
+
+**重复重分区。** run_cpp_legacy_statistics_repartition按原OR4
+存储设置运行：单rank推进到2步，续为NP=2 x到4步，再续为NP=2 z
+到6步。每一阶段均保存完整批次；跨拓扑只要求既定数值一致性，
+不因exact_restart=t存储选项就称跨拓扑轨迹逐位一致。还从已继承
+非零历史的z分解第5步批次，同拓扑恢复到6步，严格比较完整场、
+统计和control/archives/insitu控制文件的位模式。
+
+主机中转和设备MPI各完成该序列。统计比较只把累计和的继承部分
+加回：12项平面和、3项壁面和；几何measure与当前端点不重复累加。
+各阶段明确检查非零继承密度矩、始步0、累计样本数step+1及时间
+覆盖，不能用新的局部和掩盖遗失旧历史。对照连续六步，第二次迁移
+后的物理场差为0，统计最大缩放差6.35275e-22；连续z分解对冻结
+CPU/旧GPU的场差2.80779e-15以内，32通道统计差1.72085e-15以内。
+继承后的同拓扑续算位模式一致，三段拼接的step/time/dt序列一致；
+关闭采样仍不改变权威守恒态或物理缓存。这是Cartesian/可分拉伸
+网格历史验证，不覆盖10.54待审批的非可分多卡几何问题。
+
+**运行时窗口。** run_cpp_legacy_statistics_windows直接复用
+既有只读配置回放及原位CPU均值分析函数。实际input.run的接受
+序列为：第3步改采样时钟，第4步禁用并保持至第5步，第6步启用新窗口，第9步
+改变采样周期。禁用再启用才清除旧窗口；仅改周期保留既有累计量。
+本地NP=1及NP=2 y检查，包含无底壁统计所有权的rank，均取得：
+
+| 发布步 | 窗口始步 | 实际最后采样步 | 样本数 | 时间覆盖 |
+|---|---|---|---|---|
+| 9 | 6 | 8 | 2 | 3.7202781000000004e-6 |
+| 10 | 6 | 10 | 3 | 8.221814601000001e-6 |
+
+第9步只是发布，不伪造采样端点；第9步改频率没有清空6--8步的
+累计历史。禁用期间的第5步检查点不包含statistics.h5，从它恢复
+后，第6步正确新建统计窗口。连续/恢复的全部场与统计数据集以及
+control/archives/insitu控制文件逐位一致；正常解析读取序列逐项
+对应预期完成步，不靠异步修改文件的时间竞争决定配置生效点。
+末场对冻结CPU/旧GPU最大缩放差8.65322e-15；32通道旧GPU对照
+3.97772e-15；用原CPU体积分独立构造的归一化均值和应力差
+4.88434e-15以内。保持2e-10门槛，不将短窗视作湍流统计定常。
+
+数据位于results/multi_backend_mb7_legacy_statistics_20261115的
+repartition_pinned、repartition_device、windows_np1及windows_np2_y，
+各自report.json保存数值量和实际配置，extended_lifecycle_summary.json
+汇总。测试二进制仍为10.73最终版本，SHA256未变；没有用再次
+改动的数值代码替换已冻结证据。本轮只增加/扩展测试准备、规范化
+累计统计读取及文档，不改CPU、旧GPU或C++求解核。
+
+旧生产均值的本地代表主链、动态窗口和重复继承已取得证据；更广
+边界/算子/原位联合、非可分CURVE、FP32/混合精度及DCU仍待。
+N7/N8/N9/N10没有获得新授权，依赖范围保持未放行；完整MB6/MB7
+goal继续active。未执行Git写入、远端登录或Slurm操作。
+
+### 10.75 MP2黏性通量存储候选：类型化字段及正常推进
+
+本轮开始5.1的低精度迁移，先核对原有合同，不以FP32工作区代替
+ASTR_NATIVE_FP32_DESIGN.md的严格全程序FP32。原生模式仍要求
+状态、几何、时间、CFL、统计及辅助求解均随构建精度，C++对应
+实现尚未完成，根构建的原生FP32准入未开放。
+
+旧MP2的derivative只降低诊断dvel/dtmp存储；原CUDA Fortran黏性
+求解独立从FP64 vel/tmp重建梯度，不消费这些诊断数组。新C++目前
+共用求解/诊断梯度，因此不能直接将整个共用梯度改为FP32后称作
+同一候选。本轮先移植原viscous_flux：计算保持FP64，仅最后将
+6项应力、3项黏性能量通量存为FP32。后者含导热和应力功，不是
+只含导热的壁面热流；能量通量继续使用未舍入的FP64应力局部量。
+
+**实现。** allocate_field及AstrDeviceView现在记录实际4/8字节
+存储，权威q/RHS/qsave、原始量、几何和梯度仍FP64。增加明确的
+mixed-viscous RHS准备入口，不先分配再转换整场，不同时保留
+另一份FP64通量镜像。C传输入口为原始字节指针；Fortran保留
+FP64函数名，FP32使用显式*_f32入口，两者直接取地址、不做数据
+转换。最初的泛型多维调用虽被NVHPC接受，却在本地GNU15.2
+无法解析，已改为上述显式类型入口并通过其语法检查。该检查不是
+DCU GNU7或GPUfusion运行验证。
+
+应力/能量通量生产者只在最终存储处舍入，差分和度量投影读回时
+提升为FP64；halo打包缓冲、MPI_DOUBLE载荷、tag及begin/end顺序
+均保留。局部周期复制按字段类型执行，共享节点平均仍在FP64
+计算后写回。MPI数据量没有减半。测试快照明确输出FP64提升值，
+原始FP32传输则保留其32位内容，不能混淆二者。
+
+**参考与组件。** 先用已冻结的原CPU/旧GPU二进制新跑匹配16³
+TGV，643e/643e、无滤波、dt=1e-4、4步。原旧GPU候选对FP64
+最大场差1.42109e-13，标量差2.22045e-16，满足既有MP2 TGV
+绝对门槛field=1e-9、statistics=1e-10、rtol=0。只读reference
+包含原始状态、缓存、梯度、RHS和来源记录；packets仅做域分片，
+不以Python替代时间推进或通量求解。
+
+新组件对相同状态比较原FP64/原mixed的梯度、对流/完整RHS及三个
+RK阶段；另用独立对称应力矩阵构造制造数据，严格核对FP32最终
+存储位模式。数据明确区分“用未舍入应力计算能量通量”和“先
+舍入应力再算”的结果，后者不能误通过。测试还检查原始量/梯度
+精度未变、q/RHS/qsave未被本构核改写，以及未使用角区的NaN
+padding、共享节点、halo和signed-zero的位模式。
+
+本地NP=1，NP=2 x/y/z主机中转，NP=2 x/z设备MPI及代表内存工具
+合计180个rank/精度/阶段/同步实例（FP64和候选合计），最大缩放
+差2.84218e-14，梯度4.44090e-16，FP64制造本构最大绝对差
+8.32668e-17。begin/end及一次性交换均覆盖；Memcheck零错误/
+零泄漏、Initcheck零错误、Racecheck零hazard/error/warning。
+
+| σ及黏性能量通量数组，含halo | FP64字节 | 候选字节 |
+|---|---:|---:|
+| NP=1，16³区间 | 1417176 | 708588 |
+| NP=2 slab，每rank | 997272 | 498636 |
+
+这里只是这9个数组的逻辑存储减半，不是程序显存峰值减半或网络
+字节减半，也未测量/宣称性能提升。初始探针曾在上传Jacobian前
+调用RK保存，导致其FP64第1阶段状态差1；只修正测试调用顺序，
+保留initial_jacobian_failure的源码和程序，不修改数值核或门槛。
+
+**主程序。** cpp_after_flowinit接入现有gpu_precision_mode及
+gpu_mixed_candidate输入，默认fp64不变；mixed_workspace当前仅
+实现viscous_flux。沿用diffterm=t、difschm=643e的既有候选范围，
+新消费者目前连接standard黏性路径；ME6及SBP整合未接本候选，
+其余flux/derivative/characteristic_flux明确未实现，不能静默替代。
+各rank的模式一致性初始化时检查，主推进不因候选产生全场往返。
+
+在无检查点/无正式场存档下，实际普通astr完成16³ TGV四步：
+NP=1主机中转、NP=2 z设备MPI及NP=2 y主机中转，包含两同步
+模式。候选对匹配旧GPU的末场缩放差6.66134e-16以内，标量绝对
+差4.34653e-14；对当前C++ FP64的末场绝对差1.42109e-13，
+标量文件各值差0。步号/time/dt相同，物理rho/internal-energy
+严格正且有限。NP=2 y主程序Memcheck零错误/零泄漏，NP=1
+主程序Initcheck零错误。测试用场/RHS回读不属于生产推进路径。
+
+底层类型改造后，默认FP64过滤TGV两同步及同构建CPU路径复验
+通过；默认FP64的NP=2 y平板均值/2+2恢复仍通过。其后新增的
+选择入口另以同模式FP64正常推进对照检查，未将候选设为默认。
+不因周期短测扩大为壁面/CURVE/激波、长时物理或性能通过。
+
+现行output_runtime仍拒绝mixed_workspace检查点和恢复，本轮未
+修改该限制。待人工决策LP1：是否在已有control.bin的空闲工作区
+位中记录viscous_flux身份（默认FP64位不变），开放同候选的同
+构建/同拓扑精确恢复；不增加文件或保存派生通量，跨候选切换暂
+不放行。已提出该问题，自动goal续接不是批准。
+
+证据在results/multi_backend_mb7_mixed_viscous_20261115：
+reference/reference.json、components/report.json、main_np1、
+main_np2_z_device、main_np2_y_memcheck、main_np1_initcheck及
+default FP64复验目录；summary.json汇总实际量。主程序SHA256为
+eedd90844dc0e5981a962992eb9fce8e5ccf2349377b8e45d79e7393712f9ace，
+组件为7019e90f6c5ac5afa9ab7a1f26a4cf7f7f1a319bbcb36e1575f12d2f895d724f。
+N7/N8/N9/N10仍未批准；原生FP32、其他混合候选、其余工况、
+候选续算及DCU仍待，完整MB6/MB7 goal保持active。没有执行
+Git写入、远端登录或Slurm操作。
+
+### 10.76 MP2候选的显式滤波、自动步长及低阶平板联合
+
+本轮沿用10.75同一普通主程序和组件二进制，没有修改CFD、滤波、
+步长选择或边界公式。扩展已有参考准备及主程序比较脚本：显式
+选择filter、automatic、fixture、workspace；平板复用既有
+prepare_flat的小型16³区间夹具，不在Python中求解流动。
+主程序比较现在逐RK阶段核对q/原始量、对流及完整RHS，并比较
+完整步CFL、时钟和末场。既有记录用独立phase_reanalysis重读，
+不为新增比较重跑不变的参考。
+
+| 新增联合组 | 拓扑/通信/同步 | 输入与覆盖 |
+|---|---|---|
+| 周期TGV显式滤波 | NP=2 x，device，dependency | 643e/643e、全变量滤波工作区，dt=1e-4，4步 |
+| 周期TGV自动步长及显式滤波 | NP=2 y，pinned，explicit | 单分量滤波工作区，初始dt=1e-4、CFL目标0.5、增长1.1、max_dt=1e-3，4步；候选Memcheck |
+| 静态剖面平板，无滤波 | NP=2 y，device，dependency | 543e MP7/643e、bc11/21/41/51、z周期，dt=1e-6，4步 |
+| 同一平板，显式滤波 | NP=2 x，pinned，explicit | 相同格式/边界，单分量滤波工作区，dt=1e-6，4步；候选Memcheck |
+
+各组先新跑已冻结CPU、旧GPU FP64和旧GPU viscous_flux，且参考
+完全独立于当前可变源码；随后新主程序分别对照匹配模式。平板
+使用原始三维弱扰动/分段流场及剖面，不是稳态平板物理解。滤波
+本身、原始量、梯度、对流/RK和MPI载荷仍FP64。复制测试输入时
+没有把候选开关写回正式算例，不改变默认FP64。
+
+本轮新增四组与10.75四组的汇总：
+
+- 对匹配旧GPU模式，末场最大缩放差2.43497e-15，标量最大绝对差
+  4.69625e-14；所有三阶段比较的最大缩放差6.73559e-14，CFL
+  3.46945e-18。完整步time/dt记录同模式逐值相同。
+- 候选对同次C++ FP64的最大绝对场差2.27374e-13，标量差
+  3.36700e-17，满足原MP2 TGV绝对门槛field1e-9、stat1e-10、
+  rtol=0；本小平板也使用这一较严门槛，不将其说成长期HBL验收。
+- 两个新增Memcheck运行均为两rank零错误/零泄漏；包括物理端
+  模板和显式滤波后缓存消费，未仅以末场相近代替阶段检查。
+
+紧致滤波的参考尝试在旧GPU mixed模式启动时被既有
+compact_global_enabled拒绝：Global compact requires native precision
+and explicit synchronization。该组CPU/旧GPU FP64运行完成，但
+无混合参考，也没有继续运行新C++对应混合组或认领其通过。
+保留reference_compact的失败日志，不修改旧准入、PCR公式或精度。
+这是一项既有未支持组合，不把它误报为新C++数值偏差。
+
+results/multi_backend_mb7_mixed_viscous_20261115/summary.json已由
+同目录summarize.py从实际八组report及阶段数据生成，不再只在文档
+中预告。原始report不覆盖；phase_reanalysis.json存放追加检查。
+candidate目录冻结相关当前源码、脚本、根构建缓存和两份二进制。
+
+候选精确恢复仍待LP1，不写检查点或正式整场存档；原生FP32、其他
+混合候选、其余边界/激波/CURVE与DCU仍待。N7/N8/N9/N10未获得
+新授权，本轮没有改动它们。未操作Git或远端，完整goal继续active。
+
+### 10.77 MP1物理空间MP7通量存储及待决定的轨迹RHS口径
+
+本轮继续5.1的既有低精度迁移，新增原flux候选中已由新C++支持的
+周期MP7子集：543e、recon_schem=3、非特征重构。未移植WENO7，
+不把原flux允许recon_schem=1的范围一并认领，也不把此候选用于
+MP7-LD、选择性特征通量、物理端或crashfix。原viscous_flux独立
+保留；输入只选一个候选，默认仍FP64。
+
+**先冻结原实现。** 采用原CPU/旧GPU二进制，16³区间TGV、无黏性、
+无滤波、固定dt=1e-4、4步，关闭正式检查点与场存档，保存各阶段
+测试快照。原CPU/旧GPU FP64末场缩放差6.66114e-16；原flux候选
+对FP64绝对场差8.22559e-8、标量2.28573e-11，满足原
+run_tgv_upwind_mixed_precision_compare.sh的场量2e-6、统计5e-11、
+rtol=0。未借用MP2或MP3的不同容差。
+
+**存储与接线。** 原solver_gpu的split及fused核均为两次舍入：
+先存F+为FP32，提升回FP64后加F-，再存合计为FP32；不是仅对
+F++F-最终舍入一次。新interface_kernel保留这一顺序，差分加载
+时将两个界面值分别提升到FP64，再累加至FP64 RHS。状态、物性、
+几何、梯度、RK及MPI载荷均不降精度，也不分配全场分裂通量镜像。
+
+upwind_prepare_mixed_flux_cpp新增明确C ABI入口，按需分配4字节
+界面工作区，重复同类型准备复用地址；不在已分配后偷偷切换类型。
+fluid_runtime接入既有gpu_mixed_candidate='flux'。当前新C++界面
+工作区同时存五分量，三方向复用：NP=1为137180字节（FP64为
+274360），NP=2 slab每rank为79420（FP64为158840）。这是相对
+新C++自身FP64数组减半，不是与旧GPU单分量顺序工作区等字节，
+也不是应用显存峰值或通信字节减半，未测量/声称加速。
+
+**同状态证据。** pack_mixed_flux_components.py只复制原CPU与
+旧GPU候选的q/缓存/几何/梯度、对流/完整RHS、stage1保存量及
+阶段更新结果，复用upwind_probe。探针增加mixed-flux入口；原
+FP64三夹具入口不改。每rank有24个算子及12个实际RK阶段实例，
+包括FP64 CPU参照和旧GPU mixed参照、两同步及两梯度来源。
+
+NP=1、NP=2 x/y pinned和z device通过；x Memcheck零错误/零
+泄漏，y Initcheck零错误。第0步冻结输入最大RHS缩放差
+2.91039e-11、更新状态3.16661e-16；针对轨迹失败点所在的第3步
+另冻结三个阶段（文件中的零基step=3），NP=1最大RHS为5.82077e-11、更新状态6.66114e-16，
+均满足同状态2e-10。合计192个rank/算子实例及96个RK实例，含
+两种参照精度，不称为192个纯mixed实例。FP32工作区未使用
+padding的NaN位模式保持不变，有效界面有限；q物理节点位模式
+未改，工作区地址复用。
+
+改动后的原FP64三夹具NP=2 y回查仍通过：144个算子、72个RK
+实例，最大RHS缩放差2.22045e-16、更新状态3.55272e-16，保留
+选择性Roe/MP7-LD、原标记及黏性阶段消费者。原MP2小平板加显式
+滤波NP=2 y设备MPI亦通过，末场缩放差2.44148e-15。
+
+**普通主程序尚未通过当前阶段门槛。** 无黏性路径原来没有写出
+测试用full RHS标签，补在source_selected的源项前，且仅限
+ASTR_BUILD_TESTING与显式观测请求；不新增生产回读。补前/后
+同一FP64运行的61份q/物性/RHS文件逐字节相同。初始缺标签及
+一次构建尚未结束便启动旧测试程序的编排失败均保留，不计通过。
+
+完成四步的NP=1 mixed主程序，对匹配旧候选末场绝对差
+1.98952e-13（最大缩放约1.10832e-15）、标量3.98015e-14，
+步号/time/dt逐值相同。对当前C++ FP64，场量最大绝对差
+8.22559e-8、统计2.29001e-11，均在原MP1场/统计门槛内。
+但当前脚本复用了FP64轨迹RHS门槛，在零基step=3、rk02能量RHS
+检出2.3283064365386963e-10（物理节点3,5,10），超过2e-10；
+脚本仍失败，没有把它改成通过。
+
+该阶段q/物性缩放差仍约1e-15；同冻结输入重算通过，与不同轨迹
+输入在FP32舍入下被放大的解释相符，但尚无逐界面的完整归因，
+不能以“机器误差”直接消除这项失败。待决策LP2：同状态算子
+继续2e-10；轨迹采用原MP1场量2e-6/统计5e-11，并逐值报告RHS
+差而不套FP64门槛。已提交该具体问题，未获批准前不修改门槛或
+继续多rank混合主程序矩阵。
+
+证据根results/multi_backend_mb7_mixed_flux_20261115：reference、
+components_reference及components_reference_step3、component_*、
+fp64_original_families_np2_y、viscous_plate_unchanged；
+trajectory_diagnosis.json记录未通过的轨迹，snapshot_hook_isolation
+记录观测隔离。summary.json明确区分组件通过与主程序待LP2，
+candidate冻结当前源码、构建设置及实际二进制。主程序SHA256
+837d5e05988f834aade8371709d86b90385d9d3c5a72d3a2eae1442b209fcdbb，
+组件2ef0f1c31f9f5cbd974b8568fb3b244acdda63780d59fc3e9da503a10105ad44。
+未接任何mixed检查点/恢复，LP1仍按10.75原范围等待；原生FP32、
+其他候选、物理端以及DCU仍待。N7/N8/N9/N10未改，无Git写入、
+远端或Slurm操作；完整goal保持active。
+
+### 10.78 MP1轨迹RHS超限节点的逐界面归因
+
+本轮不等待LP2便继续其不受影响的诊断，不运行新的CFD时间窗或
+多rank混合主程序，也不修改门槛/公式。根CMake增加独立测试目标
+astr_backend_mp1_replay，只调用现有公开状态与upwind C ABI，
+没有新增生产接口、通量实现、重试或CPU推进。给定冻结的q、同
+相位原始量及公共几何，直接重算三个方向MP7，导出实际FP32
+界面工作区及FP64 RHS；输入q的全缓冲位模式保持不变。
+
+run_mp1_replay.py只复制和分析数据，不在Python重建Steger--Warming
+或MP7。选取零基step=3、rk02，分别送入原旧GPU候选状态和当前
+C++候选状态，两次均使用同一个新C++设备算子。沿用相同参考
+几何，是为隔离q/缓存变化，而非将未验证几何修订混入比较。
+有效输入范围为物理节点及单轴面halo，不把未消费的多轴角区
+padding当作流场差。该范围的q最大绝对差1.70531e-13、原始量
+7.10543e-14。
+
+出错节点(3,5,10)能量RHS的六个界面值中，x/y两方向及z左侧
+五个值逐位一致；唯一差别是z右侧（该界面索引同为3,5,10）：
+
+| 输入 | z右界面FP32位模式 | 提升到FP64后的数值 |
+|---|---|---:|
+| 原轨迹冻结状态 | bb3772a2 | -0.0027991910465061665 |
+| 新轨迹冻结状态 | bb3772a1 | -0.002799190813675523 |
+
+相邻FP32值间隔为2.3283064365386963e-10。右界面通量增加该值，
+负通量散度相应减少该值，正好得到10.77的RHS差；并不是两个
+算子对同一输入无缘由地产生了这项超限。
+
+以R为同一个新设备算子，逐项分解该点：
+
+- R(新状态)−R(原状态) = -2.3283064365386963e-10；
+- R(原状态)−原轨迹实际RHS = 0；
+- 新轨迹实际RHS−R(新状态) = 0。
+
+三项之和与原始RHS差精确闭合。因此，该具体超限节点已确认
+全部来自状态变化经过FP32界面量化，而非其同状态移植误差。
+不将这个点的结论扩大成所有节点逐位相同：全域重算对原轨迹
+能量RHS的最大绝对差3.63798e-12，当前轨迹能量RHS为0；密度
+等其他分量的最大差见报告，仍按既有同状态门槛单列。每份重算
+RHS都与从其实际三方向FP32界面数组按负散度重建的结果逐值
+完全一致，未通过任意容差或替换数据凑齐分解。
+
+新增目标先补齐与同库测试一致的PIC设置；首次测试复制可执行
+文件未保留执行权限，replay_step3_rk2目录保留，没有重跑原
+CFD或改数值处理。修订仅为测试脚本copy2，成功证据为同根下
+replay_step3_rk2_exec，包含两份输入、原始界面/RHS、探针副本、
+脚本和report.json；summary.json已纳入这次精确归因。探针SHA256
+9d8c222f7f4ce385553144452b17c915e92760210308c0bbaaa6a382f4b76b95。
+
+当前CFD程序和10.77候选二进制未改变。LP2仍待人工批准，同状态
+与轨迹门槛均未放宽；MP1主程序不标通过，候选恢复LP1、N7/N8/
+N9/N10及其余完整goal范围仍待。未运行Git或远端操作。
+
+### 10.79 MP3最终物理通量存储的组件合同
+
+LP2只涉及10.77的MP1轨迹口径，本轮不把自动goal续接视为批准。
+继续不受它影响的既有characteristic_flux候选：原solver_gpu先用
+FP64完成物理/特征重构及逆变换，再将最终五分量物理通量写成
+FP32。未标记界面也通过同一最终存储；不能只把标记区域降精度，
+也不能套用MP1先舍入F+的规则。传感器、标记、Roe矩阵、状态和
+RHS保持原精度/含义；不引入H1压缩激活候选或新传感器。
+
+新增upwind_prepare_mixed_characteristic_cpp/C ABI组件入口。
+私有上下文区分FP64、MP1两次舍入、MP3最终一次存储，避免两种
+4字节工作区被错误视为同一种数学操作；既有FP64和MP1入口保持
+原行为。三方向仍复用一份五分量界面数组，不新增整场分裂通量。
+CPU数学代码、输出协议和生产默认均未改变。
+
+**先有FP64参考，再验证精确转换。** 复用10.36的不可变
+frozen_all中CPU/旧GPU FP64选择性Roe帧。原upwind_probe仍用
+同状态2e-10比较新FP64算子，最大RHS缩放差2.22045e-16。
+新增characteristic-storage组件模式，在同一冻结q/缓存/几何及
+当前梯度上另建测试上下文，检查：
+
+- 每个有效界面FP32位模式等于新FP64完整物理通量的一次IEEE
+  FP32转换，包括激波/非激波两分支；不改Roe或MP7公式。
+- 将这些预期存储值分别提升到FP64并取负散度，所得RHS与实际
+  组件RHS逐值相同，不在FP32中做相邻通量减法。
+- raw sensor完整缓冲位模式及整数标记与同输入新FP64上下文
+  相同；既有标记同时对照原冻结参考。q全缓冲位模式不变，
+  未使用界面padding的指定NaN位模式保持，重复准备复用地址。
+
+测试克隆和观察时的主机传输只属于测试程序，不是生产每阶段
+复制流场的方案。此性质检查不是新MP3对旧候选完整轨迹的逐场
+比较，不能用FP64 RHS符合参考替代后者。
+
+NP=1、NP=2 x/y pinned及z device均通过，覆盖三阶段、两种同步、
+冻结/新计算梯度及两种原FP64来源，合计168个rank/状态/阶段/
+同步/梯度对照，7919280个精确FP32存储值。包括1314432个
+标记界面及269424个非标记界面；计数含上述不同来源/重复，
+不是唯一物理网格数。x Memcheck两rank零错误/零泄漏，y
+Initcheck两rank零错误。逻辑界面数组NP=1从274360字节到
+137180，NP=2 slab每rank从158840到79420；只对当前C++数组
+自身减半，不代表峰值、旧Fortran工作区或MPI字节减半。
+
+受影响的原FP64三夹具NP=2 y仍通过144个算子及72个实际RK
+阶段：RHS最大2.22045e-16、更新状态3.55272e-16。MP1第3步
+冻结状态NP=2 z设备MPI仍为RHS5.82077e-11、状态6.66114e-16，
+MP1的两次舍入未被新MP3覆盖。普通主程序的MP2小平板加显式
+滤波NP=2 y设备MPI也复验通过，末场缩放差2.44148e-15。
+
+**补充旧候选参考，尚非新主程序结果。** 用独立的原二进制
+另冻存16³区间周期Shu--Osher、Mach3、543e MP7、lchardecomp=t、
+无黏性/滤波、dt=1e-5、两完整步。它是已有周期接口夹具，
+不是标准开边界Shu--Osher物理复现。CPU/旧GPU FP64末场差
+1.42115e-20；原MP3对FP64场量1.11101e-10、统计5.21681e-11，
+在原MP3-A冻结场/统计绝对门槛2e-6、rtol=0以内，没有套用HBL1
+或MP1/MP2的不同值。
+
+初始同状态raw sensor位模式相同，六阶段标记均无差异；不同
+轨迹的后续raw sensor并非逐位相同，最大7.82019e-12。不能把
+初始同状态或整数标记一致扩大成整个候选轨迹的raw值相同。
+本夹具flowstate是maxq1..5，不是TGV能量；首次样本为step1、
+t=1e-5，终态场为完整步2、t=2e-5，分别与匹配相位比较。
+最初一步参考尚未到CPU首次标量发布点，测试准备请求文件时
+失败；保留reference_candidate，不改CPU统计，随后仅将窗口
+调整为两步，成功只读参考在reference_candidate_two_steps。
+
+证据根results/multi_backend_mb7_mixed_characteristic_20261115：
+component_*、fp64_original_families_np2_y、mp1_unchanged_np2_z_device、
+viscous_plate_unchanged及上述旧参考；summary.json汇总实际结果，
+candidate冻结当前源码/脚本、根缓存和实际二进制。组件SHA256
+5d405d510501a4847cd4de9d5e4e5cc45afff7d6a7c60fa2de477e28dc06e561，
+当前普通程序98da671bf4e546b828642d095f57eddc4a7207eb55a6c0adfdf54fbb0b2f9c18。
+
+本节完成时的状态：最终存储组件已实现并有上述性质证据；普通C++主程序
+的characteristic_flux选择尚未接线，实际MP3短窗、物理端联合、
+输出/恢复和DCU未验证。原生FP32/derivative及完整MB6/MB7其余
+项继续待办；LP1/LP2及N7/N8/N9/N10未获得新批准，未改门槛，
+未操作Git、远端或Slurm；完整goal继续active。
+
+### 10.80 MP3普通主程序周期短窗及基本输出消费者
+
+本轮将10.79已验证的最终通量存储组件接入正常C++ astr，而非
+仅运行独立核或复用旧GPU结果。共用Fortran初场新增已有shuosher
+入口；没有另写初场或改变原Shu--Osher方程/跳跃状态。该周期
+3D夹具不是标准开边界物理基准，仍按原冻结输入解释。
+
+cpp_after_flowinit增加既有gpu_mixed_candidate='characteristic_flux'
+选择，接现有MP3 C ABI。首轮范围与已冻结原候选的周期子集一致：
+543e MP7、lchardecomp=t、无黏性/滤波、五变量RK3。FP64仍是
+默认；不是MP1、不是原生FP32，也没有同步开启其他混合候选。
+Shu--Osher发布通用maxq1..5，跳过它不消费的TGV归一化结果，
+其余原算例统计分支保持不变。状态、缓存、梯度、RHS、RK及MPI
+载荷仍FP64，主推进不增加整场往返。
+
+测试构建另按既有RHS观测请求写sensor物理节点与整数标记。
+复用已有安全axis快照，其他轴halo/角区填零而非读取未定义值；
+此处最终只将物理节点写入原传感器格式。未请求时不发生这些
+回读，非测试构建不包含该观察代码；不新增生产配置或校验系统。
+
+**已执行。** run_cpp_characteristic_gate.py复用10.79只读参考：
+16³区间、Mach3、固定dt=1e-5、两完整步。每个配置实际运行新
+FP64、新MP3及关闭中间观察/输出的MP3对照，不以组件冒充主程序。
+FP64阶段继续采用逐变量缩放2e-10；MP3沿用原冻结原始量/守恒量
+绝对2e-6、统计2e-6、rtol=0。混合轨迹RHS逐变量记录，不给它
+另造冻结门槛；没有修改LP2所涉及的MP1驱动或其2e-10失败判据。
+
+| 新主程序配置 | 同步 | 附加覆盖 |
+|---|---|---|
+| NP=1，pinned | explicit | 六阶段场/缓存/RHS/标记及观察隔离 |
+| NP=2 x，device | dependency | 真设备缓冲MPI与激波方向分解 |
+| NP=2 y，pinned | explicit | 候选主程序Memcheck零错误/零泄漏 |
+| NP=2 z，pinned | dependency | 候选主程序Initcheck零错误；每步三维场与JSONL固定索引截面 |
+
+四组汇总：新FP64各阶段最大缩放差4.39093e-16；新MP3对匹配旧
+候选末q最大绝对差8.88179e-16、末原始量3.55272e-15，六阶段
+对流/完整/源后RHS逐值相同（不声称跨实现位模式相同）。标记
+逐点相同，原始sensor最大差2.22045e-16；新CPP两模式初始同
+状态raw sensor逐位相同。物理rho/internal-energy及缓存rho/p/T
+严格正且有限，完整步step/time/dt及标量采样身份相同。
+
+新MP3对同次新FP64末q绝对差1.11101e-10、末原始量3.70517e-10，
+统计5.00009e-11，满足原MP3门槛。不把这个粗网格两步结果扩大为
+长时精度、物理验证、速度优势或原MP3-HBL1的通过。flowstate
+仍是step1/t=1e-5的maxq样本，末场是完整步2/t=2e-5。
+
+**输出消费者。** z组在每个完整步写基本三维场，并通过当前
+input.products.jsonl写i=8、j=0、k=16三个六字段截面；不是
+恢复已退役的&slices。每个精度两份三维场；三截面各有初始0
+和完整步1/2共九帧。完整步1/2的六个字段逐个对照同相位权威q
+重构的原始量，最大缩放差4.20994e-16；几何/索引精确匹配原
+网格，FP64存储不因通量混合模式改变。三维速度向量与各分量的
+位模式一致，数值截面不重复保存坐标或速度向量。初始截面本轮
+只检查清单，不新增其相对初始权威场的数值通过声明。
+
+逐rank完整q快照缓冲（含halo）、统计文件值与步长时钟，在
+中间观察/输出关闭后逐值/逐位一致；z组同时包含步1发布后的
+继续推进，不是仅在终态写一次图。保持这些结论与“全权威状态
+精确恢复”分开，未借此放开mixed检查点。
+
+首个z归档测试使用了退役&slices，在输入解析处退出、尚未RK；
+保留np2_z_archives_initcheck的失败，不改源码兼容，而将测试
+修订为当前JSONL接口。完成项为np2_z_catalog_archives_initcheck；
+其archive_reanalysis.json复读已有证据追加FP64类型/产品状态
+检查，没有为这些检查重跑CFD。另用既有四步MP7-LD/643c平板
+NP=2 x检查新传感器观测钩子的物理端：场/缓存阶段最大缩放差
+3.77476e-15，raw sensor最大绝对差1.70938e-15、24个rank/阶段
+标记比较均相同，Memcheck两rank零错误（未作full leak-check）。
+
+证据根results/multi_backend_mb7_characteristic_main_20261115；
+summary.json汇总np1、np2_x_device、np2_y_memcheck、z完成目录
+及physical_sensor_hook_fp64，candidate保存当前源/测试/根缓存及
+实际程序。普通程序SHA256为
+ab8c67164c17c6133ba4a63ec33c2d0c070813a48d455ecb49c5eb3d4005e3d9。
+
+MP3周期主程序的这一短窗与基本输出消费者已取得证据；物理端/
+HBL联合、检查点身份/恢复、DCU及更广消费者仍缺。现行mixed
+检查点限制未改；LP1原viscous_flux范围不扩大为MP3恢复授权，
+LP2及N7/N8/N9/N10也未自动获批。原生FP32/derivative及整个
+MB6/MB7其余项继续推进，不缩小goal，没有Git或远端操作。
+
+### 10.81 MP3-HBL1黏性剖面平板的普通主程序与基本场输出
+
+在修改新主程序准入前，独立冻结原CPU、旧GPU FP64和旧MP3的
+实际两步结果。复用现有平板网格/可压缩相似剖面生成工具，不另写
+CFD推进器。192×192×8区间，Mach5、Re1.83052e6、Tref226.65，
+Tw/Tref5.191440547760865，x为[-1,10]、y为[0,1]且拉伸5、
+z长0.25；相似剖面站位1、虚拟前缘-2。既有35度斜激波初场/
+剖面几何x0=-1/y0=0.18、场/剖面起始高度0.02/0.18原样保留。
+此为原MP3-HBL1受控数值夹具，不宣称真实边界入射或定常SBLI。
+
+543e MP7、选择性特征重构、643e标准节点黏性，bc为
+11/21/41/51/1/1，固定无量纲dt=1e-5、两完整步；关闭滤波、海绵、
+crashfix/保正、均值和检查点。旧CPU/FP64末原始量缩放差最大
+1.08887e-15；旧MP3对旧FP64原始量差2.04378e-8，仍在原HBL1
+场量绝对5e-7、统计/初始传感器1e-12、整数标记一致的门槛内。
+这些不是周期MP3-A的2e-6门槛，也不套FP64轨迹误差。
+
+新runtime接入现有characteristic_flux的这一黏性剖面/低阶边界
+组合，保持最终FP32通量存储、FP64状态/梯度/黏性/RHS/RK与MPI。
+没有更改CPU数学、默认精度、halo层数或输出协议。高阶壁面由原
+公共配置的643e/单物理轴要求排除，本轮没有新增高阶组合。
+测试构建复用既有ASTR_SHOCK_SENSOR_DUMP，在首次传感器计算时
+写原ASCII物理节点格式；没有请求时不复制/分配，非测试构建不
+包含此观察代码。安全axis快照不读取无定义的物理外角区。
+
+已执行新FP64、新MP3和关闭初始观察的MP3三条普通主程序：
+
+| 配置 | 同步/通信 | 增量证据 |
+|---|---|---|
+| NP=1 | explicit/pinned | 原始量、重构q、标量、初始sensor与观察隔离 |
+| NP=2 x | dependency/device | 相同门槛和实际设备缓冲MPI |
+| NP=2 y | explicit/pinned | 相同门槛，候选Memcheck零错误/零泄漏 |
+
+三组汇总：相对同次新FP64，MP3末原始量最大绝对差2.0437754e-8
+（温度）、由六字段重构q差2.4141764e-9（密度）、标量差
+1.300094e-16。相对匹配的旧MP3，末原始量9.41469e-14、标量
+4.71179e-13；初始raw sensor最大6.92829e-16，整数标记相同。
+完整步时钟/采样身份相同，rho/p/T严格正且全部有限；最大
+C_upper为0.0262005624。基本输出六字段保持FP64。
+
+本次只写完整步2的六字段和初始sensor，不输出HBL逐阶段RHS，
+不能据此声称其六阶段RHS已对照。初始观察开/关的六字段位模式、
+标量值及步号/time/dt相同；这是输出隔离而非完整权威q/检查点
+精确恢复。跨分解FP64末原始量最大差4.44090e-16，MP3为
+3.38814e-21，并非所有配置逐位相同。
+
+strict_sensor_q_reanalysis.json直接复读已保存数据：核对每rank
+原点/大小与实际CPP布局，使用原sensor绝对1e-12，不沿用最初
+脚本较宽的2e-10。q重构常数改为运行时1/(1.4-1)，而非字面量
+2.5；未重写不可变原参考，也没有为后处理修订重跑CFD。
+summary脚本再检查六字段FP64类型、相位及有限/正值，并核对
+Memcheck日志。最新二进制同时完成周期MP3 NP=2 x device回归。
+
+原夹具z仅8区间，NP=2 z局部4区间不足当前固定hm5通信的最小
+范围；这项未运行/未准入，没有减少halo或借用周期测试认领。
+证据根results/multi_backend_mb7_characteristic_hbl_20261115，
+summary.json汇总三组、严格复读及周期回归；普通程序SHA256为
+a4527f96bd24a4bbae30ba790620972e05da429d424a23c908b53b8474c778d0。
+prepare_characteristic_hbl_reference.py与run_cpp_characteristic_hbl_gate.py
+保留准备和运行方式，candidate保存实际源/测试/构建缓存及二进制。
+
+混合精度检查点/恢复合同没有放开，LP1/LP2及N7/N8/N9/N10未获
+新授权；更广物理端、原生FP32、derivative、DCU和整个MB6/MB7
+仍未完成。本轮未操作Git或远端任务，不作性能或长时物理声明。
+
+### 10.82 MP2独立诊断梯度存储及周期TGV消费者
+
+按§5.1继续迁移已有derivative候选，没有降低共享求解梯度。
+原gradcal_gpu在FP64中计算差分/几何投影，最后写FP32 dvel/dtmp；
+原扩散核独立使用FP64原始量重算。新后端的求解梯度还被黏性、
+传感器、边界和其它消费者共用，不能直接改它的精度来冒充旧候选。
+
+先冻结独立原CPU、旧FP64及旧derivative二进制结果：16³区间、
+Mach0.1、Re1600、标准643e/643e黏性TGV，四完整步。固定dt=1e-4
+和自动步长/explicit10两套参考分别完成；原候选对FP64末场逐值
+相同，统计最大差分别1.00068e-9/4.09336e-9，在原1e-8门槛内。
+没有将viscous_flux的1e-10或MP1/MP3门槛移给它。原flowstate
+样本是step1--3，终态观察为完整步4；未改CPU发布相位。
+
+**实现。** device_state末尾追加诊断视图20/21，按需持有物理节点
+9项速度/3项温度梯度，F32、无halo；原求解视图8/9仍F64。
+fluid_prepare_diagnostic_gradient可重复调用且复用地址。
+fluid_diagnostic_gradient复用当前FP64六阶/低阶物理端模板及完整
+度量，只将最终投影结果存为F32，不改差分表达式或MPI类型。
+当前普通主程序接周期黏性TGV、标准643e/643e及显式滤波子集，
+保持旧候选diffterm=t、lchardecomp=f要求。TGV统计将诊断F32
+提升为F64后做旋度/应变、耗散及归约；求解、CFL和默认FP64不变。
+没有在核间下载/上传整场，也未新增生产选项。
+
+主程序未接入前的RED记录明确为mixed candidate未实现；新增
+组件目标在API和视图尚不存在时编译失败。准备参考的首次命令误把
+算例根目录传为datin，尚未启动原求解器；保留失败目录，正确来源
+为reference_datin。后续没有让这些失败记录冒充完成证据。
+
+**组件。** mixed_derivative_probe读取原冻结状态包，覆盖两个
+原模式、三阶段、两种同步、NP=1与NP=2 x/y/z。84个rank/模式/
+阶段/同步组合共2954736个有效分量的F32位模式，等于同次新F64
+求解梯度的最终转换；与匹配存储精度的旧诊断梯度最大差0。
+完整q/halo、RHS及求解梯度位模式未改变；未请求时无诊断数组，
+重复准备不改地址，两视图确为F32且求解视图仍F64。NP2-y
+Memcheck零错误/零泄漏，NP2-z Initcheck零错误。组件使用冻结
+halo输入，实际MPI通信由下述普通主程序另行验证，不混淆两者。
+
+| 普通程序配置 | 算子/时间 | 观察/工具 |
+|---|---|---|
+| NP=1 pinned/explicit | 固定、无滤波 | 原匹配模式四步/各RK阶段 |
+| NP=2 x device/dependency | 固定、无滤波 | 实际设备MPI及观察开关隔离 |
+| NP=2 y pinned/dependency | 自动、explicit10单分量工作区 | 观察开关隔离 |
+| NP=2 z pinned/explicit | 固定、无滤波 | 观察隔离、主程序Memcheck零错误/零泄漏 |
+
+四组实际末q完整缓冲含halo在新F64和新derivative之间逐位相同；
+对匹配原模式的阶段最大缩放差6.10068e-14。候选相对新FP64统计
+最大差4.09330e-9；匹配旧候选统计最大差4.37983e-14。
+所有物理状态有限，rho/internal-energy严格正；完整步时钟和原
+标量采样身份匹配。关闭中间观察、仅保留终态测试快照后，完整
+q位模式、标量值及步长时钟仍相同。此处没有正式归档或检查点，
+不能把观察隔离称为精确续算。
+
+自动/滤波首轮触发的是测试拼接顺序错误：F64日志rank顺序1/0，
+候选为0/1，重复共享面按最后一项覆盖，选中了不同rank的约
+4.49e-17舍入副本。各rank末q在修订前已经逐位相同，时钟一致，
+统计4.09330e-9也达标；assembly_diagnosis.json保留直接证据。
+仅将测试拼接改为固定rank顺序，不平均字段、不修CPU/GPU数值、
+不放宽门槛。完成目录为np2_y_auto_filter_rank_order。新增探针
+随后只删除未用axis声明，实际组件二进制及其报告单独保留。
+
+**存储界限。** 16³ NP1诊断工作区逻辑235824字节，是同布局
+F64诊断的半数；但当前FP64求解梯度471648字节仍保留。因此这
+一步并未使总显存降低，也没有计时或收益声明。温度诊断组件已
+验证，TGV本次标量只消费速度诊断；物理壁面/均值消费者、原位
+诊断联合、混合检查点身份和恢复仍需后续接线，不能外推为完成。
+
+共享梯度store_value接线后，新主程序另复核MP3-HBL1 NP2-y：
+原始量/重构q/统计候选差仍为2.04378e-8/2.41418e-9/1.30009e-16，
+初始整数标记无差异，旧HBL1门槛保持。没有借此重新认领10.81
+未完成的z分解或恢复。
+
+证据根results/multi_backend_mb7_mixed_derivative_20261115，
+summary.json汇总两个只读参考、components_storage_identity和
+四组主程序，以及mp3_hbl_unchanged_np2_y。candidate保留源/
+测试/根缓存和实际普通程序。当前普通程序SHA256为
+da50524943c806315e97ed3319476fbceb5af31dd2f496c902537594dec87599；
+早两项主程序在补回原候选diffterm/lchardecomp准入前执行，原
+10872957...二进制与各自tested_astr仍保留；数值核未因该准入编辑
+变化，较晚的y/z及MP3回归来自当前二进制。
+
+本轮未解决LP1/LP2及N7--N10，不增加兼容层、容差或资源预算。
+原生FP32、物理端derivative、相关历史恢复、DCU及完整MB6/MB7
+仍未完成；没有Git或远端操作，完整goal继续active。
+
+### 10.83 derivative低阶平板壁面、时间均值及同相位数据归档
+
+继续10.82未接的物理端消费者，不修改黏性求解精度。先冻结原
+CPU、旧GPU FP64和旧derivative的既有小平板：16³区间，x为
+[0,10]、y为[0,1]、z长0.25，Mach2/Re1000/Tref273.15，壁温1，
+bc11/21/41/51/1/1。原剖面/分段三维初态由既有prepare_flat生成，
+包含x>5的速度/密度变化；它是迁移接口夹具，不是充分分辨的
+层流/湍流物理基准，更不是M12生产算例。543e MP7物理空间重构、
+643e标准黏性，无特征分解、海绵或crashfix。固定无量纲dt=1e-6
+四步；自动/explicit10对照采用同初始dt、增长1.1、max_dt1e-5。
+
+原候选对FP64末场相同，固定/自动滤波壁面标量最大差分别
+5.19350e-12/9.92001e-12。再冻结均值开启的原CPU/旧GPU两模式，
+每步采样、每两步写现行独立statistics.step*.h5，不写检查点。
+原GPU的12项平面矩和3项壁面矩沿用其32载荷含度量、累计量及
+端点的协议；CPU44协议不当成相同数组比较。候选对FP64原始
+均值端点/积分差另作报告，不为它新设生产门槛。
+
+**实现。** fluid_flat_statistics的剪切/热流读取诊断视图20/21，
+每个F32值先提升F64，再按原物性、面积权重和归约计算。
+production_wall_cpp同样选择诊断梯度，平面12矩保持原始F64
+流场输入。cpp_refresh_mean_fields在完成原速度/温度halo刷新和
+求解梯度后，补同阶段独立诊断梯度，防止壁面矩消费旧时刻诊断。
+原求解梯度、RHS、RK、MPI载荷、物性和输出格式均不变。
+当前derivative主程序扩展到静态剖面、低阶bc11/21/41/51与MP7
+物理空间重构；不借此认领高阶、NSCBC、非可分CURVE或时序入口。
+
+**选择性消费证据。** 仅比较真实短窗的几e-12差不足以证明选择了
+哪份梯度。因此在已有flat_statistics_probe中给F64求解/诊断分别
+赋解析可辨的du/dy=3/7.25、dT/dy=0.5/0.375；诊断值可精确表示
+为F32。此人工注入只检查读取与积分，不是CFD状态或新模型。
+修订前壁面标量仍读取求解值，最大差0.010625，RED证据保留为
+flat_consumer_before。修订后壁面面积积分、沿z的壁面矩端点、
+常端点dt=0.25的梯形积分均符合解析值；默认F64 NP1最大差
+2.77556e-17，诊断NP2-y为2.77556e-17，NP2-z为3.46945e-18。
+重复标量位模式、q字词和几何分配地址保持；y Memcheck零错误/
+零泄漏，z Initcheck零错误。没有从这些局部分区注入检查推断
+真实MPI传输或完整历史恢复，后者仍按原审批范围处理。
+
+**实际普通astr。** 每个配置运行FP64、derivative及关闭中间观察/
+场归档的derivative对照，均值采样/独立写出保持开启：
+
+| 配置 | 时间/滤波 | 额外覆盖 |
+|---|---|---|
+| NP1 pinned/explicit | 固定、无滤波 | 壁面标量、均值、基本三维场和三截面 |
+| NP2-x device/dependency | 固定、无滤波 | 实际设备缓冲MPI |
+| NP2-y pinned/dependency | 自动、explicit10单分量 | 候选主程序Memcheck零错误/零泄漏 |
+| NP2-z device/explicit | 自动、explicit10全变量 | z分解及另一种既有滤波存储 |
+
+四组新候选与同次FP64的完整q缓冲（含halo）逐位相同；对匹配旧
+候选末q缩放差最大1.74543e-15，阶段/缓存最大6.04991e-15，
+标量差3.41949e-14。候选对FP64壁面标量最大差9.92000e-12，
+在原derivative 1e-8门槛内；不把它套进viscous_flux的门槛。
+同候选GPU均值/端点按现行逐变量缩放2e-10及严格采样/覆盖身份
+检查，实际最大5.27356e-16；没有改累计公式、权重、采样相位或协议。
+完整步时钟匹配原参考，rho/internal-energy有限且严格正。
+
+**归档。** 完整步2/4各写一份六字段F64三维场；当前JSONL固定
+索引i8、j0、k16各保留0/2/4三帧。完整步2/4逐字段对照同次q
+重构的EOS原始量，最大缩放差2.22045e-16；几何和索引精确对应
+原网格，三维速度向量/分量字词一致，二维不重复坐标/速度向量。
+初始0帧只检查清单，不新增初始q的逐值通过声明。代码没有图片
+渲染或EPS输出，不把数据归档写成Catalyst产品验收。
+
+关闭中间RHS/halo观察和三维/截面归档后，仅保留终态测试快照：
+q完整字词、标量值、时钟相同，独立step2/4均值HDF5数据集也
+逐值/逐位一致。它证明本次观察/归档隔离，不等同精确续算。
+首次np1_means_archives因准备器未创建所需空输出根目录，在RK前
+被现行reuse_run检查拒绝；只补测试准备，保留失败。完成项为
+np1_means_archives_prepared及上述三组NP2，不改生产目录规则。
+
+prepare_mixed_viscous_reference.py增加显式--means，现有runner增加
+--means/--archives和check_plate_basic_archives.py；Python只准备、
+读取和比较，不推进流场。build_gpufusion.sh补入混合黏性、诊断
+梯度和生产统计探针目标，bash语法通过；未登录DCU或把清单更新
+当作DTK构建/运行证据。
+
+证据根results/multi_backend_mb7_derivative_wall_20261115，summary.json
+汇总四组普通程序、解析消费和工具日志，candidate冻结当前源/
+脚本/根缓存及实际二进制。普通程序SHA256为
+c94ad4f0aa94ce71d7820d1126e7eff3fdd235573f110d48169362336d9f1bcd。
+保留main_before/flat_consumer_before及输出根准备失败记录。
+
+LP1仅原混合黏性候选身份待批，不扩张为derivative或MP3恢复授权；
+现行mixed检查点限制未改。LP2及N7--N10也未获新批准。没有净显存
+或性能声明，没有Git/远端操作；更广边界/几何、原位渲染联合、
+候选恢复、原生FP32及DCU仍未完成，完整MB6/MB7 goal继续active。
+
+### 10.84 原生FP32状态与通信基础，不是FP32主程序
+
+按§5.1继续原生精度缺项。重新核对ASTR_NATIVE_FP32_DESIGN的既有
+合同：不是FP64计算后收窄存储；数值状态/算术、物理时间、几何、
+CFL、统计和辅助求解都须随构建精度，性能计时等已有明确例外保留。
+本轮先移植真实设备存储与通信前置，不缩小后续推进/紧致/消费者目标。
+
+**两个独立RED。** 隔离组件构建使用根CMake的fp32、CPP_BACKEND=none、
+ASTR_BUILD_GPU_BACKEND_PROBES=ON，未删除原FP32 C++主程序限制。
+最初MB1观察到q/RHS/save仍8字节，在借用视图消费核前拒绝，
+state_before及日志保留。改为4字节后，数值halo对照竟已逐位通过，
+但PMPI观察发现仍使用MPI_DOUBLE；x周期每rank发送161280字节，
+32次收发类型不符。这直接区分了“字段F32”和“通信F32”，未把
+原混合工作区的F64打包当成原生FP32完成。
+
+**实现。** device_state.cu在创建q/RHS/save时使用共享
+astr_precision.h的numerical_real；其他未迁移的物性/算子不因此
+自动取得F32能力。element_bytes与Fortran序布局保持同一描述符。
+默认device_state_upload/download薄绑定按ASTR_REAL32定型，已有
+显式_f32工作区入口保留，C的void指针/字节接口未改，不隐式转换
+整场数据。局部周期共享节点平均使用numerical_real算术。
+halo_transport的固定send/recv槽、打包/解包和共享平均采用同一
+类型；C MPI为F32选MPI_FLOAT、F64选MPI_DOUBLE。FP64构建的原
+混合工作区仍用F64通信，不按单个字段4字节擅改原混合合同。
+槽预分配/复用、私有通信器/tag、begin/end和物理端规则未改变。
+
+薄绑定先尝试过按精度重载assumed-size入口：NVHPC接受多维实参，
+GNU15.2拒绝泛型匹配。没有保留这种编译器专用接口，而改用上述
+构建期定型的直接过程；GNU15.2的F32/F64二维实参和显式F32
+工作区语法检查均通过。旧泛型模块保留在gnu_binding，修订后模块
+在gnu_native_fp32/fp64；这不是GNU12/DTK运行通过，也不新增按秩
+适配层。可选测试precision库加PIC以满足PIE链接。
+
+共享库的F32编译另暴露insitu_index将double梯度传给已随精度
+定型的VortexReal接口；只将该局部梯度声明对齐公共类型，解除
+编译错误。其邻域、插值和输出还未全部类型化，本轮不运行它，
+不能称为原生F32原位派生量。现有fluid_prepare的双精度算术仍
+要求8字节q，四字节状态在分配物性前返回类型错误，不执行double
+指针核。根CMake的F32 C++普通主程序限制仍保留，未用CPU推进、
+F64隐式数值例外或混合工作区替代严格F32目标。
+
+**真实组件。** 复用原MB1及halo探针，期望值在独立Fortran原生
+精度数组中构造；共用astr_precision/astr_precision_mpi，不另写
+流动求解器。MB1数据位于F32精确整数范围，仍区分halo索引/分量/
+rank并包含负零。借用视图GPU核执行逆序读取和物理节点复制到
+RHS，只是布局/复制消费，不是Euler或RK时间推进。
+
+| 每种精度实际运行 | 说明 |
+|---|---|
+| MB1 NP1、NP2 Memcheck | hm3/5与两种同步，6个rank/halo/sync组合；全q/保存/RHS及负零位模式、句柄失效 |
+| halo NP1局部周期 | hm3/5×两同步，三轴平均及只刷新halo，共4个rank组合 |
+| NP2-x pinned周期 | 共享平均、halo-only、固定地址、begin/end生命周期及真实MPI类型/字节 |
+| NP2-y device周期 | 同项，使用真实设备指针MPI |
+| NP2-z pinned物理端 Initcheck | MPI_PROC_NULL端不读取/覆盖无接收面的数据 |
+| NP2-x device物理端 | 同一物理端合同与设备缓冲MPI |
+
+每种精度共36个halo rank/分解/hm/sync组合，每组合六次三轴更新
+后的完整缓冲逐位对照，含未修改的角区。新增halo_wire_probe.c只
+链接测试程序，通过PMPI观察实际Isend/Irecv的类型与字节，不改变
+调用或通信策略；不加入普通astr或全局MPI环境。
+
+| 测试累计每rank发送字节 | F32 | F64 |
+|---|---:|---:|
+| x周期 pinned | 80640 | 161280 |
+| y周期 device | 100800 | 201600 |
+| z物理端 pinned | 57600 | 115200 |
+| x物理端 device | 40320 | 80640 |
+
+上述均为该探针全部hm/sync/两轮交换的累计载荷，不是生产每步
+通信量或扩展效率。两精度错误类型计数均0；本地周期无MPI载荷。
+两精度NP2状态Memcheck均零错误/零泄漏、物理z Initcheck均零
+错误；另给F32实际halo打包/平均/接收路径做NP2-x完整Memcheck，
+零错误/零泄漏。没有从状态复制检查推断出整个数值核的精度。
+
+**保持F64默认。** 当前普通程序另跑混合黏性TGV NP2-z device：
+匹配旧参考阶段最大缩放差3.63147e-14，候选对F64末q最大差
+1.42109e-13，原门槛不变。derivative平板NP2-y自动/explicit10、
+均值/归档及观察隔离也通过：q在新F64/候选间逐位相同，标量
+差9.92000e-12，均值/同相位归档缩放差5.27356e-16/2.22045e-16。
+这些是当前F64主程序回归，不是原生F32算例。
+
+证据根results/multi_backend_mb7_native_foundation_20261115，summary.json
+汇总fp32/fp64组件矩阵、PMPI字节对比、F32 halo Memcheck及两项
+普通程序结果；配置/构建日志、两个RED二进制及源码快照保留。
+run_native_foundation.py使用显式二进制目录/精度，不配置或启动
+CFD，不增加资源预算。当前F64普通程序SHA256为
+b50d307c7e34e2a1628eba9744dc62ff7c4a9b6c93a12291f80ff85134441aa6。
+组件配置的CUDA_ARCHITECTURES空值警告未用于性能比较，也没有
+为此修改无关全局构建策略；实际GPU执行及工具结果按上表记录。
+
+下一步仍须按同一原生合同迁移物性转换、梯度/对流/黏性/滤波/RK、
+物理时间/CFL/统计的算术与C ABI，再接正常主程序、紧致、物理端
+和输出/恢复/原位消费者。只有此后才能放开相应原生F32能力，
+不能将本节并入旧CUDA Fortran已经完成的原生算例证据。
+LP1/LP2与N7--N10未改变，未操作Git、远端或Slurm；完整MB6/MB7
+goal继续active，本节不代表目标完成，也没有净峰值显存/提速声明。
+
+### 10.85 原生FP32周期显式数值组件及四步GPU组合
+
+先用当前已批准源、根CMake重建原CPU/CUDA Fortran FP32参考；
+没有直接使用早于当前输入/输出接口的2026-10-21旧程序。
+16³周期TGV、Mach0.1/Re1600、643e/643e、固定无量纲dt=1e-4，
+四完整步、explicit10关/开，无检查点/正式场归档。原始量、q、
+梯度、对流/完整RHS、RK及F32几何实际记录先只读冻结。旧CPU/
+GPU两模式有限且正值，末q最大缩放差无滤波1.70006e-7、滤波
+6.80025e-7，沿原生D10报告，不套用F64的2e-10门槛。
+
+**本轮接线。** 公共numerical_real控制数值Buffer默认类型及at
+引用；周期物性/守恒转换、六阶梯度/完整度量投影、中心对流、
+标准Sutherland黏性、显式十阶滤波和RK核的局部量/参数采用Real。
+系数以Real构造，1/60仍为编译期常量；表达式顺序、格式系数、
+RHS符号、SSP-RK3、FMA策略及MPI时序不改。对应C ABI和Fortran
+fluid_step的dt/物性参数/RK系数同步类型化。实际迁移这些算术后
+才撤掉fluid_prepare的8字节前置检查；普通C++ F32主程序的根
+CMake限制仍保留，CFL/统计等尚未迁移。
+
+新探针最初因c_double参数不符而编译失败，build_before.log保留。
+共享库另有两处依赖：传感器空间最大值、紧致目标引用仅对齐
+视图类型以编译；不据此认领原生传感器/PCR。未添加宽松编译
+选项、CPU模型修订、全场转换或CPU推进。
+
+**独立性质。** 自洽二进制状态的q→rho/u/p/T→q往返逐位相同；
+仿射速度/温度在非对角、二进制可表示度量下，梯度等于解析值；
+常量状态对流/黏性RHS为零，滤波/三阶段RK保持完整q字词。
+最终常量夹具metric=diag(0.5,1,1)、Jac=2，既自洽又保留非单位
+体积权重；此前仅作代数测试的单位metric/Jac2记录保留。合成
+梯度只调用梯度算子，不把暂存字段当作CFD初态推进。
+
+**实际GPU组件及四步组合。** Python只分区/比较原始记录；探针
+复用真实C ABI和fluid_step。两种原来源、滤波开关、三个冻结RK
+状态、两种同步，以及各自initialized q的四步GPU组合均执行：
+
+| 最终配置 | 滤波存储/通信 | 工具 |
+|---|---|---|
+| NP1 | scalar/pinned | 两同步及独立性质 |
+| NP2-x | full/device | 实际设备指针MPI |
+| NP2-y | scalar/pinned | Memcheck两rank零错误/零泄漏 |
+| NP2-z | scalar/pinned | Initcheck两rank零错误 |
+
+共168个rank/来源/滤波/RK/同步同状态组合、56个rank/来源/滤波/
+同步四步组合，计数包含重复状态。所有物理rho/internal-energy
+有限且严格正；每rank完整q含halo在两同步下逐位相同。对各自
+单卡来源/滤波配置，三种双卡分解及full/scalar的物理节点也逐位相同。
+
+按既有D10只报告差值：同状态对流/完整RHS最大缩放差1.04904e-5，
+更新1.78814e-7；四步末q最大缩放差2.55009e-6，绝对能量差
+4.57764e-4。未新设/放宽偏差上限，也不把这些结果称为物理精度
+或长时收敛通过。独立性质、表达式、类型和实际指令另行核查。
+
+当前fatbin没有导出PTX，保留该输出，不写成PTX检查通过；SASS
+核查本轮10个周期显式核（物性、守恒转换、梯度、两散度、应力、
+两滤波存储、RK保存/更新），未见DADD/DMUL/DFMA/DSET等双精度
+算术。字段/参数为F32；不把地址/类型转换当F64数值运算，也不
+宣称全二进制无F64：未迁移的CFL/统计等仍含F64。
+
+F64默认另重编并检查原manufactured fluid组件，完整度量梯度、
+CFL/位置键/剖面、统计及异常谱满足其原2e-10规则。普通NP2-y
+混合黏性TGV自动/explicit10及观察隔离通过，匹配原阶段最大
+6.73558e-14；候选对F64末q差2.27374e-13、标量0。两者不是
+原生F32主程序证据。
+
+证据根results/multi_backend_mb7_native_explicit_20261115，summary.json
+记录完整二进制散列、reference/packets、四个final_*、实际SASS
+及F64结果；早期测试和编译失败保留。candidate冻结源/脚本/
+实际二进制及三套构建缓存。原F32参考78744177...、最终组件
+3bd7ab0c...、当前F64普通程序edf42784...，完整值见summary。
+
+下一步仍是CFL、数值统计及物理时间控制的F32算术/C ABI，再接
+普通主程序、紧致/其他已有格式、物理端/几何及输出/恢复/原位
+消费者；没有性能、DCU或完整原生F32主程序声明。LP1/LP2与
+N7--N10未动，未操作Git/远端，完整MB6/MB7 goal继续active。
+
+### 10.86 已批准LP1/LP2：候选续算身份及轨迹判定
+
+用户先批准N7/N8/N9/N10的既有最小数值修订，随后单独批准LP1、
+LP2。本节只完成后两项的本地代表实现/检查；四项数值缺陷仍待
+实际修复与重新冻结参考，不能把授权写成已经修复。
+
+**LP1。** 原FP64构建下的C++输出入口，仅当实际use_gpu且选择
+mixed_workspace/viscous_flux时，在现有contract(7)的bit2记录身份。
+原full滤波bit0、MP保正bit1保持，F64默认标志不变；原生F32与旧
+CUDA Fortran分支未扩大准入。仍由现有控制记录比较拒绝跨候选，
+没有新增文件、派生通量存储、兼容分支或写后校验。
+
+新增run_cpp_mixed_restart_gate.py通过实际普通astr调用检查：
+四步连续、两步+两步精确恢复、无检查点观察隔离，分别运行F64
+和候选，并双向尝试F64/mixed切换。修改前mixed在原准入处拒绝，
+有效失败保留lp1_before_valid_template；更早的错误模板路径没有
+启动CFD，lp1_before保留，不作为数值失败。
+
+| 最终LP1配置 | 实际覆盖 |
+|---|---|
+| NP1 TGV、固定步长、scalar/pinned/explicit | 两精度模式及双向模式拒绝 |
+| NP2-y TGV、自动步长、explicit10、scalar/pinned/dependency | 同上；mixed恢复Memcheck两rank零错误/零泄漏 |
+| NP2-x低阶剖面平板、固定步长、explicit10、full/device/explicit | 同上；真实设备指针MPI |
+
+各配置每模式15个state数据集逐值/字词一致；control.bin、archives.bin、
+insitu_control.bin逐字节一致，末q含halo、标量、时间/dt及输出开关
+隔离均一致。scalar控制标志为0/4，full为1/5。没有保存九个派生
+应力/能量通量；重新构造工作区后继续推进。平板首次测试缺少输出
+空目录，停于初始化；只修测试目录准备后重验，未改生产输出规则。
+这不是其他mixed候选、紧致mixed、DCU或跨拓扑恢复放行。
+
+**LP2。** 通用compare默认仍2e-10，物理阶段及RHS比较只新增显式
+limit参数。仅MP1 mixed的不同轨迹RHS传入None，保持布局/有限性
+检查和原始逐阶段快照，另报告五变量缩放差；F64及其他候选仍保留
+原门槛。末场/统计沿原MP1绝对2e-6/5e-11，时钟、正值及观察隔离
+未放宽。没有修改MP7、两次F32舍入、RK、同步或MPI数值代码。
+
+先只读重析原NP1冻结数据，确认原2.3283064365386963e-10仍被记录；
+同输入检查的默认2e-10对该值仍拒绝。原10.77/10.78的同状态组件
+及同算子双输入归因证据复用，没有把轨迹改称同状态。新二进制
+NP2-x device/dependency、NP2-y pinned/explicit两组四步实际主程序
+均通过批准后的门槛；y组mixed Memcheck零错误/零泄漏。两组保留
+相同最大RHS差2.3283064e-10，候选对F64末场最大绝对8.22559e-8、
+统计2.29001e-11；同匹配旧mixed末场最大缩放1.10832e-15。中间
+快照开关不改变完整q字词、标量、时间/dt。没有因此开放MP1检查点。
+
+证据根results/multi_backend_mb7_low_precision_decisions_20261115，
+summary.json及各lp1_*/lp2_*报告保存实际程序SHA256、输入和原始
+日志；本轮普通程序SHA256为54100244aaff2bfe954aace867bcacf15b8ddf3d0360a7ed79d9d011cc6a29c3。
+
+额外运行旧test_m12_integration_contract得到19项中3失败/1错误：
+两处仍要求环境变量读取、旧crashfix字符串和旧统计调用字符串。
+冻结的本轮之前源码已缺这些字符串，相关mainloop/MP源字节未改；
+preexisting_text_tests.json记录核对。冻结目录没有该诊断测试源，
+其完整测试错误不能冒称同样复现，但对应mainloop缺字符串已独立
+核对。未修无关旧测试，也不声称整个历史测试集通过；按项目规则
+停止进一步实现，报告该无关问题。N7--N10仍为已批准待实施。
+
+本轮无Git写操作、远端或Slurm操作；未进入AIR5/CPP-P，不改变
+FP64默认。完整MB6/MB7目标仍未完成。
+
+### 10.87 获批N7/N8/N9的最小修复与重新冻结
+
+本轮实施用户已批准的三项修订；N10的crinod共享/halo及界面通量
+消费者尚未修改。本节不接新C++的bc52普通主程序或解除crashfix限制。
+
+**N7。** CPU仅在三维非反应五变量、主lfilter=f、顶面自带横向
+滤波启用时，将z滤波后的全rank qswap放在顶面RHS之前。旧GPU
+对应分支把已有的末尾exchange_solution_halo_gpu移到RHS之前，
+不新增系数/松弛或更改nonreflecting、GRCBC、AIR5路径。
+原CPU制造场NP=1/2-z的额外刷新前后RHS差和分区差现均为0；
+物理q位模式及六物性不变，修前分区RHS差1.33514e-3的证据保留。
+
+另用现有16³弱扰动剖面平板，543e MP7/643e、bc11/21/41/52
+compatibility、dt=1e-6、四步，实际CPU NP1及旧GPU NP1/NP2-y/z
+对照。初次pre_rhs比较失败：CPU同名快照在顶面滤波后，旧GPU
+在滤波前，初始顶面密度相差0.0390625；完整RHS仅差1.72931e-17，
+更新场仅差1.33e-15。源码位置确认相位不同，不降低数值门槛。
+只将旧GPU的测试pre_rhs快照移到边界之后；boundary快照保持
+单一写入点，首次重排的重复NEW文件错误已保存并修正。
+最终三组GPU各12阶段的q/物性/RHS/更新最大缩放差2.41974e-15，
+物理rho/internal-energy有限且正。测试快照修订前后的12个完整q
+缓冲、标量和time/dt逐位/逐值相同。未用截断后的图像替代场对照。
+
+**N8。** compute_gradcal_gpu仅按周期性选唯一物理轴，复用现有
+x/y/z物理端核；不改变公共边界准入、CPU、离散系数或多物理轴
+既有分支。真实41/52 nonreflecting黏性盒四步参考的拟涡能和
+耗散已有限，CPU/旧GPU统计最大缩放差2.51007e-11，阶段最大
+1.46050e-13。三轴解析仿射/完整度量探针使用物理外侧NaN，
+当前三方向误差均0；只读修前gradcal源码在同探针的y方向消费
+NaN而失败，x为11/21、y为41/52、z为50/50，非任意无效边界
+编号拼接。该探针不推进CFD，不把它当作边界格式阶数验证。
+
+**N9。** 公共geom在jacob共享平均后追加halo-only dataswap，
+九个dxi分量全部平均后再统一dataswap；不再次平均物理节点。
+保留原混合换行格式，geom实际只新增两行。原CPU NP2-y及新
+C++ NP2-y的Jacobian/九度量有效面halo对所属值最大差均0，修前
+度量差0.599998。原CPU同分区13个物理几何字段逐位不变，另有
+NP1前后逐位对照。新冻结CPU/旧GPU参考与新C++ y-wavy/421、
+standard643c/ME6、紧致十阶滤波四步比较：NP2-y device及PCR
+device-aware/scalar、NP2-x pinned/PCR pinned/full，均为dependency。
+阶段最大9.02683e-14、末场3.48464e-14；两组输出隔离及2+2精确
+恢复的状态、控制、标量和驱动历史逐值一致，x组Memcheck两rank
+零错误。原CPU NP2-y对NP1阶段最大7.86643e-14。
+
+**数值身份。** 非反应五变量在现有contract(7) bit3登记本轮
+几何/顶面halo语义；LP1的bit2及原bit0/1继续独立。旧修订批次
+不再被当作跨语义精确续算，明确选择非精确时沿现有重建流程采用
+当前几何/边界。实际旧TGV批次精确请求被拒绝，非精确末场差
+1.11023e-16且固定步长时钟相同；测试首次关闭了原保存的检查点
+时钟而被拒绝，只改测试为保留原日程后重析/续算，未新增override
+或放宽生产调度规则。LP1单卡及NP2-y自动/显式滤波/device代表
+复验通过，控制标志从修前0/4变为8/12；它是N7--N9语义版本，
+不是将FP64权威状态改为FP32。AIR5身份/恢复不在本轮放行范围。
+
+证据根results/multi_backend_mb7_approved_repairs_20261115，summary.json
+链接全部实际结果。参考97c2c268...（最终原CPU/旧GPU，同一程序
+由use_gpu选路径），新C++831b1cd7...；此前5e2f5f39...的参考只
+用于不受测试快照位置影响的N8/N9。完整散列、根缓存/源码和实际
+二进制冻结于各reference_binaries*/candidate，不覆盖旧坏参考。
+最早N7探针用错C++链接驱动、随后与重构建重叠导致缺对象，均在
+编译/链接阶段失败，没有进入数值；完成构建后才执行最终探针。
+CPU几何分析首次误读旧诊断HDF5而非新式geometry资源，仅重析
+正确资源，没有重跑/替换原流动数据。旧文本断言仍未修。
+
+以上为本地代表软件/数值闭环，不是任意曲线网格、长期SBLI物理
+或DCU运行验收。N10及完整MB6/MB7余项继续；无Git/远端操作。
+
+### 10.88 获批N10：关键节点历史的共享与通量一致性
+
+本轮仅修复非反应五变量的crinod共享/halo协议和已迁移的真实
+MP7-LD消费者。完整C++ crashfix主程序仍保留原限制；未声明
+非零历史的普通RK/检查点生命周期完成。
+
+先用实际CPU crashfix、qswap及界面函数复现10.71同类问题：
+两rank同一界面的8节点q/物性逐位相同，关键标记却为0/1，
+动量/能量通量相差9.32381e-6/6.52667e-6。该证据与旧GPU
+已有记录一致，不能把它解释成正常CPU/GPU舍入误差。
+
+CPU在一次修复完成后，逐方向对共享端点及本地周期副本做逻辑OR；
+三方向全部完成后才halo-only刷新固定hm层，不再平均q或标记。
+旧GPU使用复用的设备byte面缓冲及pinned byte槽，不整场回读；
+新C++复用已准备的pinned/device私有通信槽，MPI_BYTE载荷，
+本地周期直接设备核处理。修订中发现首版C++本地周期误用了
+未为该轴分配的MPI槽，已以本地核修正；失败日志保留。
+
+原CPU显式/紧致上风入口及旧GPU的关键界面判断，只在真实
+物理端夹取端点标记，MPI/周期接口消费实际halo。CPU修订以
+numq=5且非反应限定；不修改化学路径。新C++实际界面核读取
+同一设备历史，命中时复用原一阶分裂通量，传感器、特征投影、
+修复阈值和邻域平均算法不变。核无历史时沿原数值路径执行。
+
+验证结果与范围：
+
+| 检查 | 实际结果 |
+|---|---|
+| 独立所有者OR、单面hm halo、外侧/角区不变、二次幂等 | CPU、旧GPU、新C++ pinned/device各五组通过：NP1周期、NP2-x周期、NP2-y壁面、NP2-z壁面、NP4-xy壁面；每rank两同步策略各两遍 |
+| 实际同界面通量 | x/y/z两种标记：共享端点单副本及最后内点halo；CPU/旧GPU两侧差均0，新C++两后端逐变量E均0，健康q完整字词不变 |
+| 物理端旧组件 | 原12组关键通量对照最大3.66315e-15，Memcheck零错误/零泄漏 |
+| 内存工具 | C++ NP4 pinned标记及NP2-x pinned真实通量Memcheck零错误/零泄漏；NP1与NP2-x device标记Initcheck零错误 |
+| 原GPU非零历史I/O组件 | 热启用、关闭后保留历史、原位图打包恢复逐值一致；不是C++普通RK续算证据 |
+| 原普通主程序回归 | FP64/viscous_flux TGV连续4步与2+2续算、输出隔离逐值一致，跨候选精确请求拒绝 |
+
+NP4是在本地两卡上共享执行标记组件，不声称四卡性能。最后的
+device真实通量Memcheck仍以99退出：数值到达PASS，但UCX
+Fabric/VMM探测报cuMemCreate/cuMemRetainAllocationHandle API
+错误，另记录IPC映射泄漏，性质与10.45已存工具组合问题相同。
+未屏蔽错误、修改公共MPI或把pinned结论外推为device工具通过。
+
+现行control.bin的contract(7) bit4登记关键历史语义，bit3仍记录
+10.87几何/顶面修订；FP64/scalar为24，viscous_flux为28，full
+另加原bit0。既有原位图格式未变。读入CPU/旧GPU历史后完成
+同协议协调；前一bit3修订批次精确请求被拒绝，显式非精确恢复
+物理场和固定步长时钟与当前对照相同。没有新增文件或旧格式兼容。
+
+证据根results/multi_backend_mb7_critical_history_20261115，
+summary.json索引实际二进制、报告及工具失败记录；candidate
+保存本轮源码、根构建缓存与实际程序。default_mixed_restart使用
+的C++普通程序SHA256为e50a9e3fb4d47bd9996936434c8175f72af43e628336205eb3c61c93922886eb。
+测试准备中路径缺少np1、未准备梯度却调用sensor准备、把包内
+scenario字段误作periodic等错误均在独立失败目录保留，最终
+测试使用原夹具真实周期定义；未修改生产梯度准入来绕过问题。
+
+后续仍需接通C++普通主程序完整crashfix阶段、热切换、检查点
+历史导入/导出并核对非零历史连续/续算；bc52普通主程序、
+原生FP32余项、更广消费者及DCU矩阵继续。未操作Git或远端任务。
+
+### 10.89 新C++普通FP64 crashfix阶段与非零历史续算
+
+接入既有repair_crashfix_cpp/repair_reconciled_cpp：全局滤波后
+按原规则修复并协调共享状态；边界及最终共享状态在普通物性核前
+检查非法输入；RK更新、海绵/壁面投影后先修复再计算普通物性。
+不清除fluid_failure、不新增回退或CPU场修复。压力门槛在首次
+准备时使用原thermal(1e-5,1e-5)，保留原乘法顺序及阈值。
+首次流场初始化不读取尚待steploop初始化/恢复的主机crinod。
+
+仅需时分配设备修复状态，开关关闭后不删除关键历史。检查点事件
+下载/上传byte历史并复用现行位图HDF5协议；普通RK没有整场q或
+历史回读。读取历史后按10.88协调所有者及halo，继续消费同一
+设备标记。修复仅接通现有FP64中央643e、KEEP643c或MP7-LD743e
+数值路径；原生FP32/mixed仍明确不支持该修复主链。
+
+首个无故障短测停于输入函数-1：诊断显示同模块VALUE回调传入
+空句柄，反汇编为无对应赋值的临时槽读取。将这几个纯Fortran
+恢复回调改为显式引用传参后通过；C ABI保持不变，不添加编译器
+版本分支或静默替代。两份失败日志保留，临时诊断输出已删除。
+
+本轮实际矩阵均为16³、4步，TGV dt=1e-4，平板dt=1e-6：
+
+| 对照 | 范围 |
+|---|---|
+| 普通程序、健康状态 | 中央643e NP1；NP2-y显式10滤波/scalar/dependency；KEEP NP2-z紧致10滤波；周期MP7-LD NP2-x/device/full；743e/643c、bc11/21/41/50剖面平板NP1 |
+| 实际非零修复 | 测试入口在流场初始化后将rank0一个节点密度置-1，其他推进/检查点均调用正常steploop；中央NP1及NP2-x显式滤波、KEEP NP2-z紧致滤波、MP7-LD黏性平板NP2-x/device |
+| 同模式精确恢复及输出隔离 | 每组连续4步与2+2；18个state数据集含位图、control/archives/insitu_control、完整q字词、标量和时间/dt逐值一致 |
+| 内存工具 | 健康中央NP2-y、健康黏性MP7平板NP1、非零历史KEEP NP2-z的pinned续算Memcheck均零错误/零泄漏 |
+
+CPU/旧GPU主程序分别作为实际可用的参考：旧GPU拒绝周期743e，
+故该项明确使用CPU，不修改旧准入；其他项用已修订旧GPU。
+MP7平板沿已批准的743e/643c静态输出合同，未为743e/643e另开
+输出准入。先前不匹配的参考通信选项、缺少PIE探针链接选项和
+未准入组合的失败都保留，均未通过放宽数值门槛解决。
+
+全部准备状态最大缩放差2.81828e-14，末场1.77330e-14，统计
+4.37428e-14，低于逐变量2e-10门槛。注入产生的非零位图在实际
+完整步检查点中存在，并在同模式精确恢复后逐字词相同；不是只
+把旧GPU组件位图写出后称新主程序续算完成。
+
+另在非零历史MP7平板，从step2显式非精确切换为crashfix=f，
+推进至step6并对比step4再次恢复：历史逐值保留、固定时间/dt
+一致，物理场最大差1.44305e-22，统计8.49995e-20。因为第一次
+选择exact_restart=f产生role11轻量检查点，第二次也按非精确
+恢复；首次误请求精确被既有规则拒绝，未改生产规则。这里不称
+轻量检查点逐位精确恢复，也不是运行中input.run轮询切换验收。
+
+最终普通程序af50001e1c8c0db602797f89555b44a4fc78da6bcb2bc2c1dbecf2a76ac94772；
+最终注入探针保留同批根构建的全部求解器对象，仅替换程序入口，
+实际SHA、链接命令见seeded_probes_final/build.json。最终MP7平板
+及KEEP非零续算复验使用原thermal阈值；早期代表矩阵使用直接
+1e-10/const2，因样本远离该门槛无触发差异，但仍分别记录版本。
+LP1以最终普通程序重验FP64/viscous_flux续算、输出隔离及跨候选
+拒绝，控制标志24/28，均通过；LP2和其他低精度范围未扩大。
+
+证据根results/multi_backend_mb7_crashfix_main_20261115，summary.json
+索引实际通过矩阵及未通过记录，candidate保存最终源码、构建和
+程序。10.88的device-MPI/内存工具联用限制仍单独保留。下一项
+为运行中开关重载、更广NSCBC/物理边界联合及其余MB6/MB7缺项；
+尚无此增量的DCU证据，无Git或远端操作。
+
+### 10.90 实际输入轮询与crashfix设备历史开关
+
+扩展独立测试入口，不给生产程序增加等待、注入开关或文件重试。
+按正常初始化建立设备状态后，调用真实poll_run_control、现有输出
+验证器及apply_run_input，依次检查off/on/off/on。使用合成的轮询
+位置1/2/3，物理时间不推进；不是完整RK运行期间外部进程改文件
+的轨迹试验，也不据此增加该项为新的长算例验收要求。
+
+初始off时读取设备历史返回NOT_ALLOCATED。首次on后在设备q中
+设置一个负密度节点，由实际cpp_check_state调用设备修复；随后
+两个开关变化要求健康q完整字词及关键历史不变，物理缓存严格有限、
+rho/p/T为正。NP1 pinned/explicit、NP2-x pinned/dependency及
+device/explicit均通过；另NP2 pinned Memcheck零错误、零泄漏。
+该组件与10.89实际四步推进、非零位图精确/非精确续算分别作为
+控制接线和时间推进证据，不互相冒充。
+
+证据results/multi_backend_mb7_crashfix_hot_20261115/final_control；
+final_build保存实际根构建对象重链接命令、源码及二进制散列，
+对应最终普通程序c687cc6d...。首次测试用整型数组直接调用ANY
+导致编译拒绝，随后误把测试模式放到第二CLI参数、被解释为输入
+路径；均为探针准备错误，记录保留，只改测试，没有修改生产解析器。
+
+### 10.91 bc52顶面普通主程序与KEEP/ME6联合
+
+接入已验证的boundary_state组件，不重新推导或替换原边界公式。
+支持本轮已有compatibility、incoming_only、nonreflecting及
+静态sbli_shock目标面的主程序接线；GRCBC完整装配仍未接入并明确
+报错。仅上边界所有者准备二维滤波面/目标面，不新增三维工作副本。
+静态激波参考调用原CPU标量发生器初始化后上传二维目标；重启恢复
+几何/物性后重新供给该静态目标，不在每个RK核往返主机求解。
+
+阶段顺序为：现有全局滤波及基本边界/共享/halo/物性准备；需要时
+计算滤波前边界最大法向Mach²；原条件下执行x、z六阶横向滤波，
+每方向后按10.87完成共享与halo刷新；重建物性后才计算导数/通量。
+顶面特征RHS在对流装配中添加负散度。原非反射黏性源项条件成立时，
+保存顶面黏性前RHS，黏性装配后用既有特征投影修正。没有清除错误
+标志、替换CPU闭合或重复滤波。实际修复发生时重算边界Mach²；
+修复接口只多返回阶段事件，不增加要保存的权威历史。
+
+本地实际四步矩阵，网格16³：
+
+| 配置 | 原始参考与新C++检查 |
+|---|---|
+| 黏性MP7剖面平板、543e/643e、bc11/21/41/52、compatibility、dt=1e-6 | 复用10.87修订后CPU/旧GPU；NP1、NP2 x/y/z，代表pinned/device及两同步策略；含实际顶面横向滤波 |
+| 同平板incoming_only | 新冻结CPU/旧GPU及旧GPU NP2-y/z；新C++ NP2-z device对照 |
+| 同平板静态sbli_shock | 使用原目标发生器，Ma2、x=5、角度36°；新冻结CPU/旧GPU后，新C++ NP2-x device检查二维分区目标供给及阶段场 |
+| 周期x/z、底壁41/顶面52的非反射TGV夹具、643e/643e、dt=1e-5 | 复用10.87已修统计参考；普通NVIDIA C++主程序NP1及NP2-y/z，最终NP2-y完整Memcheck |
+| 该非反射夹具KEEP或ME6 | 分别重新冻结匹配CPU/旧GPU；KEEP NP2-y pinned、NP2-z device，ME6 NP2-x pinned；正式检查点及2+2续算 |
+
+上述准备场/物性最大缩放差3.73959e-15，完整RHS最大2.44281e-13，
+末场1.40444e-15，统计2.51123e-11，均低于逐变量2e-10门槛。
+CPU对照的部分统计量与新C++逐值相同；旧GPU的较大统计差单独
+记录，不因此把统计一致性当作数值正确性的独立证明。
+
+KEEP及ME6同模式精确续算通过，ME6最终检查明确核对15个state
+数据集字词、三个控制文件、完整q和time/dt序列；KEEP的同样数据
+由证据汇总再检查。检查点/阶段观察开关不改变相应权威场与时钟。
+compatibility平板、standard非反射盒及ME6代表的pinned Memcheck
+均零错误、零泄漏。device仅声明数值结果，不覆盖10.45/10.88已知
+UCX与工具联用失败。
+
+证据results/multi_backend_mb7_top_main_20261115/summary.json，candidate
+冻结当前源码、缓存及程序。先期矩阵使用41ac12a4...；补恢复时静态
+目标供给后的最终程序为c687cc6d851439db75cc74db952a61429783c9860e5c38c9af1b4012557ce942，
+已重查KEEP/ME6续算、标准非反射、静态激波及10.90开关组件。
+LP1在最终程序仍保持24/28身份、同模式字词恢复、输出隔离及跨
+候选拒绝。首个平板测试把诊断范围止于step3，未产生step4终态
+快照；仅修测试采样范围，没有改推进或数值门槛。
+
+本节不是高阶边界、真正GRCBC入射、出口22/顶面52交线或长期
+SBLI物理验收。普通MP7平板这三种顶面模式的正式检查点注册尚未
+扩展；当前其证据是推进/诊断，不冒称续算已验证。非反射KEEP/ME6
+沿原有注册完成续算，没有扩展文件格式或引入兼容层。其余MB6/MB7
+联合、原生FP32和DCU继续，无Git或远端操作。
+
+### 10.92 普通MP7顶面平板的正式检查点
+
+仅扩展现有静态剖面资源注册：ninit=3、lreadgrid、无主动吹吸、
+543e/643e、物理空间MP7、bc11/21/41/52、standard黏性。保留原
+743e/643c、bc11/21/41/50注册及笛卡尔几何核对；不新增HDF5
+格式、附属文件或数值方法。全局/按rank存储及精确/轻量保存策略
+沿现行实现，GPU整场传输仅在已有出版/恢复事件发生。
+
+最初扩展暴露本轮新分支的配置身份遗漏：静态sbli_shock的七项
+目标参数原先仅在旧联合SBLI选择器内记录。恢复改变目标的短测
+未在边界身份处拒绝，而后被测试自身关闭检查点的日程差拦下。
+严格核对拒绝原因才发现该问题，不能把任意非零退出当作拒绝正确。
+现将现有driver_config(2)的七项原值记录用于实际启用bc52激波
+目标的非反应五变量路径；不改变既有编码或为旧缺身份记录放行。
+拒绝测试保持原输出设置，只改变实际使用的远场rho目标。
+
+16³、dt=1e-6、四步实际通过：CPU NP1 compatibility及sbli_shock；
+旧GPU NP1 incoming_only；新C++ NP1 compatibility、NP2-y pinned
+incoming_only及NP2-x device sbli_shock。每组连续4步与2+2恢复
+的15个state数据集、三个控制文件、完整q、统计与time/dt逐值一致；
+出版/阶段观察开关隔离通过。NP2-y恢复Memcheck两rank零错误、
+零泄漏。非精确恢复末场最大缩放差8.77772e-16，固定时钟一致。
+
+另以CPU NP1真实step2批次到新C++ NP1做非精确恢复，sbli_shock
+末场对新C++连续对照差1.33227e-15，固定时间步序列一致；不称
+跨实现精确续算。incoming_only及sbli_shock改变目标的精确请求
+在边界/驱动身份处拒绝。实际CPU阶段/末场对原冻结CPU差0，
+说明注册修订未改变CPU计算；新C++保留10.91的场/RHS/统计门槛。
+
+证据results/multi_backend_mb7_top_restart_20261115/summary.json。
+最终新C++为2f2d0690f7349b2ef4574948d93bcc8ca6cbef6b6b463cfb5eb9853e5ce6a0c3；
+参考原实现的最终数值/恢复二进制31e6e67f...，后续另加只读统计
+诊断钩子的2224891a...不冒充同一二进制。早期compatibility及
+incoming_only矩阵的散列分别保留；相应修订分支不使用激波目标。
+最终C++的LP1仍为24/28、同模式逐字恢复与跨候选拒绝通过。
+无Git、远端操作，未增加新的重试、回退、预算或生产全文件校验。
+
+### 10.93 N11：联合出口/顶面的旧GPU统计相位
+
+为迁移原有联合22/52开始冻结KEEP、643e/643e、nonreflecting
+剖面平板参考。16³、dt=1e-6、四步CPU与旧GPU的阶段场比较
+通过，但质量流量/壁面摩擦/热流/展向RMS的最大缩放差分别为
+3.25110e-6、1.04812e-5、1.41928e-6、8.77106e-10，拒绝该完整
+参考，不继续其MPI矩阵或新C++联合主程序移植。
+
+只增加ASTR_BUILD_TESTING且已有RHS观察开启时的统计输入快照，
+没有修生产时序。实测诊断前后12个pre_rhs和12个post_update
+完整文件逐字节相同，原GPU统计输出也逐值相同。统计输入与随后
+真实RK输入的差仅位于出口面i=16；step1的动量最大差6.63736e-3。
+按原八节点单元平均和实际笛卡尔体积独立积分，同一步得到：
+
+| 输入状态 | 重算质量流量 | 实际日志 |
+|---|---|---|
+| 旧GPU统计输入、出口滤波前 | 0.9287443354076662 | GPU 0.9287443354076661 |
+| 随后的真实RK输入、出口滤波后 | 0.9287412176277089 | CPU 0.9287412176277 |
+
+三个采样步均重现该关系。源码也表明：统计准备不包含该联合路径
+的出口滤波；真正的时间推进在统计之后才执行它。质量流量差已
+直接定位到输入相位，不是机器舍入；摩擦/热流差还需修正后复核，
+不凭该质量流量证据宣称其所有计算已正确。
+
+N11待人工批准：仅旧GPU KEEP/ME6、bc11/22/41/52非反射路径，
+统计前完成原出口滤波/halo准备，首个RK阶段复用而不重复滤波；
+不改CPU、公式、系数、RK或随机算法。要求原有实际RK状态、
+随机历史不变，再重新核对统计并冻结参考。尚未实施该修订。
+证据results/multi_backend_mb7_joint_open_reference_20261115/statistics_diagnosis.json，
+诊断是原生ASTR推进加只读观察，Python只作已有数据积分与比较。
+新C++联合移植在此参考门槛处等待决定，其他不依赖项可继续。
+
+### 10.94 已批准N11：统计与首阶段共用出口滤波状态
+
+用户明确批准N11最小修订。旧GPU的prepare_rkfirst_stats_gpu在现有
+profile_nonreflecting_corner_enabled路径中执行原出口物理滤波、
+原修复调用及halo更新；随后首个RK阶段仅在已prepared时跳过
+这一次已完成的滤波。后续RK阶段及未prepared路径仍按原顺序
+执行，不移除边界RHS。未修改CPU、滤波模板、系数、RK或随机
+算法，没有新增状态快照、工作区、重试或回退。
+
+16³、dt=1e-6、四步实际检查如下：
+
+| 路径 | 拓扑/附加检查 | 修订后CPU/GPU标量最大缩放差 |
+|---|---|---|
+| KEEP无全局滤波 | NP1；前后12份各阶段文件逐字节一致 | 4.26326e-14 |
+| KEEP原随机吹吸 | NP2-y；前后24份各阶段文件、两步/四步RNG控制字节一致 | 4.36318e-14 |
+| ME6原随机吹吸 | NP2-z；同上 | 5.07372e-14 |
+| KEEP开启全局explicit10 | NP2-x；前后24份各阶段文件逐字节一致 | 4.31877e-14 |
+
+每行的文件比较分别覆盖pre_rhs、post_source和post_update，不只
+比较末场或全域总和；完整time/dt序列不变。原统计失败的最大
+量级1.05e-5仍在before报告保留，没有被称为舍入误差。KEEP
+随机NP2-y另做2+2精确续算：HDF5状态逐值、三个控制文件、RNG
+历史、末步完整q字词和续算统计序列一致。
+
+已重新冻结无强迫的KEEP NP1/NP2-x/z和ME6 NP1/NP2-y CPU/旧
+GPU参考。四步阶段场/物性最大缩放差1.99817e-15，标量最大
+4.91829e-14，均满足原2e-10门槛。旧失败参考原地保留，新的
+有效参考使用新目录，不能用修复后的结果覆盖历史失败。
+
+实际原CPU/旧GPU新二进制同为
+3bb6a9db697ad83ae7fc43dd8cd300ba5db729e5678a08c2dee3534ad8e76848。
+本轮仅原GPU相位修复及新参考取得证据；新C++联合22/52接线
+仍待，不由参考通过替代交付。准备脚本最初误将namelist送入旧
+输入转换器，未启动CFD；修正本次夹具后才执行正式前后对照。
+
+证据results/multi_backend_mb7_n11_statistics_20261115/summary.json；
+复核入口tests/gpu_backend/run_nscbc_statistics_phase.py。
+
+### 10.95 原生FP32的CFL与瞬时标量组件
+
+在N11等待批准时继续不受影响的原生FP32前置迁移，随后完成本节
+独立检查。旧C/Fortran接口及工作区固定double；新的FP32探针
+在修改前编译明确因fluid_cfl、fluid_cfl_diagnostics、fluid_statistics
+参数/输出kind不匹配而拒绝，before_build.log保留17项诊断。
+
+现将这些API、内部算术、Max记录value、共享/归约工作区及复制
+字节统一为共享构建类型；channel/flat瞬时积分复用同一标量工作
+区，接口同时类型化。固定索引键仍为int64，性能计时合同不变。
+既有方向最大值、节点和最大值、平局取最小全局键、MPI全局归约
+及锁存错误语义均未变。没有保留FP64统计/CFL例外，也没有按
+诊断整场回读；返回量仍为少量标量及显式请求的一维剖面。
+
+新增根CMake探针astr_backend_native_diagnostics，真实C ABI及
+Fortran/MPI下检查：16³恒定及非均匀场、两种同步模式、有/无量纲
+声速、NP1及NP2-x/y/z。二进制可精确表示的夹具要求数值和缓冲
+边界精确匹配；非均匀样例方向最大值为6/12/24，最大节点和为38，
+明确避免把两种CFL定义混用。平局全局键、局部y选择和未选择
+剖面范围均检查。恒定TGV能量/拟涡能/耗散与守恒极值、channel
+及flat积分精确匹配，原q字词不变。负温度返回现有无效谱错误，
+后续合法上传也不会静默清除它。
+
+最终八组报告为FP32 NP1/NP2-x/y/z、FP32 NP1 Memcheck、FP32
+NP2-y Initcheck、FP64 NP1/NP2-y。内存工具报告零错误，Memcheck
+零泄漏。扩展壁面积分探针最初误给物理节点坐标字段上传带halo
+数组，因长度错误拒绝；仅修本次测试布局，未扩大生产分配。
+早期不含壁面积分的通过记录保留，最终矩阵独立存于final/。
+
+另保留FP32诊断对象及简化CFL核的实际SASS：所选函数未发现
+FP64算术指令；通用混合存储读取分派仍有F64转F32指令，不宣称
+因此存在双精度推进或高精度场镜像。类型/算术合同来自接口、
+工作区和运行证据联合，不仅依赖一次汇编搜索。
+
+受影响FP64普通主程序NP2-y、incoming_only MP7顶面平板重验，
+阶段/物性最大缩放差2.66454e-15，统计4.60743e-14；15个state
+数据集、控制、统计、时钟和完整q同模式精确续算一致，观察隔离
+及改变目标的正确身份拒绝通过；非精确恢复末场差4.44089e-16。
+最终普通C++二进制为
+996eb20c3d1c1ec00af853ad7c9f91b2bc3c121f8e98edb1517e2926df159453。
+
+证据results/multi_backend_mb7_native_diagnostics_20261115/summary.json，
+candidate记录源、测试、构建缓存和各实际二进制；仅新增注释的
+后续源码记录不被当作新数值运行。没有生产性能测量或净显存
+收益声明。普通FP32时间控制、时间累计统计、紧致/物理边界/输出
+及原位消费者、DCU矩阵仍未完成；严格FP32整程序限制未放开。
+本轮没有Git、远端或Slurm操作；完整MB6/MB7 goal保持未完成。
+
+### 10.96 新C++联合22/52：KEEP/ME6主程序及紧致耦合
+
+以10.94已通过的原CPU/旧GPU参考为准。修改前真实普通C++
+程序在bc22状态分派处拒绝，before_keep_np1保留该失败；不是
+以移除错误返回代替数值接线。现复用原
+profile_nonreflecting_corner_enabled范围准备联合出口：基本入口/
+底壁和halo完成后执行原出口横向滤波、修复/halo及原始量刷新，
+再由相同状态供统计和RK。现有出口滤波已经保留施加的底壁行，
+本次未另写滤波闭合。没有整场CPU往返或新增3D快照。
+
+对流先完成原体积项、顶面法向/切向项和出口项；在x+/y+交线
+按原几何法向、特征矩阵及64 epsilon分类，对总对流RHS移除
+传入y特征分量。新增nscbc_top_outlet_corner设备核只处理该线，
+不修改场、法向分类、松弛参数或黏性源项的原适用范围。入口
+顶角仍归剖面入口；底壁沿原低阶规则。其他模式不借此放开。
+
+16³、dt=1e-6、四步新C++实际通过：
+
+| 格式/阶段 | 代表矩阵 |
+|---|---|
+| 显式KEEP 643e/643e | NP1、NP2-x/z device、NP2-y pinned及精确续算Memcheck |
+| 显式ME6 643e/643e | NP2-y device、NP2-x device精确/非精确续算 |
+| 紧致KEEP 643c/643c、不启用全局滤波 | 原CPU/旧GPU NP1/NP2-y参考；新C++ NP2-x device及精确/非精确续算 |
+| 紧致KEEP＋compact10 | 原CPU/旧GPU NP1/NP2-y参考；新C++ NP2-y device/full及续算，NP2-z pinned/scalar及Memcheck |
+
+通用halo的device和紧致私有接口的device-aware分别显式选择；
+不把通用通信选择冒充PCR接口选择。保留全局两层PCR耦合及
+原周期未知量，没有按rank独立闭合。compact10两种存储均
+核对真实阶段与末场，不以申请工作区成功作为滤波可用证据。
+
+相对原CPU/旧GPU的最大缩放差：准备场/缓存7.25261e-14、完整
+RHS 8.18909e-16、末场2.83526e-14、统计9.99201e-14，均在原
+2e-10门槛内。精确代表的15个state数据集、三个控制文件、
+完整q、统计和time/dt逐值一致；非精确末场最大差3.97047e-23，
+compact10/full代表为0。观察/输出开关隔离通过。两项pinned
+Memcheck代表均零错误/零泄漏，不改变既有device/UCX工具异常
+的单独记录。
+
+程序已有profile_low_order_nscbc输出合同，本次实际检查发现
+无需增加静态剖面注册或新文件版本。名为before_static_checkpoint
+的预检查实际通过并保留为有效NP1证据，不记成失败。检查点
+资源继续记录几何、网格、入口及初始化资源，派生出口平面不入盘。
+
+普通程序SHA256为
+f7a7a65c726aa82c641d25365b61232a653775854da335c8f4df0b9b07bbdb80。
+证据results/multi_backend_mb7_joint_top_main_20261115/summary.json。
+以上是低阶非反射KEEP/ME6子集，不是全部联合NSCBC、真实SBLI
+或DCU验收。普通MP7联合路径需要复现其提前出口RHS及后续
+壁面/顶面状态顺序，不能套用本节的同状态装配。
+
+### 10.97 联合路径的统计、吹吸和数值产品
+
+沿10.96的真实主程序继续检查消费者，没有新写统计或渲染算法：
+
+- ME6、NP2-z device、自动dt增长1.1及物理时间采样：先冻结原
+  CPU/旧GPU统计参考，再与新C++比较。紧凑统计文件的32个
+  通道最大缩放差1.66534e-16。采样开关保留物理场和完整守恒
+  halo字词，派生速度/温度周期halo允许原有刷新；中间写出
+  开关、2+2精确续算的状态/统计/控制/标量均通过原检查。
+- KEEP、NP2-y原legacy_random吹吸：使用同拓扑原CPU/旧GPU
+  参考，不将依赖rank的随机强迫与不同拓扑强行逐点比较。阶段/
+  更新场最大缩放差2.88642e-15，统计4.36318e-14；观察/输出
+  不改场与时钟，2+2恢复状态、RNG/控制和统计一致。
+- KEEP、NP2-x：8个既有壁面数值产品及选区时间平均，覆盖原始
+  壁面平面、全/部分展向平均、壁面线、黏度、剪切和热流；原
+  CPU/旧GPU先冻结。对独立加权积分的最大缩放差5.32908e-16，
+  对原参考产品不超过1.24345e-15。产品开关不改状态，恢复后
+  各产品数据逐值一致，选区统计文件精确恢复通过。
+- KEEP、NP2-z：实际写出/读取两帧三维原始量和27份固定索引
+  数值截面，后者含Q、速度散度与密度梯度幅值。各字段/坐标/
+  时刻沿原门槛比较CPU、旧GPU、新C++；输出关/开物理q一致。
+  三维出版实际回读2659392字节、截面结果561816字节，与原
+  按产品/事件计数一致，不在RK核后整场回读。
+
+本轮未生成新图片或调用Catalyst，普通构建ASTR_WITH_CATALYST=OFF；
+不能把数值产品文件称为该新联合路径的渲染验收。原有其他工况
+的图片证据保留，其范围不自动扩大到本节。
+
+另为下一项冻结原743e/643c MP7-LD联合incoming_only参考，
+CPU/旧GPU NP1/NP2-x/z四步的完整RHS最大缩放差1.62597e-11，
+场/缓存3.23765e-15、末场3.64582e-14、统计4.68515e-14，均在
+原门槛内。它仅证明原实现参考可用，不是新C++的MP7联合交付。
+本轮无Git、远端、Slurm操作，未新增预算、fallback或兼容层；
+完整MB6/MB7仍待MP7联合/GRCBC/高阶开边界、更广工况/消费者、
+保正与低精度余项及新的DCU执行证据。
+
+### 10.98 MP7-LD提前出口RHS阶段与N7遗漏
+
+接入原743e/643c、bc11/22/41/52 incoming_only路径，不套用
+KEEP同状态装配。prepare_staged_profile沿原顺序完成全局
+滤波/halo、剖面入口、仅出口/底壁交线、出口滤波及其RHS、
+完整底壁、顶面滤波及其RHS。wall41_outlet_y复用原压力外推
+及几何法向规则。吹吸每阶段采样一次，完整底壁复用该值。
+
+首版末场展向动量缩放差7.88616e-9，超过2e-10，停止后续
+矩阵/续算检查。首阶段边界RHS最大绝对差2.33921e-4位于顶面，
+物理准备q/原始量却已接近参考。原因是新实现x滤波后的q交换
+没有刷新原始量halo，而原exchange_solution_halo_gpu会刷新。
+补齐后末场对CPU差2.56264e-14，对旧GPU约1e-15；不放宽阈值。
+
+另发现已批准N7的遗漏：prepare_profile_nscbc_gpu仍在z滤波后
+先算顶面RHS、再交换。按原批准范围把原交换移到RHS之前；
+主lfilter=t、非反射及GRCBC不借此改变，CPU公式不再修改。
+CPU前后12阶段物理q、六物性、RHS和更新字词完全不变；旧GPU
+四步RHS最大绝对变化4.00881e-13，场/缓存变化8.88179e-16。
+重新冻结修后原CPU/旧GPU NP1/NP2-x/y/z参考，旧3bb6a9db...
+参考原地保留，不冒充当前同相位参考。phase_diagnosis.json
+分别记录这两项原因；跨修订不称精确续算。
+
+### 10.99 直接保留RHS及输出/续算
+
+首版曾借二维滤波平面暂存边界RHS，已有有效场和续算结果。
+核对写入关系后，确认紧致梯度kind1、传感器、黏性通量准备
+和标量统计都不覆盖Euler RHS，MP7体积差分只累加内部范围。
+最终直接保留原qrhs，并跳过该分阶段路径在体积对流前的第二次
+清零，沿用原GPU方式。无需新快照、复制/合并核、持久状态或
+方案开关。二维版源码/程序保留two_plane_variant/；五组NP1/
+NP2-x/y/z及紧致滤波的540个阶段文件逐字节一致，见
+rhs_storage_comparison.json。此处没有计时或性能收益声明。
+
+首次启用检查点在初始化被拒绝：ninit3静态剖面资源未登记该
+联合出口。复用profile_nscbc_outlet_enabled扩展原743e/643c
+静态资源路径，保留Cartesian核对、原资源/格式及精确/非精确
+语义，不增加派生RHS文件，也不更改数值格式的计算准入。
+
+16³、dt=1e-6、四步最终C++通过：NP1；NP2-x device；NP2-y
+pinned/dependency及恢复Memcheck；NP2-z device/explicit及恢复；
+NP2-y device/dependency、full存储的compact10全局滤波及恢复。
+通用halo与PCR私有接口分别选择device/device-aware，不混称。
+准备场/缓存最大缩放差6.87025e-14，边界及完整RHS对CPU最大
+1.62597e-11，末场3.13279e-14，标量9.99201e-14，均满足原门槛。
+约1.63e-11的CPU/旧GPU RHS差本就在原参考内，不归因为新C++，
+也不未经归因称为纯舍入。CPU边界快照记录正散度，GPU为负
+散度，boundary_sign_normalized仅统一该既有符号约定。
+
+代表连续4步与2+2精确恢复的15个state数据集、三个控制文件、
+完整q、标量及time/dt逐值一致；非精确恢复代表末场差0。观察/
+输出开关隔离、改变实际远场目标的正确身份拒绝通过；最终
+NP2-y Memcheck两rank零错误/零泄漏。原CPU同模式输出/恢复
+也通过，阶段/末场对冻结CPU差0。
+
+同拓扑NP2-x原legacy_random吹吸另经CPU/旧GPU冻结，再做最终
+C++ device与PCR device-aware推进、输出及恢复；场、统计、
+RNG历史和2+2恢复通过，不强行跨拓扑比较rank依赖随机强迫。
+
+### 10.100 已批准MP7联合主统计及数值消费者
+
+原主统计算法已存在，但联合MP7的“主统计＋检查点/精确续算”
+合同仅登记KEEP/ME6；首次mean_reference在计算前被明确拒绝。
+误提前调用的C++比较因缺少参考也未启动CFD，mean_np2x_device
+保留为准备失败，不算数值结果。
+
+用户明确批准743e/643c incoming_only同拓扑扩展后，仅在原输出
+检查加入该组合。不改CPU44/GPU12累计算法、32个GPU序列化
+通道、公式、格式或阈值。自适应输出限制不变，不能与自动
+时间步混淆；没有启动独立统计数组框架重设计。
+
+原CPU/旧GPU16³固定/自动步长、物理时间采样四步参考均通过：
+采样开关保留物理场和完整守恒halo，2+2状态/统计/控制精确。
+新C++ NP2-x device/dependency两种时间步模式，32个统计通道对
+旧GPU最大缩放差4.44090e-16，精确恢复的状态/统计/控制/标量
+一致。派生速度/温度周期halo保留原有采样刷新许可，不强迫
+无关缓存新鲜度相同；CPU44与GPU12不同协议不作为同一数组比较。
+
+8个既有壁面数值产品和选区平均在NP2-y复核，对原CPU/旧GPU
+最大缩放差1.42109e-15，对独立加权积分5.32907e-16；产品开关
+不改状态，恢复后产品数据逐值一致。NP2-z两帧三维原始量和
+27份含Q/散度/密度梯度的数值截面已实读比对，字段最大缩放差
+9.71322e-13，输出开关物理q相同。本轮未运行渲染。
+
+最终程序还复核KEEP联合路径与LP1：F64/mixed_viscous身份24/28，
+各自15个state数据集、控制/标量/时钟/完整q精确恢复、输出
+隔离及跨候选拒绝通过，未扩大LP1/LP2。当前普通C++为
+828a9cf0a97618a9ecb952359e558992d5a39fc474995bbcccb4aecad357a4bd；
+含统计合同的原CPU/旧GPU为
+1973a79938b48708e69ec92ec7e9594ff717be5f4b07a609fc13a18353d6b95e。
+早期二进制、失败及暂存方案证据分别保留，不冒充同一构建。
+
+总索引results/multi_backend_mb7_staged_outlet_20261115/summary.json。
+无Git、远端/Slurm操作；没有新增预算、兼容层或fallback。更广
+联合MP7/GRCBC、高阶开边界、更广CURVE/消费者/源项、保正和
+低精度余项及新的DCU执行证据仍待，完整MB6/MB7未完成。
+
+### 10.101 GRCBC特征代数的原生C++设备组件
+
+新增私有nscbc_incident_math.cuh，逐项迁移原共享
+nscbc_incident_body.inc的传入速率、法向特征导数、熵/剪切对流
+相容项及完整RHS投影。矩阵/法向三点线保留Fortran列主序，
+精度取astr::numerical_real；本轮仅验收FP64。没有把测试专用
+audit_incident_low_rhs当成生产闭合，也未改原边界公式、阈值、
+主程序准入或检查点身份。激波两侧状态和几何参考仍由原实现
+构造；新头文件本轮只接组件，不冒称GRCBC主程序已交付。
+
+复用原nscbc_incident_probe，以可选输出参数冻结原CPU的九类
+法向状态、独立Euler左右基、法向线及六类结果。原探针既有
+Rankine-Hugoniot、参考面归属、传入/传出波及几何抵消断言保留。
+原CPU与CPU/旧GPU探针导出的CPU数据包逐字节相同；旧GPU
+两组最大绝对差分别6.75016e-14、4.54748e-13。
+
+根CMake目标astr_backend_incident_math实际在NVIDIA设备执行：
+亚声速流入/流出、超声速流入/流出、零法向速度、正负声速及
+正负1e-16近零速度，共九种状态，传入波数逐项为
+1/4/0/5/1/0/4/1/1。对原CPU的最大绝对差：速率9.19404e-15、
+特征速度0、完整RHS4.54748e-13、法向特征9.76997e-15、相容
+闭合9.09495e-13、自由流几何抵消2.13163e-14。传入目标、
+出射保留、后加源项、幂等性和参考状态保持的不变量最大误差
+5.00223e-12，均低于原2e-10门槛。另核对既有零法向间距、
+非正Jacobian的状态码及不写入规则，未增加新的生产检查。
+Compute Sanitizer Memcheck为零错误、零泄漏。
+
+首次构建因未重新生成新目标而未找到规则；根CMake重新配置
+后，设备函数内直接调用标准库epsilon被NVCC拒绝。改为同一
+类型的命名空间constexpr，不添加宽松constexpr编译选项。
+失败构建日志保留；它们不是数值失败或被跳过的验收。
+
+可复现脚本run_incident_math_components.py保存实际命令、程序
+与来源SHA256、原始数据包和源码副本，证据为
+results/multi_backend_mb7_incident_math_20261115/reproducible_gate/report.json。
+本轮没有整场/每核主机往返设计，没有新预算、Git或远端操作。
+普通C++主程序二进制保持10.100版本，不宣称新GRCBC主链、
+MPI、续算、CURVE或DTK执行已经验收。
+
+继续主链前已重核KEEP进度LA3-14的CPU低阶GRCBC交线缺陷：
+CPU出口和顶面在x+/y+都未装配展向项，旧GPU出口已有一次贡献；
+冻结状态原始差1.063046e-7由漏项预测，残差2.71064e-19。
+该CPU修复及低阶恢复身份v2到v3尚待单独批准，当前未修改；
+组件对照不依赖此面/交线装配缺陷，也不能替它关闭三维黏性门槛。
+
+### 10.102 无黏二维GRCBC的普通C++主链
+
+在不依赖LA3-14非零展向漏项的已验证无黏窗口内，继续接通
+原生主程序，不停留在10.101代数组件。使用原Ma=2、beta=40度、
+x_entry=.25、1×1×.125域、16³区间、dt=1e-5、四步夹具，
+bc11/22/421/52/1/1，静态prof、KEEP，滤波/crashfix/主平均关闭。
+初场及激波参考无展向变化；z分解检查通信接线，但不据此关闭
+非零展向输运的三维黏性门槛。原CPU/旧GPU参考先重新冻结，
+CPU交线分类和恢复v2身份未修改。
+
+prepare_top_boundary_cpp在初始化/恢复时用已有主机几何和原
+incident_reference生成顶面二维平面：五个外部守恒分量及物理
+法向间距hn。只上传这一派生平面，不新增整域坐标镜像或派生
+检查点文件。每stage保留原入口、出口滤波/RHS、滑移底壁、
+原始顶面RHS及共享/halo顺序。KEEP显式累加和紧致KEEP的
+全局PCR提交均保留已装配的设备qrhs，不清空边界贡献，不加
+快照。新retain_rhs调用参数仅表达这一内部装配依赖，既有调用
+不传参数时仍按原规则清空，不是运行方案或恢复兼容层。
+
+top_policy=3保留原始法向特征与横向项，不套用目标松弛/非反射
+投影，也不施加顶面自身横向滤波。在对流、黏性和case源项后，
+调用10.101代数替换传入特征，保留熵/剪切相容项及出射波。
+原入口/顶面交线归入口，出口/顶面亚声速未实现条件仍报告状态4；
+原1/2错误码及MPI全局判断保留。设备只回传边界状态码及通用
+准备阶段已有法向马赫数标量，不在每核回传流场。新增状态码
+缓冲纳入原设备上下文释放；没有新增fallback或重试。
+
+本地八个主链配置通过：
+
+| 窗口 | 新C++代表 |
+| --- | --- |
+| KEEP 643e/643e、入射响应 | NP1；NP2-x device/dependency；NP2-y pinned/dependency及恢复Memcheck；NP2-z device/explicit |
+| KEEP 643c/643c、入射响应 | NP1；NP2-y device/dependency及独立PCR device-aware；NP2-z pinned/explicit及恢复Memcheck |
+| 643e/643e、外部激波远离计算域 | NP1常量保持及恢复 |
+
+相对原CPU/旧GPU，准备场/缓存最大缩放差3.55272e-15、完整
+RHS1.15206e-14、末场2.99761e-15、标量3.99680e-13，均低于
+原2e-10。独立首stage Euler声学投影残差2.66454e-15，出射
+改变量4.06576e-20，投影幂等残差1.11023e-16；这不是仅有
+三份程序之间相近。实际顶面密度响应约1.38873e-4，常量代表
+顶面密度变化0。无黏增量为0，不称为黏性源项验证。
+
+八组均检查连续四步与step2恢复：15个state数据集、三个控制
+文件、标量、步号/time/dt逐值一致；恢复移除本地网格/入口/
+初场文件，使用现行资源协议。观察/检查点开关下，NP1的98415
+个及NP2的138510个完整守恒q字词（含halo）相同，时钟也相同。
+两项NP2恢复Memcheck各两rank均零错误/零泄漏，没有提高诊断
+栈或新增预算。普通紧致非反射KEEP NP2-x和MP7-LD incoming_only
+NP1另复核原冻结参考、输出隔离和精确/非精确恢复，均通过；
+没有重跑与本次改动无关的长窗或所有可选组合。
+
+主程序SHA256为
+3f2c0ddd7bec5084f1bab64142c1e6b852f1ed0c76fb6176fac38aa90908f70d。
+来源/构建参数快照及总索引为
+results/multi_backend_mb7_incident_math_20261115/main_candidate/manifest.json、
+main_summary.json。每组保留实际输入、程序、原始阶段、场与
+恢复记录；run_cpp_incident_gate.py可重建本轮检查。无Git、
+远端/Slurm或渲染操作，未改文件格式。
+
+LA3-14的CPU交线修复与v3身份仍待批准。新C++已有一般低阶
+代数接线，但上述证据只准入该无黏二维窗口，不能认领一般
+三维黏性GRCBC、更广ME6/SBLI、高阶开边界、原生FP32或
+DCU已验证；完整MB6/MB7仍未完成。
+
+### 10.103 H1高阶开边界的生产数学依赖
+
+继续迁移不依赖LA3-14 CPU交线漏项的H1链。读取原H1主链及
+boundary_high_order_body.inc后，先提取实际生产依赖，而不是把
+测试候选一并纳入：新增私有high_open_math.cuh，包含匹配内部
+D6七阶矩的三行六阶导数、物理端界面行/方向分类、六阶FD数值
+通量及传入七阶差分耗散、局部六阶滤波、八节点法向通量/几何
+抵消和七点外部原始变量特征速率。数组保持Fortran列主序，
+类型取astr::numerical_real；本轮只验证FP64，不改原CPU公式。
+
+特征速率保留完整RHS/J中的横向和源项，对全部传入波补入
+原法向项并减去外部导数项，不把低阶GRCBC的仅熵/剪切相容
+公式代替H1公式。外部线跨解析激波时，沿用原两态一阶差；
+未跨越时沿用七点Neumann权重。这是原不连续前沿分支，不是
+新增回退。未迁移test-only的inlet-compatible、连续传感器权重、
+阶段余量预算或正值滤波等候选，不据原探针含有这些测试而
+认领它们已接入新后端。
+
+原high_order_boundary_probe只增加可选的参考输出，不改既有
+矩、常量、限界候选及制造解断言。冻结十组单位基/常量/阶跃
+标量样本、十组外部状态/声学临界附近速率、变Jacobian和三
+物理分量度量的法向线，以及32/64/128拉伸度量、变量黏度的
+两次微分参考。原CPU和CPU/旧GPU探针生成的CPU数据包逐
+字节相同；原旧GPU整体最大逐点缩放差1.05911e-12，通过其
+原2e-10门槛。此处没有重新冻结缺陷三维黏性GRCBC轨迹。
+
+根CMake目标astr_backend_high_open_math实际设备执行结果：
+
+| 组件 | 对原CPU最大绝对差 |
+| --- | --- |
+| 三行六阶导数 | 1.33227e-15 |
+| 入射/出射六阶数值通量 | 1.11023e-16 |
+| 局部六阶滤波 | 0 |
+| 七点/跨前沿特征速率 | 2.25515e-17 |
+| 八节点法向通量导数 | 2.57433e-15 |
+| 几何抵消项 | 3.46945e-17 |
+
+四种端点类型、node=-1:16的72组行/方向分类逐整数一致。
+常量导数、滤波及数值通量逐值保持；常量状态的法向通量导数
+与几何项相差9.97466e-16。复合算子实际在设备完成梯度、变量
+黏度通量及第二次差分，不以Python计算代替：对原CPU最大
+逐点缩放差1.40297e-12，均低于原2e-10；近边界解析误差为
+3.90667e-4、7.28434e-6、1.24014e-7，观测阶5.74500/5.87623，
+满足原探针5.5门槛。Compute Sanitizer Memcheck零错误/零泄漏。
+
+run_high_open_math_components.py保存三份实际探针程序、命令、
+输入/期望数据、源码及SHA256；总证据为
+results/multi_backend_mb7_high_open_math_20261115/reproducible_gate/report.json。
+没有新增预算或环境方案开关。普通CPU和C++主程序仍分别保持
+10.100的1973a799...与10.102的3f2c0ddd...二进制，不为这个私有
+组件的新增和文档改动重跑已通过的普通主链矩阵。
+
+尚未把high_open_math接入普通主程序：还需迁移H1近端通量
+装配、主推进梯度/黏性近端闭合、完整出口/顶面特征及其交线、
+壁面和阶段约束，再冻结真实H1状态与原实现做同状态/短轨迹、
+代表MPI及恢复检查。组件收敛不等于H1求解器稳健性、物理
+验收或DCU执行；高阶开边界主链和完整MB6/MB7仍未完成。
+
+### 10.104 H1同状态梯度、传感器与完整对流装配
+
+接通真实设备算子，不只停留于10.103标量公式。新增内部
+upwind_high_order_axis_cpp入口，复用原FP64界面工作区、Steger
+分裂、Roe矩阵、传感器与critical历史规则。只有物理端三行
+附近、未标记激波且无critical标记时使用原H1偏置六阶FD数值
+通量；其他位置保留原MP7-LD/Roe或critical分支，不增加用户
+配置。上物理面被调用范围包含时，法向采用原八节点通量
+导数，切向采用界面通量差，覆盖x+/y+交线的三个方向。
+普通/H1界面核及差分核按编译期模板分开，避免普通路径携带
+高阶法向分支的局部数组；未据此宣称计时收益。
+
+fluid_gradient_high_open只初始化一次基本梯度，再逐物理方向
+复用原匹配七阶矩的六阶修正核，保留先前方向在交线的贡献。
+原单方向high_wall入口复用同一核；没有把基本梯度重算三遍，
+也没有新全场工作数组。温度和速度梯度都进入检查，现有原始
+Ducros/压力曲率传感器不变，未启用H1的仅压缩或其他候选。
+
+参考采用原16³ Ma2的平滑熵波与40度斜激波两个初场，各一步
+固定dt=1e-5、三stage，743e/643e、bc11/22/421/52/1/1，无黏、
+无主滤波/crashfix/平均。先运行并核对原CPU/旧GPU，再执行
+新组件。熵波三个stage均零标记，斜激波各2788/4913节点标记；
+原输入/缓存、梯度、传感器及内部对流差均通过原2e-10门槛。
+
+#### 先澄清原始conv的规定面相位
+
+尝试把原始conv直接作全物理节点参考时，首个探索比较失败：
+熵波差1.917474e-6，最大点在底壁；斜激波旧GPU在入口/底壁
+每stage有850个临时非有限分量。只读检查确认：原GPU随后
+通过high_order_zero_prescribed_rhs_kernel清零这些规定面的
+RHS；原CPU的相应conv已经为零。所有自由节点（含出口、
+顶面和交线）有限，差≤2.10721e-18；原完整post_source全场
+亦有限、差≤2.10721e-18，两个后端规定面均精确为零。不能
+把这份原始中间量差当作已传播的RK误差，也不扩大到未检验
+的黏性H1。phase_diagnosis.json保留失败值及所有权解释。
+
+未修改原CPU/旧GPU计算、没有静默清理原数据或放宽阈值。
+pack_high_open_full_reference.py只读原始记录，明确生成
+“既有规定面清零后、完整特征前”的派生对流参考；原始含非
+有限项的快照保留不动，同时要求自由面与完整RHS门槛通过。
+C++从零RHS开始，不计算不归算子所有的入口/底壁项；这不是
+检测NaN后截断的修复分支。最终检查仍包含所有开放物理面。
+
+#### 最终设备对照
+
+五组最终配置：熵波/斜激波各NP1；斜激波NP2-x device、NP2-y
+pinned＋Memcheck、NP2-z device。每rank24组，覆盖原CPU/
+旧GPU三个stage、显式/依赖同步、冻结/原生梯度；其中12组
+逐rank核对原生温度梯度。传感器标记逐整数一致，q物理节点
+字词不变，界面工作区复用。最大缩放差：完整对流RHS
+1.29698e-17、速度梯度8.76337e-15、温度梯度3.50535e-14。
+NP2-y Memcheck两rank均零错误、零泄漏。
+
+当前普通MP7入口的72组旧组件检查通过；非均匀x壁面主程序
+NP2-y device的四步/2+2精确续算、输出隔离亦通过，检查的是
+本次共享梯度辅助函数改动，并非新的H1主程序。普通程序
+SHA256为5b2f1d2d6f666377aa73d391458ae73636968712ba525acd1555367d5db2cfb6；
+组件程序为91bc9d718db45ac480a87c854147b861f935ba628c6641f6e30b66447e9f30b4。
+
+总索引results/multi_backend_mb7_high_open_flux_20261115/summary.json，
+原始参照reference/、明确相位的派生包full_reference/、源码/
+构建参数candidate/分别保存。早期仅内部节点的探针结果单列
+历史，不冒充最终含物理面的程序。无新增预算、Git、远端或
+Slurm操作。
+
+仍需接入H1完整特征出口/顶面、壁面与阶段准备、黏性联合，
+再做新C++普通主程序及输出/续算/消费者验证；本轮不能认领
+H1已完成主推进或物理稳健性。LA3-14 CPU修复仍待批准，
+高阶/H1余项、其他精度/工况与DCU执行仍在完整MB6/MB7目标内。
+
+### 10.105 H1完整特征、壁面与普通主程序
+
+原CPU/旧GPU数学源与10.100冻结清单核对无变化，先冻结现有
+熵波、40度斜激波和弱三维扰动黏性剖面的四步参考，再改C++
+消费者。统一16³、dt=1e-5、743e/643e、MP7-LD bfac=.1、
+静态prof、GRCBC；无黏两例底壁421，黏性例底壁41、Tw=1、
+Re=1000。保留原夹具初场公式，关闭全局滤波、crashfix和主
+平均；原瞬时flowstate诊断仍输出。改动前C++在计算前明确
+拒绝H1，before/保留为缺失接线证据，不记作数值失败。
+
+本轮接通原H1定义，不接未获准的H1候选：
+
+- 出口先按八节点法向项修正传入特征，再在顶面及x+/y+交线上
+  应用原七点外部导数与完整RHS投影；传入/传出分类、回流
+  目标及原状态1/2/4含义保留，规定入口/底壁RHS最终为零。
+- 七点Neumann重构用于H1代数壁面：41重构压力并保持Tw/指定
+  壁速，421还重构温度和速度并作几何法向投影。它不同于
+  channel Hermite7的动态密度壁面，未混用两者状态/RHS规则。
+- 出口局部六阶滤波采用原高阶端部行；顶面自身横向滤波仍关。
+  阶段保留原入口、出口/底壁交点、出口滤波、完整壁面和
+  共享/halo顺序，不把低阶NSCBC面RHS提前叠加到H1体算子。
+- 黏性使用原nodal 643e及各物理方向高阶近端行；完整面累加
+  后再施加特征和规定面约束，不以低阶壁面带代替它。活跃
+  H1＋ME6近端带尚未接入，明确拒绝该未实现组合。
+
+初始化/恢复时，顶面owner仅上传二维派生平面：七组外部
+rho/u/v/w/p、最后一个外部q、物理间距hn及跨前沿标记，共42
+分量。非顶面rank只准备状态码；可以拥有出口而不拥有顶面。
+不新增整域坐标镜像、RHS快照、检查点字段或文件，主推进不
+回读整场。接口和kernel沿原C ABI/设备上下文，默认与其他
+后端选择不变。测试构建显式请求未移植H1候选时拒绝，不静默
+改成原H1算子。
+
+#### 七组本地普通程序代表
+
+| 夹具/时间步 | 新C++检查 |
+| --- | --- |
+| 熵波、固定 | NP1；四步同相位、观察/输出隔离、2+2精确恢复 |
+| 斜激波、固定 | NP1；同上 |
+| 弱三维黏性剖面、固定 | NP1、NP2-x device/dependency、NP2-y pinned/dependency及恢复Memcheck、NP2-z device/explicit |
+| 熵波、自动 | NP1；CFL目标.5、initial_dt=1e-5、max_dt=2e-5、growth=1.1；原CPU/旧GPU先冻结，精确及跨后端非精确恢复分开 |
+
+相对原CPU/旧GPU，准备q/缓存最大缩放差7.03438e-15、完整
+post_source RHS8.78204e-18、末场5.74389e-15、瞬时标量
+4.90719e-13，均满足原2e-10。七组末场有限，rho最小.811717、
+内能密度最小.362374，均严格为正。每组精确恢复的15个state
+数据集、三个控制文件、标量及step/time/dt逐值一致；输出/
+观察开关保持完整q及守恒halo字词和时钟。NP2-y恢复Memcheck
+两rank零错误、零泄漏，不需栈上限调整。
+
+#### 非精确恢复首次失败是对照时间错误
+
+原连续自动四步到4.641e-5；按已批准AT合同，非精确恢复采用
+当前input.run重建控制器，从step2的t=2.1e-5使用1e-5、1.1e-5
+续算，到4.2e-5，而非精确保留的1.21e-5、1.331e-5。测试原先
+把这两种物理时刻的末场比较，密度缩放差2.76093e-7，停止
+后续该项验收，失败目录未覆盖。此处不诊断为求解器误差。
+
+核对AT计划/日志后，只修测试：CPU检查点→C++非精确恢复，
+与C++检查点→C++非精确恢复采用相同当前输入，先要求两条
+时间序列相同再比较场。最大缩放差1.31908e-15。未修改积分器、
+控制器、检查点语义或容差，未加时间步回放。见
+nonexact_phase_diagnosis.json；先前同后端精确恢复已独立通过，
+不能把两种恢复合同混作同一基线。
+
+原MP7-LD incoming_only的NP2-y及紧致KEEP非反射NP2-x另复核
+场/阶段、输出隔离及精确/非精确恢复，均通过。当前主程序
+SHA256为30eca6ab69fae1136882a8cfb8508f5609a98ef501d5bc8b5ddd4a8e020042b0。
+总索引results/multi_backend_mb7_high_open_main_20261116/summary.json，
+candidate/保存实际源/构建参数；原参考、拒绝和错误对照分别
+保留。run_cpp_high_open_gate.py可重建这些代表，无Git、远端、
+Slurm或渲染操作。
+
+这关闭了原H1定义的本地FP64 nodal短窗主链、代表MPI及恢复，
+不关闭H1长期稳健性或物理SBLI。新H1的吹吸/RNG、实际原位
+消费者、混合工作区、更广几何/极小局部分区等联合仍未验收；
+活跃ME6带及测试候选为未实现，不能混称未验证。H1主平均/
+检查点组合不因本轮统计关闭的检查而自动放开。低阶GRCBC
+LA3-14 CPU交线修复仍待批准，未修改；其他MB6/MB7余项和
+新的DCU执行证据仍在完整goal内。
+
+### 10.106 当前构建的统计合同复核及H1数值消费者
+
+用户再次批准743e/643c、bc11/22/41/52 incoming_only的同拓扑
+主统计与续算范围。核对发现10.100已完成该最小准入扩展，未
+重复修改条件或冻结参考。使用10.105的当前C++程序，复用已
+通过的原CPU/旧GPU参考，重查16³、NP2-x、device/dependency、
+四步固定/自动步长与物理时间采样。32个GPU序列化统计通道
+最大缩放差4.44090e-16，场/完整RHS仍满足2e-10；采样开关
+保持物理场与完整守恒halo，2+2精确恢复的状态、统计、控制、
+标量和时钟一致。原CPU44/GPU12不是相同数组协议，不做逐
+数组等同判断；自适应输出限制、累计算法和文件格式均未改。
+本次记录为incoming_mean_current/report.json，不覆盖10.100。
+
+#### H1随机吹吸及同拓扑恢复
+
+参考准备器仅增加high_open输入组合，复用原legacy_random，
+不修改随机算法或每阶段调用次数。原CPU/旧GPU先在16³、
+NP2-x、dt=1e-6、四步核对，再运行同拓扑C++ device/dependency。
+H1外部激波位置在本夹具计算域之外，本项检查吹吸组合，不
+据此声称同时验证激波穿越。准备场/缓存最大缩放差1.02140e-14，
+完整RHS8.28890e-17、更新场8.88173e-15。观察与正式输出开关
+保持场/时钟；2+2恢复的状态、控制中的RNG历史及标量逐值一致。
+不跨拓扑比较rank相关随机强迫。参考和C++结果分别见
+rng_reference_np2x/reference.json、rng_cpp_np2x/report.json。
+
+#### H1壁面数值产品和选区时间统计
+
+从10.105的viscous参考复制输入，先冻结原CPU/旧GPU数值产品，
+再检查当前C++ NP2-y、四步dt=1e-6。复用既有8个产品：瞬时
+壁面场、整跨/部分跨/单线平均、单独黏度/剪切/热量以及平均
+壁面平面。字段含密度、温度、两切向剪切、入壁热流和黏度。
+选区时间窗为[0.5e-6,3.5e-6]，与主程序LAVG统计独立。
+
+产品对CPU/旧GPU最大缩放差5.55111e-15；从实际瞬时产品按
+端点时间权重及真实z长度独立积分，最大缩放差4.44090e-16。
+关闭产品保持状态/时钟；2+2精确恢复的状态、统计及控制一致，
+恢复后8个产品逐值一致。见product_reference/report.json和
+product_cpp_np2y/report.json。此处没有为H1扩展主平均准入，
+也没有渲染图片；当前构建ASTR_WITH_CATALYST=OFF。
+
+上述路径均位于results/multi_backend_mb7_high_open_consumers_20261116/。
+数值程序仍为10.105的30eca6ab构建，本轮未改CPU/GPU数学、
+门槛或检查点格式。没有Git写操作、远端或Slurm操作。实际
+H1渲染、混合工作区及更广几何/分区、主平均组合、长期稳健性
+和新DCU证据仍待；低阶GRCBC LA3-14的CPU修复仍待单独批准。
+
+### 10.107 H1完整步场存档和设备派生数值截面
+
+复用10.105/10.106的16³ H1黏性夹具和原CPU/旧GPU二进制，
+由既有run_cpp_archive_gate.py实际运行CPU/旧GPU NP1，再与
+当前C++ NP2-z比较。四步dt=1e-6，检查点关闭；正式三维场
+只在第2、4完整步输出六个原始量，各方向0/8/16索引截面
+在第0、2、4完整步输出，共27份。截面额外包含设备计算的
+Q_rs、速度散度和密度梯度模；不改求解器梯度或边界离散。
+
+29个实际HDF5帧的字段、几何与非浮点元数据均实读比较。
+C++对CPU最大缩放差5.78501e-13，对旧GPU5.64290e-13，
+原CPU/旧GPU之间最大1.23457e-13，均满足原2e-10门槛。
+输出开/关的完整物理q字词一致。日志累计三维场原始量回读
+2659392字节，选定二维字段回读561816字节；后者恰为
+27×17×17×9×8，不以整场回读提供数值截面。这些是正式
+数值输出事件的传输，不是渲染字段或几何回读的零传输声明。
+
+结果位于results/multi_backend_mb7_high_open_consumers_20261116/
+archive_np2z/report.json。核心仍为30eca6ab构建，未修改数值
+源码、格式或容差；本项不包含图片或长期物理SBLI验收。
+
+### 10.108 H1实际渲染、启动资源修订及最终代表复核
+
+沿根CMake重建已有build_backend_cpp_insitu_gcc13，仍为原生
+CUDA C++、GCC13 host、NVHPC Fortran及既有Catalyst/ParaView。
+复用已有截面、选区平均截面、壁面剪切、Q等值面和瞬时流线
+实现，没有替代渲染器。测试器只增加high-open显示预设，
+匹配1×1×0.125的既有H1夹具；Q=1e-4，流线保留原16个
+sbli-layered16种子和RK45参数，弧长0.75，壁面剪切固定色标
+[-0.001,0.001]包含实际负值。原长平板显示预设不变。
+
+#### 两个核的固定启动资源合同
+
+首轮旧GPU完成四步，新C++第0步出图后首次推进报701。关闭
+全部原位产品仍复现；Memcheck将首个失败定位到
+correct_high_gradient。继承的渲染开发构建使用ptxas -O0，
+high_wall_gradient_correction为144寄存器/线程，实际启动512
+线程/块。补齐与调用一致的__launch_bounds__(threads)后，该
+核能执行，后续viscous_high_open又定位到共享高阶通量修正核，
+其黏性实例为138寄存器/线程，同样使用512线程/块。
+
+仅为这两个核补齐相同启动约束；未改线程数、数学、同步策略、
+容差、编译优化参数或检查点。最终两核在该开发构建均为128
+寄存器/线程，局部栈相应增加；这是合法启动修订，不是性能
+优化结论。原失败、只修第一处的中间失败、Memcheck调用栈
+及launch_resources_after.txt均保留。没有自动重试/后端切换。
+
+最终Catalyst构建SHA256为
+d4a9695b443747385b3ca3ec02616a7a3cd3ab58e69542df966906077956cafd。
+无原位的16³ H1黏性四步、输出隔离和精确恢复通过，准备场
+最大缩放差6.30095e-15，末场5.74389e-15，恢复Memcheck零
+错误/零泄漏。记录launch_bound_complete_no_insitu/report.json。
+
+#### 跨后端物理场与域外缓存的区分
+
+新增的旧渲染程序同相位场检查首次对整个state.h5套用数值
+有限性要求，遇到旧GPU rank_extras的29750个非有限字。
+逐分区定位表明：全部在物理域外单方向面，属于速度/压力/
+温度缓存，对应五个守恒量均为零；物理节点及域内MPI halo
+没有非有限值。H1物理端和数值后处理都从域内节点构造单边
+支持，不用这些域外缓存作为物理参考。原冻结数值参考也有
+相同类别，不能据此改写旧数据或称物理场失稳。
+
+只修测试检查对象：跨后端比较11个物理场及相位/布局元数据，
+原2e-10门槛不变；域外缓存数量另报告，不静默当作零。
+同构建连续/恢复及开关隔离仍严格比较完整state.h5字词。
+原失败与renderer_extras_diagnosis.json保留，没有修改CPU/
+旧GPU程序、物理模型或序列化。新C++上述缓存全部有限。
+
+#### 图像及消费者结果
+
+最终代表为images_cpp_np2x_direct_crossing和images_cpp_np1_standard：
+NP2-x设备直连、NP1标准设备管线，各四步dt=1e-6，800×600
+JPEG、EPS关闭。原四类瞬时产品各输出0/2/4步，选区平均
+截面输出1/3步，每运行14帧。先运行冻结旧GPU渲染程序，
+再比较新程序，物理场最大缩放差5.30206e-15；8个壁面/
+选区数值产品仍满足原门槛，独立积分最大4.44090e-16。
+
+每种管线的14帧新旧图逐像素一致；产品开关保持完整状态/
+时钟，2+2恢复的状态、统计、控制、产品数据与图像一致。
+NP2的16条流线全部达到弧长0.75，两rank分别生成400和208
+线段，实际覆盖x=0.5接口；步数上限、域外、subminimum终止
+均为零。它是实际场的分布式消费者检查，不是恒速解析轨迹
+精度或长期物理SBLI验证。已查看实际截面、壁面、Q和流线图；
+Q在这个短窗弱扰动夹具中仅为薄片，不称为湍流涡结构验收。
+
+NP2的28份渲染收据field_d2h_bytes和geometry_host_bytes均为0。
+私有流线halo仍显式选pinned，六次rank/帧供给累计D2H/H2D各
+457056字节；数值产品及检查点另按事件传输。不称整程序或
+全部后处理零主机传输，也不据此准入新的DCU渲染。
+
+#### 普通优化构建与工具边界
+
+最终普通构建为
+cda472b2cb27024fd30570d4f5c1f1a6a5eb7f237d09e45f0fded4aa969edb1a。
+NP2-y device/dependency的连续/观察隔离数值检查通过；恢复
+运行本身正常结束，15个state数据集、三个控制文件、标量和
+时钟实读逐值一致。但Memcheck在UCX的MPI_Init环境探测中
+报告cuCtxSetFlags/cuCtxGetDevice INVALID_CONTEXT，退出99，
+该工具组合不标通过。记录final_native_np2y，未改公共库、
+屏蔽报告或把工具错误当成干净结果。
+两个rank的工具错误总数为5689/10297，打印上限之外的部分
+未作归因；已打印的API还包括UCX的cuPointerGetAttribute/
+cuMemRetainAllocationHandle参数探测，两rank各报告166464字节、
+两次分配的泄漏。没有把这些工具诊断缩写成零错误或全数证明
+为误报。独立数值实读与完整工具摘要见device_restart_observation.json。
+
+另按原批准矩阵独立检查NP2-y pinned/dependency：相同字段
+门槛、完整续算和两rank Memcheck均通过，见
+final_native_np2y_pinned/report.json。它不是device工具结果的
+替代声明。上述路径均在results/multi_backend_mb7_high_open_consumers_20261116/。
+无Git写操作、远端或Slurm操作。H1主平均、混合工作区、更广
+几何/小分区、活跃ME6带、其他MB6/MB7余项及新DCU证据仍待。
+
+### 10.109 原生精度的全局两层PCR及打包字段组件
+
+继续完整MB6/MB7 goal的原生FP32缺项，不改为仅完成H1或仅
+运行显式组件。核对10.85/10.95后，确认周期显式核和CFL/瞬时
+统计已有原生组件，但紧致共享接口仍固定double。先将已有
+compact_line_solver及compact_operator的依赖打通，普通FP32
+C++主程序的根CMake限制仍保留，未提前放开未完成的消费者。
+
+#### 实现范围
+
+本地PCR、跨rank接口PCR、周期修正、恢复共享节点的工作区、
+算术、C ABI因素/系数、Fortran预处理与私有收发槽统一使用
+构建精度。C MPI收发/广播按同一类型选择FLOAT/DOUBLE，
+字节和pinned容量同步改变；Fortran系数交换继续用原mpi_real_type。
+没有把FP64算术结果收窄保存，也没有rank独立闭合、PDD、库
+求解器或新的通信策略。FP64类型与既有公式、系数、消息次数、
+所有权和同步顺序不变。
+
+打包字段的梯度、Euler/黏性通量RHS和回填、滤波系数结构也
+随精度匹配。KEEP仅将借用线缓冲的指针解释对齐，不改变其
+仍为FP64的权重/通量计算接口，不能据此声称原生FP32 KEEP。
+未修改CPU数学源、物理时间、主统计、检查点或产品协议。
+
+首次目标缺失是测试仍位于FP64条件块；只移出受影响的紧致
+组件。旧绑定在FP32编译又因compact_endpoint_responses参数
+kind不匹配而拒绝；相关日志和before/保留，不作为数值运行。
+本轮测试器另有两处括号语法错误，以及未经MPI启动器直接
+运行MPI_Init的准备失败，分别修正本次测试，未改公共环境。
+
+#### 原生组件及误差口径
+
+沿既定原生D10，FP32检查算法/类型、有限性与精确性质，差值
+原样报告，不新增跨精度偏差上限；FP64继续原2e-10场差及
+1e-12线性系统残差门槛。位比较复用real_to_word，避免把四
+字节字段按八字节transfer长度读取。零RHS、RHS输入不变、
+两同步完整结果字词及pinned/device结果字词均实际检查。
+
+| 实际范围 | FP32最大缩放差/归一化残差 | FP64最大缩放差/归一化残差 |
+|---|---|---|
+| 本地252组：长度2/7/127/128/129/257/513，三类矩阵、tile4/128、批1/5/11、两同步 | 4.71118e-6 / 1.00075e-6 | 6.66466e-15 / 8.29176e-16 |
+| 全局每后端1512个rank算例：NP1及NP2-x/y/z，周期/非周期、导数/滤波矩阵、长度7/129/257及原恢复规则 | 2.98876e-6 / 8.18409e-7 | 3.63122e-15 / 8.90477e-16 |
+
+两精度各自的pinned/device结果逐字一致。复用测试专用PMPI
+观察器记录真实Isend/Irecv，类型错误计数均0，调用次数一致。
+本探针NP2每rank累计发送FP32为29952字节、FP64为59904字节；
+它们是MPI调用参数定义的载荷，不是总线实测字节、CFD每步
+通信量或扩展性结果。源中的接口广播也按同精度。
+
+#### 打包字段及默认路径复核
+
+复用边界通量组件，4×7×9区间、hm5，在两同步下检查256个
+方向端面/目标区域组合，比较常速度/线性压力的解析Euler
+散度，区域外RHS字词不变。另检查常速度零梯度、仿射温度
+梯度、仿射应力/热通量散度，以及周期单位矩阵/恒等滤波的
+scalar/full字段回填。它们是受控代数输入，不是CFD初态。
+
+FP32的Euler、温度梯度、黏性散度最大差分别为2.05800e-7、
+7.85105e-6、6.55652e-7；FP64分别为5.11109e-16、1.62024e-14、
+7.77157e-16。常速度梯度严格零，恒等滤波的两存储字词相同。
+实际compact10非零系数下的FP32字段耦合和CFD仍待，不能
+把恒等算子的布局检查称为十阶滤波完整验收。本轮原生滤波
+类型接线也不是恢复已撤销的FP64状态/FP32滤波混合候选。
+
+FP32本地PCR、全局NP2-y pinned、打包字段各做Memcheck，
+合计四份rank/进程日志零错误、零泄漏。两份实际FP32对象的
+9个PCR核及2个字段核SASS未发现双精度算术指令；不据此称
+整个二进制或未移植模块已原生化。
+
+重新构建普通FP64程序，用现有冻结CPU/旧GPU参考检查NP2-x
+KEEP＋ME6、紧致导数/滤波、scalar、device halo及device-aware
+PCR，依赖同步下四步及2+2精确/非精确续算通过。对冻结参考
+最大末场缩放差2.23246e-14，续算差0，输出开关物理q字词
+一致；精确恢复15个state数据集、控制、时钟/标量一致。
+
+总索引results/multi_backend_mb7_native_compact_20261116/summary.json，
+包含类型/载荷比较、原始差值、内存日志、SASS与实际二进制散列。
+根CMake默认FP64不变，完整compact_flow_cpp调度也尚未取得
+FP32编译/运行证据；KEEP权重/gamma等接口仍是其依赖。原生
+FP32主程序及剩余KEEP/ME6/MP7/
+边界、实际滤波耦合、时间累计和输出/原位消费者仍待后续。
+没有Git、远端或Slurm操作，也没有新增预算、容差或性能结论。
+
+### 10.110 原生KEEP权重、算术与显式/紧致消费者组件
+
+继续10.109之后阻挡FP32调度的KEEP依赖。仅将受影响的KEEP
+探针移出FP64测试条件后，原FP32构建在fluid_keep_convection
+和fluid_keep_accumulate_basic两个gamma实参处明确编译失败，
+旧绑定和日志在before/、build_before.log保留。没有运行错误
+类型的核，也没有用强制转换整场或宽松编译绕过。
+
+#### 类型和公式
+
+keep_operator.cu的权重、单项式、两点通量、显式差分、紧致
+基函数RHS与累加使用共享numerical_real；浮点系数按该类型
+构造。Fortran/C ABI的gamma与294项权重同步定型，包含
+compact_line_cpp的KEEP入口。默认FP64的公式、项顺序、
+RHS符号、方向线程块和FMA策略不变，不是新KEEP变种。
+CPU数学模块未改；新数据仍只在原表初始化时上传，不增加
+主推进每步整场回读或CPU通量计算。
+
+原CPU表初始化哨兵在FP32/FP64均通过：前后8个整数不变，
+294项、85基函数、所有整数表及294个权重跨精度数值一致。
+它不替代新设备消费者检查，也不是旧GPU FP32仿真参考。
+
+SBP63的gamma接口只与共享API类型对齐；其公共边界表/辅助
+数学仍未完成严格原生化。实际SASS中SBP63函数还有一条
+DADD，单独保留，不能称全部KEEP或整个二进制无双精度。
+
+#### 当前实际组件
+
+| 范围 | FP32最大缩放差 | FP64最大缩放差 |
+|---|---:|---:|
+| 三方向32/64/128点唯一周期节点、显式KEEP，对原CPU体积算子 | 3.61354e-7 | 7.32921e-16 |
+| 紧致KEEP，对原CPU单项式展开＋独立全矩阵LU；含非零初始RHS=7 | 5.42414e-7 | 8.84034e-16 |
+| 256个低阶物理端/目标区域组合，对原CPU算子 | 1.20267e-7 | 2.24014e-16 |
+
+紧致组件实际在MPI_COMM_SELF运行：每条源线使用n个唯一
+周期节点，不靠存储末节点副本作参考；私有恢复仍有n+1行，
+消费者按视图stride读取。36个方向/长度/同步/批配置覆盖
+容量127截断到基函数内部，以及一次全批3060列。按同一
+批配置，两同步结果逐字一致；不同批次改变加法顺序，不
+强加跨批次字词要求。原全局两层PCR、多rank矩阵及恢复规则
+沿10.109，不将单rank非线性消费者推断为多rank KEEP CFD。
+
+18个常量算子输入另检查显式/紧致RHS严格为零；低阶物理
+端外部halo用NaN标记，实际输出有限，目标区域外RHS字词不变。
+这些是受控算子输入，不是修复/截断实际流场。CPU/GPU同精度
+参考和原解析解均保留；没有新增FP32偏差上限。FP64继续原
+2e-10对照、2e-12守恒/动能交换和六阶收敛门槛。
+低阶项是体积通量的物理端模板，不代表bc11/22/41/52状态
+和特征闭合也已完成原生FP32适配。
+
+FP32的归一化动能/压力交换及净守恒缺陷最大为2.10387e-8、
+1.23908e-8，FP64为3.66203e-17、1.53668e-17。32→64→128
+的解析误差和观测阶数逐项报告。FP32在128点部分误差回升，
+原CPU同精度参考也出现类似趋势；不把该细化范围称为六阶
+收敛，不仅凭相近曲线就完成具体舍入来源的归因。
+
+FP32上述全部探针过程的Memcheck零错误/零泄漏。实际对象中
+显式周期、低阶显式、紧致RHS、紧致累加四个核未发现FP64
+算术指令；未把未原生化的SBP63函数排除后冒称整个对象通过。
+
+#### 默认程序和后续范围
+
+当前FP64普通程序以冻结CPU/旧GPU参考复核NP2-y、KEEP＋ME6、
+紧致导数/滤波、scalar、device halo和device-aware PCR及依赖
+同步。四步与2+2精确/非精确恢复通过，最大末场缩放差
+2.48579e-14；续算差0，精确恢复15个state数据集、控制、
+时钟/标量及输出开关物理q合同保持。
+
+证据results/multi_backend_mb7_native_keep_20261116/summary.json，
+含CPU表、原始差值、CPU/GPU解析误差、SASS、内存与程序散列。
+本轮移除了已知KEEP权重/gamma的精度接口障碍，但完整
+compact_flow_cpp/普通FP32主程序尚未据此编译或运行。
+实际compact10耦合、ME6/MP7/边界、主统计与输出/原位消费者、
+原生KEEP多rank CFD和新DCU执行仍待，不缩减完整goal。
+未操作Git、远端或Slurm；没有新物理、预算、错误容差或性能声明。
+
+### 10.111 原生ME6物性、映射体积算子与私有边角通信
+
+继续10.110后原生FP32的ME6依赖。原探针移出FP64测试条件后，
+先记录16处类型不匹配编译失败；没有运行错误元素宽度的核。
+随后将GPU ME6系数表、Sutherland物性、映射黏性计算、设备/
+pinned缓冲及C/Fortran接口统一为共享构建精度，私有MPI按
+MPI_FLOAT/MPI_DOUBLE传输。CPU数学模块未改，原公式、表顺序、
+y后z的边角补齐、有效区域、方向线程块及同步含义不变。
+
+#### 实际组件与通信
+
+| 组件 | FP32最大缩放差 | FP64最大缩放差 |
+|---|---:|---:|
+| 常/变温、非对角仿射映射及棋盘场，四输入×两同步 | 3.15195e-8 | 5.86503e-17 |
+| 16³区间周期场，NP1/NP2-x/y/z、pinned与device-aware | 7.45059e-8 | 1.17962e-16 |
+
+周期夹具先提供精确的公共面halo，再用NaN标记多方向越界
+边角，实际调用ME6私有补齐。所有halo字词恢复到原输入，
+密度RHS的非零初值7保持；输出有限，两同步、两通信和
+同精度各分解对NP1结果逐字一致。唯一周期节点由rank0
+生成并原生类型广播，避免重复节点的主机三角函数求值差异。
+这里不是完整CFD公共halo或一般静态CURVE生命周期验收。
+
+PMPI观察到每rank、两次同步调用合计：NP2-y四发四收，
+FP32发送/接收各146880字节；NP2-z各233280字节；FP64
+对应字节数恰为两倍，调用数不变，实际MPI类型均匹配。
+NP1和NP2-x没有ME6私有MPI包，因为x公共面已由夹具提供，
+不能据此声称主程序x向不需通信。受控私有设备/pinned缓冲
+也按元素宽度减半，不是总显存峰值或实际总线带宽结论。
+
+FP32差值沿既有D10仅报告，不新增误差上限，也不把它写成
+满足FP64的2e-10门槛；FP64仍用原门槛。原指定patch与
+NP2-y pinned共三份FP32 Memcheck日志零错误、零泄漏。
+实际ME6对象的物性、映射与三种边角核共五个函数未发现
+FP64算术/转换指令，不推广为整个程序均已原生化。
+
+#### 默认FP64程序与证据
+
+当前FP64普通主程序另对冻结CPU/旧GPU复核NP2-z、KEEP＋ME6、
+紧致导数/滤波、scalar工作区、device halo、device-aware PCR
+和依赖同步。四步末场最大缩放差2.72329e-14；2+2精确和
+非精确续算差0，精确状态15个数据集逐字一致，统计/时钟及
+输出开关物理q合同保持。这不建立普通FP32主程序的恢复证据。
+
+总索引results/multi_backend_mb7_native_me6_20261116/summary.json，
+包含实测MPI载荷、缓冲、SASS、内存日志、程序/源码散列和
+candidate/构建参数。最初复制探针丢执行权限，MPI未进入；
+修正为copy2。首轮报告又因numpy整数JSON序列化失败，已完成
+的三方向记录保留，只运行缺少的z方向，再只读汇总原结果。
+这两项是测试准备/报告错误，不当作数值失败或静默重试。
+
+原生FP32完整主程序、物理壁面带、一般CURVE、实际compact10
+耦合、MP7/SBP63/边界/主统计与输出消费者及新的DCU执行仍待。
+未操作Git、远端或Slurm；完整MB6/MB7 goal保持未完成。
+
+### 10.112 实际十阶紧致滤波的原生字段与全局PCR耦合
+
+10.109的恒等滤波只能检查视图/存储，不能覆盖真实紧致滤波。
+本轮新增聚焦探针和运行器，实际使用src/filter.F90的alpha=0.49
+十阶系数、现行q公共面halo交换及全局两层PCR。没有修改CPU/GPU
+生产数学、主流程、公式或普通FP32主程序准入，也没有新增滤波候选。
+
+#### 参考与矩阵
+
+16³区间周期场含非均匀低/高波数与Nyquist分量。每个方向先用
+原CPU compact_filter_rhs_global装配，再由独立完整周期矩阵LU
+求解；最终场另对解析Fourier传递函数。GPU按x/y/z依次真实
+交换halo、装配设备RHS、全局求解和回写，非Python推进器。
+另一个全零场保持严格为零，滤波结果全部有限。
+
+两种精度分别覆盖NP1及NP2-x/y/z、pinned/device-aware，
+每次含单/五分量线工作区、137列截断批次和两同步，共每
+精度/通信252条rank/轴/输入/布局/同步观测。单分量和五
+分量、截断与完整批、两同步在同拓扑内逐字一致；两通信
+输出逐字一致。这里的五分量是线求解工作区，不是全q交替数组。
+
+| 最大缩放差 | FP32 | FP64 |
+|---|---:|---:|
+| 对原CPU RHS＋独立全矩阵LU，所有方向阶段 | 1.45136e-5 | 2.63899e-14 |
+| 最终场对解析三方向Fourier响应 | 1.29421e-5 | 2.61753e-14 |
+| 同精度NP2各分解对NP1 | 9.67569e-6 | 1.67351e-14 |
+
+FP64沿用2e-10，FP32沿D10只报告差值与精确性质，不新增
+数值偏差上限。跨分解的全局PCR改变舍入顺序，不把非零
+差值隐去或强制要求逐字一致；不据此宣称FP32达到FP64精度。
+该alpha下周期系数矩阵的谱条件数为(1+2alpha)/(1-2alpha)=99，
+这只说明该组件的条件性，尚不足以把具体差值全部归因为舍入。
+
+NP2-z pinned的两份FP32 Memcheck日志均零错误、零泄漏。
+生产源码未改，默认FP64普通主程序沿10.111不受影响的
+构建/续算证据复用，不为新增组件测试重复运行主程序矩阵。
+
+证据results/multi_backend_mb7_native_compact10_20261116/summary.json，
+保存原始逐阶段记录、字段、实际运行命令、参考/生产源及
+探针/构建参数。原生FP32普通CFD、物理端滤波及其恢复/
+消费者、更广原生边界和新DCU执行仍待。无Git或远端操作，
+没有更改已批准容差、物理定义、存储格式或资源预算。
+
+### 10.113 原生Ducros传感器及默认FP64联合链复核
+
+先核对剩余精度接口。原keep_sbp63_runtime明确要求FP64，
+因此此前SBP63 helper仍含double不等于该适用子集存在缺陷。
+本轮不增加原生FP32 SBP63，也不把这项新能力作为恢复旧
+SBP63支持的必要条件；10.64的FP64支持保持。继续迁移既有
+原生FP32范围实际需要的传感器，而非擅自扩大物理/格式准入。
+
+#### 实现与预先暴露的接口问题
+
+传感器raw计算和threshold C ABI按共享构建精度定型，包含
+Fortran绑定。散度平方、涡量平方、压力曲率、1e-30正则项、
+物理端索引钳制、只更新原始传感器halo、-hm+1:hm最大值
+膨胀及严格maximum>threshold均不变。没有启用H1仅压缩
+候选，也没有更改传感器定义、阈值、CPU或字节标记算法。
+
+原探针改为本机构建精度后，先记录threshold与诊断快照四处
+编译类型不匹配。诊断snapshot_axis原合同明确输出FP64，
+不是原生数值数组；本轮不改变它。探针改为直接下载已用
+NaN初始化的原生传感器存储，只比较物理节点，避免把旧
+FP64观察协议误当成生产FP32算法。没有给生产路径添加
+NaN上传、额外整场回读、兼容转换或CPU传感器代算。
+
+#### 原生组件证据
+
+复用原p=2+x²+y²+z²离散曲率闭式参考：相同大小正/负散度、
+纯旋转、恒压及trace=15/curl=(2,-4,2)稠密张量，共十个
+输入/同步检查。另直接构造0.5原始传感器，检查阈值恰为
+0.5、紧邻更小/更大本机可表示值的六项严格比较，不以
+epsilon容差替代原有分支。阈值测试不调用新的检测公式。
+
+FP32覆盖NP1、NP2-x/y/z pinned、NP2-y device及NP2-z pinned
+Memcheck。该解析夹具的最大原始量差为0，字节标记与独立
+预期完全一致；交换前后物理原始量字词不变，两同步、
+各分解对NP1及配对通信的原始量/标记均逐字一致。两个
+FP32 Memcheck日志零错误、零泄漏，实际raw/expand两个
+核没有观察到FP64算术/转换指令。差0仅说明该夹具，
+不宣称一般FP32检测/物理精度与FP64相同。
+
+FP64另复用10.34的只读CPU/旧GPU三阶段参考，在NP2-z两
+通信下检查各十二个冻结输入/同步组合，原始量差0，标记
+精确一致。旧FP64文件不会按FP32宽度解码；FP32本轮仅
+使用明确的解析输入，不把量化FP64轨迹称为原生CPU参考。
+
+#### 默认程序与剩余项
+
+当前普通FP64程序另外运行MP7-LD 743e/643c、bc11/22/41/52
+incoming_only、紧致十阶滤波、full线工作区、NP2-y device/
+dependency。四步对已冻结CPU/旧GPU的最大阶段缩放差
+1.55444e-11，末场3.13279e-14，均保留2e-10；观察开关
+不改变场/时钟，2+2精确恢复十五个state数据集、控制、
+时钟/标量及完整q一致，非精确续算差0。
+
+证据results/multi_backend_mb7_native_sensor_20261116/summary.json，
+包含原生记录、跨分解/通信字词核对、SASS、内存日志及
+before/candidate源码、构建参数和二进制散列。普通FP32
+主程序仍未准入，MP7重构、标记面消费者、边界、主统计/
+输出等原生链及新DCU执行继续待办。不操作Git/远端，
+不改变已有精度容差或增加资源预算，完整goal保持active。
+
+### 10.114 原生MP7/MP7-LD体积通量与低阶物理端组件
+
+继续10.113之后的原生上风链。先用10.85已冻结、散列一致的
+原CPU/CUDA Fortran FP32程序78744177...准备同状态参考，
+不是将FP64流场转换为FP32。覆盖16³周期MP7物理空间、
+选择性Roe特征空间以及bc11/21/41/50的低阶平板MP7-LD；
+各一个完整步、三个冻结阶段、无正式输出/检查点。
+保存q、六原始量、原生几何/梯度、传感器/标记和对流RHS，
+参考物理节点rho/p/T及内能有限且正。它是算子输入来源，
+不据此外推参考版本对本轮未覆盖的新边界合同。
+
+首轮读取器在平板梯度文件末尾发现附加数据而停止，尚未
+运行新GPU核。检查确认原协议还包含header标记的壁面法向，
+仅补齐按标记读取，不修改数据/方程；首轮目录保留，另建
+reference32_complete冻结完整CPU/旧GPU参考。随后探针改用
+本机精度，在原upwind C ABI明确出现十二处类型不匹配，
+build_before.log保留，没有宽松编译或整场强制转型绕过。
+
+#### 类型迁移与保留行为
+
+Steger--Warming分裂、Roe平均/左右特征矩阵、MP7和MP7-LD
+重构、低阶端部模板、界面计算及C/Fortran参数使用共享
+numerical_real。原生界面缓冲按sizeof(Real)分配。系数、
+MP判别、方向线程块、RHS符号、传感器语义和处理顺序不变。
+FP64构建仍保留MP1先舍入F+再加F-以及MP3最终物理通量的
+既有FP32存储，未把严格原生模式替换为这些混合候选。
+CPU数学、边界状态和物理模型未修改，不增加生产整场回读。
+
+#### 实际组件
+
+FP32覆盖NP1、NP2-x/y/z pinned、NP2-y device及NP2-z pinned
+Memcheck。每rank七十二个同状态算子组合，包含三夹具、
+CPU/旧GPU来源、三个RK状态、冻结/设备计算梯度、两同步。
+逐变量最大缩放差按D10只报告，不套FP64的2e-10：
+
+| RHS分量 | 最大缩放差 |
+|---|---:|
+| 密度 | 1.18744e-8 |
+| x动量 | 2.23518e-8 |
+| y动量 | 1.11759e-8 |
+| z动量 | 1.11759e-8 |
+| 总能量 | 1.19210e-7 |
+
+设备梯度对原来源最大缩放差2.86105e-6。传感器标记精确
+一致、输入物理q字词不变、工作区地址复用；同拓扑两同步
+RHS逐字一致。实际保存的字段和字节标记还与NP1分区对照，
+上述三方向及配对通信均逐字一致。两份FP32 Memcheck日志
+零错误、零泄漏。这不是FP32轨迹/精确恢复或物理精度验收。
+
+实际四个interface/difference核未发现FP64算术指令。
+共享load_value/store_value为八字节视图保留了已编译的
+FP64转换分支；本轮原生状态/界面视图均为四字节，不选择
+该分支。记录这些转换，不能声称整个对象没有FP64指令，
+也不为消除静态指令记录擅自删去共享混合存储支持。
+
+#### 默认与已有混合候选
+
+FP64原三夹具NP2-z对照通过；MP1/MP3分别用原候选来源在
+NP1复核，保留F+舍入、最终单精度存储/提升差分、标记和
+原始传感器不变等现有合同。这里不是新mixed主程序准入。
+当前普通FP64另运行MP7-LD 743e/643c、bc11/22/41/52
+incoming_only、compact10/full线工作区、NP2-y device/
+dependency。四步最大阶段/末场缩放差1.55444e-11/
+3.13279e-14，2+2精确恢复十五个state数据集、控制、
+时钟/标量及完整q一致，非精确续算差0，观察隔离保持。
+
+证据results/multi_backend_mb7_native_upwind_20261116/summary.json，
+包括原生参考、逐变量和跨分解字段、原混合候选、内存/
+SASS记录及before/candidate散列。高阶开边界接口同步
+类型化不代表它已完成原生FP32验收；标记面消费者、
+普通FP32 RK/主调度/边界/统计/输出与续算、新DCU执行
+继续待办。无Git/远端操作，不增加容差、预算或fallback。
+
+### 10.115 原生扩展标记面、边界状态与Mach²归约
+
+沿10.114消费者继续。原生raw传感器已可交换，本轮补齐其
+扩展字节标记面和实际界面消费探针，未改变通信算法：
+物理标记保持、三向六个面排序/数值精确、局部周期/物理
+端以及第二次不同图样的刷新均通过。FP32为NP1、NP2-x/z
+pinned和NP2-y device，NP2-z两份Memcheck零错误/零泄漏。
+字节载荷仍为字节，raw传感器halo跟随原生四字节类型。
+
+#### 边界类型和不变的算法
+
+将boundary_state的数值参数/C ABI、目标平面、入口缓存及
+顶面法向Mach²私有值按构建精度对齐，不改边界公式或默认
+策略。五处NSCBC波速容差沿原CPU的64*epsilon(real_kind)，
+替换仅对FP64正确的硬编码epsilon；FP64值不变。FP32的
+非负最大值用32位atomicMax，FP64保留原CAS循环；没有
+FP64数值归约例外。共享high_wall辅助代数按调用类型编译，
+保留既有double调用者和系数，不顺带重写其他高阶核。
+
+其他边界接口类型已连接，不代表它们已完成FP32数值验收。
+根CMake普通C++ FP32主程序限制仍保留，没有扩张为全边界
+FP32可用，更没有增加fallback、兼容分支或预算。
+
+#### 低阶状态和独立性质
+
+使用16³区间、gamma=2/Mach=2的二进制自洽代数夹具：
+法向二次压力/密度、恒温/常速度、非对角仿射度量。已知
+Neumann边界值与无滑移/几何法向投影构成独立参考，不靠
+两个GPU实现互比。gamma是测试参数，不改生产默认物性。
+
+bc41/50/60覆盖x/y/z两端，bc42保留原有x/y范围。首轮探针
+误请求z-bc42，被原接口拒绝，未继续下游主程序；确认该
+既有范围后修正探针并保留失败记录，没有放开生产准入。
+最终NP1每次44项，NP2-x/y每rank36项、z每rank38项。
+
+FP32 NP1/NP2三向和FP64 NP1/NP2-y通过：本夹具状态缩放差0，
+所有存档q/原始量有限，rho/p/T及内能严格正；非目标面/
+内部/halo字词和RHS修改范围符合原合同，两同步及分解
+物理场逐字一致。FP32仍按D10报告差值，不据此宣称一般
+边界问题与FP64等精度。NP2-y的两个FP32 Memcheck日志
+零错误/零泄漏。另用变化的斜向速度检查真实顶面法向
+Mach²最大值及本机MPI_MAX：FP32差0，FP64最大1.89198e-16。
+
+已实际执行的wall_state、两种extrapolate_state和top_mach2
+共四个核没有观察到FP64算术/转换指令。其他尚未验收
+边界核含转换的记录单独保存，不以“能编译”给它们准入。
+
+#### 默认程序、恢复和剩余范围
+
+FP64普通程序另复核MP7-LD 743e/643c、bc11/22/41/52
+incoming_only、compact10/full线工作区、NP2-y device/
+dependency，阶段/末场最大缩放差1.55444e-11/3.13279e-14。
+H1黏性NP2-z device/dependency另为6.30095e-15/5.74389e-15。
+两条四步/2+2路径都保持十五个state数据集、控制/时钟/
+标量精确恢复和观察隔离；联合低阶非精确续算差0。仍用
+原2e-10门槛，不新增长期稳定性或物理SBLI声明。
+
+总索引results/multi_backend_mb7_native_boundary_20261116/summary.json，
+包含实际字段、独立正值/分解核对、SASS、四份内存日志、
+源码/构建/二进制散列。未清除失败，未操作Git/远端。
+原生FP32 NSCBC RHS/目标生命周期、剖面/时序入口及吹吸
+消费者、高阶算术、主统计/输出和完整主程序/续算、新DCU
+执行仍待；完整MB6/MB7 goal保持active。
+
+### 10.116 普通FP32主程序的首个周期TGV短窗闭环
+
+此前10.84--10.115主要是组件。本轮通过根CMake构建普通
+ASTR C++ FP32程序，默认仍FP64，use_gpu仍由输入选择。
+移除只允许FP64的整体构建门槛后，原主流程暴露多处kind
+不匹配，未使用忽略参数类型的编译选项或CPU推进替代GPU。
+
+主流程数值局部数组、物理参数、顶面Mach归约、全局瞬时
+统计及其MPI类型、入口切片字节数按real_kind/real_bytes
+连接。production_statistics、sponge、crashfix、moments/
+selected、index和sampling的数值C ABI、缓存/算术/真实MPI
+也按构建精度对齐；FP32修复报告最小值用32位正数atomicMin，
+原FP64保持原实现。未改累计算法、格式系数、阈值或修复
+搜索规则，时间计费仍clock_kind=FP64。上述可选模块完成
+类型接线不等于它们全部通过FP32数值或生命周期验收。
+
+测试专用snapshot_axis原协议仍明确FP64；分开其观察缓冲
+和字节数，传感器写原生验证文件时显式转换回构建精度。
+生产q/RHS/物性下载及其验证文件走本机类型，不增加常规
+推进整场往返；开关隔离另实际核对。
+
+#### 普通ASTR实际执行
+
+均为16³周期唯一区间、Mach0.1/Re1600、RK3、四完整步，
+固定dt=1e-4；自动初始dt=1e-4、max_dt=1e-3、目标CFL0.5、
+增长1.1。关闭正式场/切片/检查点和渲染，保留标量及测试
+阶段快照。Python只生成输入/读记录，不推进流动。
+
+| 配置 | 通信/同步及滤波工作区 | 证据 |
+|---|---|---|
+| FP32 NP1，643e，无滤波 | pinned/explicit，scalar | 原CPU/旧GPU原生参考与完整q/时钟观察隔离 |
+| FP32 NP2-x，643e＋explicit10 | device/dependency，full | 原生参考、逐阶段与标量、观察隔离 |
+| FP32 NP2-y，643e，自动步长 | pinned/dependency | 有限/正值、实际CFL/时钟和观察隔离 |
+| FP32 NP2-z，643c＋compact10 | device/dependency，scalar | 另冻结匹配的原CPU/旧GPU四步参考，逐阶段/标量及观察隔离 |
+| FP32 NP2-y，643e＋explicit10 | pinned/explicit，scalar | Memcheck两rank零错误、零泄漏及观察隔离 |
+
+物理rho/内能均有限且正，观察密集/仅终态两次运行的完整
+q含halo与时钟逐字一致。自动短窗最大CFL约0.0108549，
+此窗由初始步长和增长限制主导，并未触发CFL上限。
+
+跨实现沿D10逐变量报告，未套用FP64的2e-10：
+
+| 配置，对原CPU/旧GPU取最大 | 末q最大缩放差 | 全阶段对流/完整RHS最大缩放差 |
+|---|---:|---:|
+| NP1显式，无滤波 | 6.80024e-7 | 2.12997e-5 |
+| NP2-x显式＋explicit10 | 9.53675e-7 | 3.74020e-5 |
+| NP2-z紧致＋compact10 | 2.09108e-5 | 9.09294e-4 |
+
+原生统计差值及五个守恒分量另保留原值；不将较大的紧致
+差值略去、称为FP64等精度或用于长期生产精度结论。旧
+Native FP32紧致长窗漂移的既有记录仍有效，本轮未修订该
+精度方案。它是短窗类型/算法集成，不是新增物理精度门槛。
+
+同一新程序选择use_gpu=f，另与当前源、相同NVHPC选项的
+CPU-only FP32根构建核对，末q和时钟逐字一致。最初误对
+旧CUDA Fortran构建的CPU结果要求逐字相同，差最大5.96047e-8；
+该跨构建比较改为D10报告，不混淆同源CPU-only对照。
+
+#### 默认FP64复核及历史参考问题
+
+六类受影响组件各取代表：moments/selected空间与时间
+平均/恢复、sampling、index、原compact生产统计、海绵。
+均保留其既有数值/字词性质。普通联合MP7-LD紧致/滤波/
+bc11/22/41/52、主统计采样隔离、状态/均值精确续算另复核，
+仍通过原FP64门槛，没有把组件通过替代普通主程序。
+
+crashfix首次严格历史比较失败。归因区分：存档旧探针配
+旧wrapper可通过同一输入；当前改造前wrapper早已含获批
+N10的共享OR/halo刷新，但旧组件oracle仍是刷新前gm。
+仅给探针接入独立的跨rank逻辑OR和面halo期望，q/缓存参考
+及2e-10不变；当前扩展修复NP2-y通过。未改生产修复算法，
+并保留旧/新失败、旧流程对照和新期望结果。
+
+另保留两类测试驱动错误：要求程序打印并不存在的fp32
+字样、组件收集器缩写PASS前缀。改为实际原生四字节数据
+及正确结果标签；已完成moments记录只读复用，不重跑。
+
+#### 当前边界
+
+总索引results/multi_backend_mb7_native_main_20261116/summary.json，
+有实际普通程序、阶段/标量/时钟、匹配原生参考、内存日志
+以及before/candidate源码、根缓存和二进制散列。FP32主
+程序现在可构建并执行上述周期矩阵，不再只是组件。
+
+物理端显式滤波仍有FP64指针/算术假设，原生物理端带滤波
+的依赖计算暂不运行，下一步先补该项；高阶核仍有未迁移
+FP64算术。SBP63及普通crashfix原有FP64限制未放开。
+原生非周期/RK边界生命周期、主统计/派生量消费者、正式
+输出与精确/非精确恢复、更多几何和DCU仍待。完整goal未
+完成，不改变默认数值方法或执行Git/远端任务。
+
+### 10.117 原生物理端滤波及周期普通程序输出/续算
+
+已复现10.116识别的依赖缺口：filter_basic_end的深度3/4闭合行
+以double指针读取FP32数组。用NaN标记物理外部halo的探针在
+修改前报filter read physical ghost。将返回、累加、系数与指针
+统一为numerical_real，保持原闭合公式、边界优先级和工作区。
+这是组件类型/访存修正，不是CPU离散方法或滤波保正性的修订。
+
+#### 物理端组件
+
+| 检查 | 实际结果 |
+|---|---|
+| 原生FP32/FP64，三轴、上下物理端、两种局部尺寸、两种同步、scalar/full | 各756组合；五次多项式最大缩放差2.37887e-7/0 |
+| 常量与Nyquist响应 | 两种精度均精确满足制造场恒等关系 |
+| 源数组/物理外halo/未选分量保护 | 原始字词不变，未读入NaN物理外halo |
+| scalar/full及explicit/dependency | 相同输入结果逐字一致 |
+| 原生FP32 Memcheck | 0 errors、0 bytes leaked |
+| 默认FP64高阶壁面41/42滤波 | 各252组合，最大缩放差4.20740e-16/4.43099e-16 |
+
+FP32多项式差仅按D10报告，未附加FP64精度上限。高阶核仍
+有原生类型待迁移部分，表中wall41/42仅指FP64。制造组件不
+代替普通非周期主程序或壁面物理算例验收。
+
+#### 普通原生FP32生命周期
+
+沿16³周期TGV、4完整步，原643e或643c及对应既有滤波，未
+增加格式或修改默认。固定dt=1e-4；自动初始1e-4、max1e-3、
+CFL0.5、增长1.1，仍是增长限制主导短窗，不是CFL上限稳定性。
+
+| 配置 | 实际范围 |
+|---|---|
+| NP2-x，643e/explicit10、scalar、pinned/dependency | 连续4步/2+2精确续算；三维场与i/j/k=8数值截面 |
+| NP2-z，643c/compact10、full、device/dependency，固定及自动各一项 | 连续4步/2+2精确续算 |
+| NP1，643e/explicit10、full、pinned/explicit | 非精确续算与三维场/截面 |
+
+全部物理密度/内能有限且正。输出/观察开关不改变完整q含
+halo或时钟字词。精确续算十五个state数据集、完整q、控制、
+insitu_control和标量逐字一致。非精确检查点实际只存五个q，
+rank_extras为空、不含六物性缓存和精确几何资源；此短窗续算
+末q/标量差为0，不扩大为一般非精确续算的逐字保证。
+
+三维场在2/4步发布，三方向固定索引截面在0/2/4步发布，续算
+只发布4步截面。空间字段与坐标为FP32；既有clock/reference_state
+小型元数据仍FP64。三维密度与权威q逐字相同，截面/三维场
+六个原始变量无差。两个独立派生途径的Q/散度最大缩放差
+4.17233e-7/2.98038e-7，按D10保留，不要求FP32派生数组逐字
+一致。精确续算的三维场及各截面则与同后端连续结果逐值相同。
+
+三维场当前在输出事件回读primitive缓存再用既有主机打包/
+派生路径，未宣称全设备输出。此项不引入常规RK内整场往返，
+也不认领原生FP32渲染。
+
+#### 输出祖先索引与测试记录
+
+最初精确恢复在祖先索引失败。定位到已有C++输出桥实际D2H
+664848字节，而本帧选定有效载荷393040字节；原lineage将
+download==0或download==payload当作有效性要求。这是两个
+不同计数，不应推断相等。仅移除此等式，仍要求两者非负，
+有效载荷继续由HDF5类型、维度、字段布局独立核对。文件格式、
+权威状态和精确恢复目标不变，不新增CRC或生产全文件检查。
+
+针对性验证：0、小于/大于payload的非负计数可接受，负数
+由MPI错误码74拒绝；另16项原有非法祖先/布局检查仍拒绝。
+合计20项通过，最终四项又独立重查。首次误用C++链接器去
+编译NVHPC模块探针，以及GNU探针配系统MPI启动器的问题
+均保留。最终使用既有GNU CPU根构建与其实际HPC-X运行库；
+不把MPI初始化失败当作负例正确拒绝。
+
+另保留测试驱动错误：模板路径缺datin、把索引产品当旧data.h5
+目录、忽略产品poll间隔。修正后已完成的物理运行只读重分析，
+不重复推进。历史目录native_lifecycle32_np2z_auto_compact实际为
+固定步长；另有automatic_compact目录及输入/报告证明自动项，
+不按文件夹名称认领自动时间步。
+
+证据总索引results/multi_backend_mb7_native_filter_end_20261116/summary.json，
+附修改前失败、最小设备源差异、构建缓存、程序/源码散列、
+内存日志、实际字段/控制/产品及四项生命周期报告。
+下一步仍为普通非周期原生FP32、主统计和其它消费者/高阶
+算术/更多几何及新DCU矩阵。LA3-14的CPU低阶GRCBC缺失z项
+仍待人工决定，没有借本轮改变。完整MB6/MB7 goal保持active，
+未操作Git或远端。
+
+### 10.118 原生非周期平板、固定RTI边界与重力源项
+
+本轮延续原生精度，不进入MB8或性能专项。先冻结真正FP32
+原CPU/旧CUDA Fortran普通程序参考，非FP64量化数据；原程序
+SHA78744177de74b9059404c52a2b52443e90f70e712cb2850095105956b1036c7d。
+所有实际推进由ASTR执行，Python仅准备输入、冻结和分析。
+
+#### 平板短窗
+
+沿用16³静态笛卡尔夹具，x/y非周期、z周期，静态剖面入口及
+flowini3d初始化，Mach2、Re1000、Tw=1、原低阶闭合，关闭
+crashfix/MP保正与平均统计。固定dt=1e-6；自动初始1e-6、
+max_dt=1e-5、CFL0.5、增长1.1。四完整RK3步，仅说明短窗
+类型/阶段/边界与生命周期，不作平板或转捩物理结论。
+
+| 原有格式及边界 | 新C++实际矩阵 | 完成范围 |
+|---|---|---|
+| MP7-LD743e＋643e、bc11/21/41/50，无滤波 | NP2-x device/dependency，固定步长 | 十二RK相位、末场/标量对原CPU/旧GPU；无正式输出 |
+| 同上 | NP2-z pinned/dependency，自动步长 | 相位、末场/标量、实际CFL及控制时钟；无正式输出 |
+| MP7物理空间543e＋643e、bc11/21/41/51、explicit10 | NP2-y pinned/explicit、scalar | 连续4步/2+2精确续算、输出开关隔离、Memcheck两rank零错误 |
+| 同上 | NP1 pinned/dependency、full | 连续4步/2+2精确续算、输出隔离及完整q恢复 |
+
+原生FP32比较仍按D10逐变量报告，不套2e-10：
+
+| 配置，对两种原实现取最大 | 末q缩放差 | 对流/完整RHS相位缩放差 |
+|---|---:|---:|
+| MP7-LD NP2-x固定 | 4.76837e-7 | 1.61527e-8 |
+| MP7-LD NP2-z自动 | 5.72205e-7 | 1.49012e-8 |
+| MP7＋滤波NP2-y | 2.06308e-6 | 1.00006e-5 |
+
+六个物理原始变量均有限、rho/p/T正；每个pre_rhs的缓存密度
+与权威q密度逐字相同。独立FP64离线重构的守恒量/温度残差
+另报告，不当作FP32浮点运算的严格零。带滤波双卡对原实现
+原始变量最大缩放差3.30708e-6；缓存能量重构差1.21209e-7、
+温度最大绝对差9.61870e-8。没有用省略缓存或阶段掩盖差值。
+
+带滤波两项检查点保持FP32，十五个state数据集、control/
+insitu_control、完整q含halo、后两步控制时钟和标量逐字一致。
+早期平板Memcheck实际未启用leak-check，故只认领零错误；
+不将无泄漏摘要误写成零泄漏。RTI组件另有真实零泄漏证据。
+
+#### 未绕过的原实现限制及待决定项
+
+首个冻结候选是MP7-LD743e/643e＋bc50＋explicit10。CPU可推进，
+原GPU在计算前因不属于controlled Phase S0-A组合而拒绝；
+已核对gpu_profile_mp_ld_flatplate_supported，原定义仅允许
+此bc50显式黏性组合关闭滤波。保留失败，不扩大旧准入、
+不把另一边界/格式的结果作为它的参考。滤波验证使用上述
+旧实现已有的MP7物理空间＋bc51路径。
+
+MP7-LD无滤波的新C++推进已完成，但最初开启检查点被现有
+输出能力判断拒绝：ninit=3的静态剖面登记仅列紧致黏性，且
+read_profile_output_candidate固定real_bytes==8。这不是数值
+推进失效。已向用户提出扩展同一资源/格式合同至原生FP32
+743e＋643e/643c、bc11/21/41/50、16³4步/2+2检查的审批，
+尚未获回复；本轮没有修改这些条件或声称该续算已完成。
+原先获批的FP64联合NSCBC统计范围不自动当作此精度审批。
+
+#### RTI固定边界和重力
+
+识别并修正fluid_explicit.cu::rti_source_kernel的局部den/volume
+固定double类型，改用numerical_real；保持原+y重力和能量功
+rho*v*Jacobian的公式/乘法次序，不改CPU数学或数值模型。
+RTI探针改用原生kind/字节数；参考链接既有原生FP32原程序
+对象，直接冻结CPU固定边界/重力和旧GPU对应核。
+
+NP2-y两套热力常数、上下固定边界/重力、两种同步、CPU/GPU
+参考共每rank24项：FP32最大缩放差及制造恒等式最大绝对差
+均2.98024e-8；默认FP64对既有冻结参考为5.55112e-17。
+重力不改q、原始变量缓存及其它守恒方程，重复/同步结果
+逐字相同。FP32两rank Memcheck为0 errors/0 bytes leaked。
+选定重力核SASS含FMUL，没有FP64算术/转换；不以该核推断
+整份fluid_explicit的高阶核均已原生化。
+修改前实际原生FP32主程序中的同一核含DMUL/DADD及F32/F64
+来回转换，旧/新选定SASS均保留；未据此宣称整步性能提高。
+
+普通RTI＋KEEP643e、bc1/1/31/31/1/1、无滤波/黏性、16³、
+dt1e-6、四步：原CPU/旧GPU原生FP32参考及新C++ NP2-y
+device/dependency均实际执行。末q最大缩放差1.56827e-12，
+RHS相位差3.05176e-5，均原值保留；小末场差不能代替RHS
+精度结论。十五个state数据集、完整q、控制/insitu_control、
+时钟/标量与2+2精确续算逐字一致，输出开关不影响q/时钟。
+默认FP64普通RTI同配置复核末q/RHS差5.84225e-21/3.55272e-16，
+原2e-10门槛及精确续算保持。以上不是长期RTI物理验收。
+
+证据results/multi_backend_mb7_native_plate_20261116/summary.json，
+包含有效/被拒绝配置、参考和当前二进制、构建缓存、源码、
+实际场/缓存/时钟、内存及选定SASS。未操作Git或平台任务。
+新静态剖面精度输出审批、高阶/NSCBC/统计等原生消费者与
+更多几何、新DCU执行仍待；LA3-14继续独立待决定，goal active。
+
+### 10.119 原生FP32主统计、时间权重及累计历史
+
+本轮验证10.116已经完成类型接线的production_statistics消费者。
+没有修改生产数值源码、平均定义、公开文件格式或默认值。
+原CPU44和原GPU12个平面原始矩仍是不同协议；紧凑检查点用
+32通道保存测度、时间积分、上一次端点及壁面积分等辅助量。
+不把两种原始数组直接视为相同的统计字段。
+
+#### 原生组件与独立制造量
+
+将既有compact_statistics_probe和C++组件探针改为real_kind/
+real_bytes观察，冻结真正原生FP32旧GPU核的输入和结果。
+原程序仍SHA78744177de74b9059404c52a2b52443e90f70e712cb2850095105956b1036c7d，
+观察程序链接其既有对象，不用FP64结果量化作参考。
+
+制造量覆盖非均匀展向线长、扭曲挤出线长、十二平面矩、
+非均匀时刻0/0.3/1的梯形积分，以及倾斜壁面上的压力、
+有符号切应力/热流。首样本覆盖为零等恒等关系仍严格检查；
+FP32数值差按D10逐通道报告，FP64保留2e-10并逐通道核对。
+
+| 组件检查 | 实际结果 |
+|---|---|
+| FP32 NP1、NP2设备隔离、NP1 Memcheck | 每rank28项，每rank798个标量通道观测；最大逐通道缩放差2.18696e-7 |
+| 重置、重复及恢复 | 相同构建逐字一致；q/RHS/save和原始变量/梯度缓存不被统计修改 |
+| FP32 Memcheck | 0 errors、0 bytes leaked |
+| 默认FP64对既有冻结组件参考 | 最大逐通道缩放差3.95255e-16，原2e-10门槛保持 |
+
+旧探针按整个buffer归一化的最大差3.82383e-8另保留，不拿它
+替代更严格的逐通道结果。NP2组件复制相同参考到两张卡，
+只证明设备隔离，不将其当作空间MPI统计集成。
+
+#### 普通平板统计与真实空间分解
+
+使用原有16³、543e/643e＋explicit10、bc11/21/41/51、静态
+剖面、ninit0、Mach2/Re1000/Tw1夹具，四完整RK3步，关闭
+化学、crashfix和MP保正。原CPU和旧GPU各自先检查采样隔离
+及2+2精确续算，再作为新C++的实际参考。
+
+| 新C++配置 | 统计采样 | 样本数及实际覆盖时长 |
+|---|---|---|
+| NP2-z pinned/dependency，固定dt1e-6 | 每完整步，含初始样本 | 5，3.999999989900971e-6 |
+| NP1 pinned/explicit，自动步长 | 物理时间间隔1.8e-6 | 3，4.6410004870267585e-6 |
+| NP2-y device/dependency，自动步长 | 同上 | 3，同上 |
+
+自动初始dt1e-6、max_dt2e-6、CFL0.5、增长1.1。物理时间采样
+实际发生在0/2/4完整步，按实际样本时刻作梯形积分，不按
+样本数乘固定dt。该短窗仍由增长限制主导，不是CFL临界稳定性
+或统计定常检验。
+
+三项均完成采样开关隔离、中间输出事件隔离和2+2精确续算。
+权威物理字段和完整守恒halo字词不变；原算法允许统计刷新
+速度/温度的周期派生缓存halo，变化位置继续按原合同核对，
+未把这些不同新鲜度的缓存误要求全部相同。
+
+每项十五个state数据集、完整q含halo、control/archives/
+insitu_control、控制时钟及标量精确相同。统计文件空间字段
+确为FP32：v4两项各74个数据集、y分解v3有37个数据集，
+与各自连续/恢复结果逐字一致。没有新增格式或把v3转换成v4。
+旧GPU到新C++的NP1自动非精确恢复也保留非零统计历史与
+时钟，差值按D10报告；不是跨实现精确续算。
+
+#### 数值量与归一化
+
+紧凑32通道对旧GPU的最大缩放差：固定5.81146e-7，自动
+5.36442e-7；同窗末q对原CPU/旧GPU最大约1.18825e-6。
+原始时间积分与上一次端点通道分别保留，未混为已经归一化
+的平均值。
+
+进一步只读复用原CPU44公共十二矩映射，以源精度可表示的
+坐标做展向几何积分，再用实际时间权重和测度归一化；离线
+诊断运算用FP64，不改变求解器或统计存储精度。比较的量是
+平均密度、压力、Favre速度/温度及六个Favre速度协方差分量。
+最大归一化差固定1.22175e-6、自动1.34185e-6，逐量保留，
+未作截零或施加FP64精度上限。同一分析函数对既有FP64普通
+程序只读复核为1.11023e-15，默认门槛仍2e-10。
+
+#### 已有累计历史的多次重分区
+
+另用匹配的六步原CPU/旧GPU原生参考，执行device MPI的
+NP1两步→NP2-x到四步→NP2-z到六步，检查继承的质量积分
+非零、样本计数/起止时刻和拼接时钟。随后从z拓扑第5步
+恢复到第6步，状态/统计/控制均逐字相同。
+
+末z场对连续z运行的差为0，累计统计最大缩放差3.41061e-13；
+对两种原实现的六步末q最大差1.68136e-6，保留原值。没有
+要求不同拓扑轨迹或归约顺序逐字一致，不扩展已有限定的
+x/z重分区到y方向。
+
+#### 本轮发现与剩余范围
+
+NP2-y自动项首轮在测试的“窗口时钟”判断失败。逐字段确认
+只差存储版本v3/v4及拓扑jsize；采样字段和时间步记录完全相同。
+原canonical reader本来就支持两种布局，比较时不再将版本号
+当成采样时钟，但继续记录版本并严格比较所有采样身份。
+生产元数据、读取规则、数值门槛未变，原失败保留。
+
+两份早期四步参考的不可变scope句子误写six steps；steps字段、
+输入和实际日志均为4。未改原证据，在总索引旁单列文字订正，
+后续生成器已使用实际步数。读取参考精度以HDF5实际字段类型
+为准，不依赖某代reference.json是否已有新增说明字段。
+
+证据results/multi_backend_mb7_native_statistics_20261116/summary.json，
+包含真实原生参考、逐通道/归一化量、实际完整程序、恢复历史、
+元数据误判原记录、内存日志、构建/源码及二进制散列。
+仍待原生窗口运行时开关/更广几何及其它消费者、高阶/NSCBC
+原生算术和新DCU矩阵；静态读网格MP7-LD检查点精度扩展和
+LA3-14继续分别待人工决定。goal active，未操作Git或远端。
+
+### 10.120 原生精度范围核对与海绵消费者
+
+#### 高阶FP32不属于既有准入
+
+按5.1“只迁移已有实现/验证子集”核对，而非从real_kind模块
+或根CMake支持FP32推断所有格式/边界可用。先尝试用已冻结
+原生FP32原程序取得Hermite7壁面参考，原CPU在计算前明确
+ERROR STOP Hermite7 wall requires FP64 643e/RK3 and one supported wall axis。
+因此未执行相关新C++数值运行、未改旧CPU或其准入。
+
+| 现有能力 | 当前共享普通程序的实际限制 |
+|---|---|
+| Hermite7壁面 | bc.F90配置要求numerical_precision为fp64 |
+| H1开放边界 | bc.F90仅在numerical_precision为fp64时启用 |
+| KEEP SBP63 | keep_sbp63_runtime明确要求fp64 |
+| ME6黏性 | readwrite在real_bytes不为8时拒绝 |
+
+这些能力的FP64迁移、消费者和DCU仍属完整goal；不借范围
+核对取消。原生FP32的组件类型/直接算子证据也不自动变成
+这些普通程序的准入。此前“高阶原生算术仍待”的宽泛表述
+在本项以实际能力范围为准，不擅自增加FP32高阶方法。
+
+曾暂作高阶局部类型候选，发现上述拒绝后未继续其下游。
+生产fluid_explicit.cu已与本轮修改前副本逐字一致，原生主程序
+重新根构建完成；候选及失败仅留在results/multi_backend_mb7_native_high_wall_20261116，
+不在生产源码保留未验证候选，也没有新增回滚/降级逻辑。
+
+#### 已有海绵原生实现的实际观察
+
+海绵CPU和旧GPU生产函数本来使用real_kind；原组件观察程序
+单独锁定FP64。本轮只将该观察/比较程序扩展为实际构建精度，
+链接既有原生FP32原程序对象，生产海绵公式/作用范围不变。
+原程序SHA78744177de74b9059404c52a2b52443e90f70e712cb2850095105956b1036c7d。
+
+组件使用五分量线性夹具，不当作热力学有效CFD状态。覆盖
+x+、y+、二者交叠；NP1及NP2 x/y/z，pinned和实际device MPI，
+两种同步方式及NP2-y pinned Memcheck。新C++逐变量对原CPU
+结果比较，原CPU/旧GPU对照另在冻结中保留，未把它们写成
+两次直接的新实现比较。
+
+八项组件运行累计90个rank-case，最大逐分量缩放差9.53675e-8。
+相同输入的explicit/dependency结果完整字词一致；两份Memcheck
+日志0 errors/0 bytes leaked。FP32常数输入最大绝对残差
+4.7683716e-7，依D10保留，未截零、未宣称严格零，也未改成
+另一种重排公式。旧CPU/旧GPU原生夹具最大绝对差9.53675e-7
+另记录。默认FP64 NP2-y组件逐变量最大差约2.21491e-16，
+常数残差0，保留2e-10门槛。
+
+#### 普通主程序与原CPU语义
+
+沿既有16³、643e/643e、低阶bc41槽道数值夹具，关闭滤波、
+反馈驱动及平均统计，启用y+厚度4的海绵；dt1e-5，四完整RK3
+步，NP2-y device/dependency。不是物理槽道或稳态验收。
+
+原GPU槽道主流程没有调用这段海绵，因此普通程序参考明确
+只用原CPU；不伪造旧GPU槽道推进证据，旧GPU函数由组件
+单独检查。新C++原生FP32末q最大缩放差9.44012e-7，对流/
+完整RHS相位最大差7.67061e-7，按D10逐量保留。
+
+输出开关不改变完整q/时钟；四步与2+2续算十五个state数据集、
+完整q含halo、control/archives/insitu_control和标量逐字一致。
+检查点实际q存储为FP32，未用CPU推进或每核整场往返替代。
+
+证据results/multi_backend_mb7_native_sponge_20261116/summary.json，
+包括八项组件、实际槽道/恢复、原CPU参考、原GPU函数冻结、
+内存日志、源码/构建/二进制身份，以及独立精度范围审计。
+后续继续低阶NSCBC、入口/源项和统计窗口等既有FP32消费者，
+而非未经批准的新FP32高阶数值能力。完整MB6/MB7其余代表
+集成和新DCU仍待；静态剖面精度输出、LA3-14分别待人工。
+本轮未操作Git或远端，goal active。
+
+### 10.121 原生FP32低阶x-NSCBC与恢复
+
+本轮观察/比较入口12和出口22已在10.115--10.116完成类型
+接线的C++实现，未改生产边界公式、松弛、阈值或默认。
+不涉及H1/GRCBC、bc52顶面或新的FP32高阶方法。
+
+#### 原生同状态参考
+
+将原NSCBC探针的参数、初始q/原始变量/度量、RHS和字节数
+切至real_kind/real_bytes。原CPU/旧GPU参考来自原生FP32
+已编译对象，非FP64量化；普通原程序SHA仍78744177de74b9059404c52a2b52443e90f70e712cb2850095105956b1036c7d。
+入口以已修订的旧GPU为实际参考；通用CPU bc12未按同一
+传入特征合同修订，不将其作该入口正确性的依据，也未顺手
+修改CPU。出口继续同时冻结实际CPU和旧GPU。
+
+探针覆盖均匀场及非均匀密度/压力/度量、正常出流、亚声速/
+超声速回流、零法向速度和高切向速度。FP32中1±1e-9不能
+分成不同输入，故测试改用128*epsilon(kind)的可表示偏移，
+并打印实际速度。仅测试输入改变，边界自身的64epsilon判据
+不变；FP64仍用原输入，与其已有不可变参考对照。
+
+| 组件 | 实际检查 |
+|---|---|
+| FP32出口，NP2-x | 每rank40个状态/同步观察，逐变量400条记录；q和非边界RHS保护、explicit/dependency逐字一致 |
+| FP32入口，NP2-y | 每rank48个观察，逐变量240条记录；同样的写入范围和同步保护 |
+| 全出射目标独立性 | 均匀及非均匀场，改变外部rho/u/v/w/p目标，RHS保持逐字不变；出口4项、入口8项 |
+| FP32出口Memcheck | 两rank0 errors/0 bytes leaked |
+| 默认FP64组件 | 出口最大逐变量缩放差1.87878e-13；入口1.02029e-14，原2e-10保持 |
+
+全出射检查不是要求计算导数在浮点下严格为零；它检查只
+改变不应进入计算域的外部信息，不得改变已有内部RHS。
+这样没有用“常数离散相消必须逐字为零”替代物理特征合同。
+
+独立均匀场特征公式在FP64离线计算。FP32使用舍入后的输入
+参数，初场生成及核内算术的舍入仍包含在报告残差中；原
+FP64解析门槛保持，FP32不擅加2e-10限制。
+
+#### 必须保留的FP32数值敏感性
+
+新C++入口最大缩放差5.66412e-6，出口最大1.38373e-4。
+出口最大位于第20个“非均匀度量＋切向速度约10”夹具的
+能量RHS；均匀前半组最大5.48363e-6。五变量差分别保存，
+没有只报整体缓冲归一化值或从统计中删除该例。
+
+对应FP64仍符合2e-10，与单精度通量差分/特征投影的相消
+敏感性相符，但尚未逐运算完整归因。不能将其写成已经排除
+所有FP32误差问题，或用短步末场差小证明该RHS高精度。
+本goal沿D10检查算法/类型/有限性和生命周期，不以无偏差
+阈值为由宣称这一压力测试获得生产精度认可；未改算式重排、
+局部升精度或引入新的混合精度分支。
+
+#### 普通OpenShock主程序
+
+沿已有MP7物理空间543e/643e、RK3、bc12/22及其余周期、
+无黏性/滤波/传感器/修复/统计的静止正激波数值夹具，
+dt1e-5、四完整步。此处是无量纲短窗，不是发展完成的SBLI。
+普通参考为旧GPU NP1实际执行，不把其图片或CPU通用入口
+当作新C++字段证据。
+
+| 实际新C++配置 | 数值/生命周期 |
+|---|---|
+| 64×8×8，NP2-x，device/dependency | 十二RK相位及标量/时钟；输出和观察隔离；2+2精确续算 |
+| 64×16×16，NP2-z，pinned/explicit | 与匹配网格重新冻结的旧GPU参考对照；同上，并有完整Memcheck |
+
+末q逐变量最大缩放差分别2.47256e-7/2.47249e-7；post_source
+完整RHS相位最大约2.42144e-8，标量最大差约1.19208e-7，时钟
+差0。物理q的rho/内能有限且正。十五个state数据集、完整q
+含halo、control/archives/insitu_control及续算标量逐字一致，
+实际q存储为FP32。NP2-z两份Memcheck为0 errors/0 bytes leaked。
+
+横向首轮64×8×8/NP2-z在通信准备阶段被拒绝，局部4层小于
+固定halo5，未进入RK；源判据见halo_transport.cu。保留失败，
+显式改为64×16×16并冻结同网格参考，没有自动扩网格、自动重试
+或绕过保护逻辑；不能把原失败的零错误工具摘要算作通过。
+
+证据results/multi_backend_mb7_native_nscbc_20261116/summary.json，
+包含原生参考/对象身份、实际速度、逐变量RHS、目标独立性、
+完整程序/字段/续算、工具日志、原薄分区失败及构建源码。
+普通bc52/黏性联合平板、窗口/入口等剩余原生消费者和新DCU
+仍待；静态剖面输出精度与LA3-14的既有审批问题不变。
+未操作Git或远端，完整goal active。
+
+### 10.122 原生FP32顶面NSCBC与联合黏性平板
+
+#### 原生组件及生命周期观察
+
+沿用10.115--10.116已接线的原生Real顶面实现，未改生产边界
+公式、松弛、声波判据或默认。本轮将top探针/实际参考读写从
+固定double切为real_kind、real_bytes和mpi_real_type；CMake
+两个top观察目标链接既有精度模块。没有把FP64结果量化后
+当作原生参考，原CPU/旧GPU函数来自冻结的FP32对象。
+
+NP2-y包含不接触顶面的rank和顶面owner；周期/物理x端两种
+夹具、compatibility/incoming_only/原静态sbli_shock/nonreflecting
+四种已有策略、12个均匀/非均匀状态，覆盖亚/超声速流入流出、
+零法向及高切向速度、非正交度量。组件的nonreflecting交角
+keep_corner=0，不替代LA3-14的实际GRCBC交线装配验收。
+
+每rank普通组件384项、黏性快照组件96项，含两种同步/两份
+原参考的重复计算。q及非边界RHS保护、全部RHS有限、重复/
+explicit-dependency字词一致均检查；黏性项另检查未捕获或
+重复消费快照被拒绝、零源不改RHS。64×16×64区间的多block
+owner Mach²制造量在NP2-y两种同步下误差为0。
+
+| 新组件对照 | 对CPU最大逐变量缩放差 | 对旧GPU最大逐变量缩放差 |
+|---|---:|---:|
+| FP32顶面RHS | 2.68221e-7 | 1.29469e-3 |
+| FP32黏性源投影 | 2.68221e-7 | 3.48699e-4 |
+| 默认FP64顶面RHS | 4.44089e-16 | 5.26571e-12 |
+| 默认FP64黏性源投影 | 4.44089e-16 | 1.41761e-12 |
+
+FP64保持2e-10门槛；FP32按D10记录原值，不新设偏差上限，
+也不把较大的旧GPU差值藏进全缓冲归一化。两个FP32组件的
+Memcheck各两rank均0 errors/0 bytes leaked。
+
+#### 高切向速度差异的受控定位
+
+最大差位于均匀u=10状态的能量RHS，不是全域速度/法向速度
+定义错配。冻结CPU/旧GPU的目标、目标平面、法向Mach²输入
+逐值相同。仅在results内重新编译旧GPU边界模块，全部其他
+对象保持原样：默认FMA构建的全部192份rank-case RHS字词
+复现冻结旧GPU；只增加-gpu=nofma后，高切向速度全部夹具
+与CPU差为0，其余状态最大绝对差2.68221e-7。
+
+因此这组较大实现差确实受GPU融合乘加影响，与三点通量
+差分及特征投影相消敏感性一致。CPU自身的均匀场残差仍非
+严格零；本试验没有证明原生FP32达到生产物理精度，也未
+逐运算分解每一项剩余残差。没有改生产编译、重排边界公式、
+局部升精度或替换原始参考，两个测试构建和原始包均保留。
+
+#### 普通联合平板的实际推进
+
+复用16³区间静态剖面数值夹具，743e MP7-LD＋643c黏性、
+bc11/22/41/52 incoming_only、RK3，关闭主滤波、修复和时间
+平均；顶面自身已有横向滤波/阶段时序不被关闭或重写。先
+冻结原生CPU/旧GPU四完整步参考，再检查新C++：
+
+- NP2-y，device通用halo＋device-aware私有PCR、dependency，
+  固定dt1e-6。末q对两参考最大缩放差9.42497e-7，完整RHS
+  最大1.77461e-8。
+- NP2-z，pinned/explicit，自动CFL0.5、initial_dt1e-6、增长1.1。
+  末q最大差5.65498e-7，完整RHS最大2.27265e-8；实际CFL最大
+  6.28035e-5。两rank Memcheck为0 errors/0 bytes leaked。
+
+两项12个RK相位的物性及边界/对流/完整RHS均比较，CPU边界
+正散度仅在观察器中统一为GPU负散度；边界RHS最大差约
+1.12e-8。24份更新场的rho/内能有限且正；step/time/used_dt/
+next_dt与原参考逐字一致。关闭逐阶段观察、只留完整步末快照，
+两rank完整q含halo、时钟及标量输出字词一致。
+
+该主程序只做advance-only，没有开启正式场、检查点、统计
+或原位渲染，不宣称其FP32精确恢复或生产SBLI已验收。静态
+ninit3剖面FP32检查点的既有独立审批仍待，未以10.100的FP64
+统计审批替代，也未移除real_bytes==8限制。LA3-14不变。
+
+证据results/multi_backend_mb7_native_top_20261116/summary.json，
+含原参考、逐变量观察、FMA默认/关闭对照、实际主程序、原生
+有限/正值/时钟、六份内存日志及源码/二进制身份。首次误用
+可执行路径未启动MPI程序，不算数值或工具通过；受控构建
+报告器的局部变量重名只修分析程序，复用已完成原始包。
+其余既有原生消费者/窗口、更广FP64集成及新DCU仍待；完整
+MB6/MB7 goal active，未执行Git或远端操作。
+
+### 10.123 原生FP32主统计窗口与采样写出交接
+
+继续10.119已有按kind类型化的主统计实现，只扩展观察与分析
+入口，不改CPU44/GPU12累计算法、输出格式或时间控制器。
+沿用10.74的16³区间、无翘曲拉伸平板、Ma0.3、543e/643e、
+bc11/21/41/51/1/1及显式十阶滤波，自动步长initial_dt1e-6。
+不是待批准的ninit3静态剖面FP32检查点组合。
+
+先用冻结的原生FP32 CPU/旧GPU实际运行并验证连续10步与
+第5步恢复至10步。两种原实现各自的完整场、统计、三个控制
+文件和时钟字词一致；CPU44体矩沿真实z测度积分后，与旧
+GPU12的公共均值/应力差另保留，不把两种协议当同一数组。
+再执行新C++ NP1及NP2-y，实际pinned/explicit，包含不持有
+底壁统计所有权的rank。真实input.run读取/广播不增加钩子，
+仅复用原指定路径的只读回放库，按确定完成步供给输入。
+
+第3步改采样时钟，第4--5步禁用，第6步新启用窗口，第9步
+改变频率。只有重新启用清空旧累计，改频率不清空。FP32的
+原始时钟位按32位解释，覆盖时长用相同源精度的相邻采样
+区间加法独立核对，不以FP64重解释或新容差替代。
+
+| 实际发布步 | 窗口始步 | 最后采样步 | 样本数 | FP32覆盖时长 |
+|---|---|---|---|---:|
+| 9 | 6 | 8 | 2 | 3.7202789826551452e-6 |
+| 10 | 6 | 10 | 3 | 8.221817552112043e-6 |
+
+第5步禁用状态下的批次确实没有statistics.h5；恢复后第6步
+重新建窗。新C++两拓扑均通过连续/恢复的state、statistics、
+control/archives/insitu_control及完整步时钟字词检查。32个
+序列化通道对原GPU最大缩放差3.02531e-6，五守恒变量对原
+CPU/旧GPU最大差3.69271e-6，公共归一化均值/应力差最高约
+2.32859e-6；按D10报告原值，不套用FP64门槛，不以短窗作
+统计充分性结论。所有实际浮点HDF5数据另检查有限性。
+
+另测旧采样/写出事件与禁用在第4步交接：原CPU/旧GPU先
+单独冻结，再跑C++ FP32 NP2-z。必须先发布0/2/4三个端点，
+覆盖4.6410004870267585e-6，身份中dt_next与第4步新选择
+完全相同，然后接受禁用。第5及第10步无统计负载；从第5步
+恢复后场/三个控制/时钟字词一致，实际第4步32通道对原GPU
+最大差1.66097e-6。没有因为当前开关已关闭就丢失旧事件。
+
+默认FP64 NP2-y同时核对窗口和第4步交接，保持2e-10：场
+最大8.65322e-15，窗口32通道3.97772e-15，交接3.44170e-15，
+归一化均值/应力4.88434e-15。原先只支持FP64的观察器现可
+显式选择实际精度，并可冻结原双运行时程序，不能用新C++
+生成自己的原参考。没有生产源码、数组框架、格式或预算变更。
+
+证据results/multi_backend_mb7_native_windows_20261116/summary.json，
+含三份新冻结原参考及复用的FP64窗口参考、五组新后端窗口/
+交接、逐变量场差、源精度
+时钟、实际后端/通信和原生文件类型。普通主统计的这组原生
+生命周期已补齐，更广几何/其余消费者、新DCU仍待；不代替
+完整MB6/MB7，未执行Git或远端操作。
+
+### 10.124 原生周期KEEP的普通推进与生命周期
+
+10.110的原生权重、gamma及显式/紧致算术组件之后，本轮接续
+真实普通主程序证据。未更改KEEP公式、两层PCR、滤波、精度
+默认或生产代码；准备/比较入口增加显式convection选择，
+比较前核对参考input.case实际convection_form，不把标准
+中心格式参考冒充KEEP。原参考仍由SHA78744177...的原生
+FP32 CPU/旧GPU实际执行，非FP64量化。
+
+16³周期TGV、黏性开启、RK3、固定dt1e-4和四完整步，先冻结
+两类导数、主滤波关/开两类原CPU/旧GPU参考。新C++代表项：
+
+| 新C++配置 | 恢复/消费者 | 对原CPU/旧GPU末q最大缩放差 |
+|---|---|---:|
+| KEEP643e，NP1，pinned/explicit，滤波关 | 非精确2+2、观察隔离 | 6.80024e-7 |
+| KEEP643e，NP2-x，device/dependency，滤波关 | 精确2+2、观察隔离 | 6.80024e-7 |
+| KEEP643e，NP2-y，pinned/explicit，explicit10 | 精确2+2、Memcheck；另一同参数项检查归档 | 9.53675e-7 |
+| KEEP643c，NP2-z，device/dependency，滤波关 | 精确2+2、观察隔离 | 6.80024e-7 |
+| KEEP643c，NP2-x，pinned/explicit，compact10 | 精确2+2、观察隔离 | 2.03158e-5 |
+
+各项记录12个RK相位及五变量RHS，物理rho/内能有限且正，
+固定时间序列与原参考相同；两层PCR继续保留全局周期未知量，
+不是rank独立闭合。通用halo的device与紧致私有device-aware
+分别由实际日志确认。固定项C_upper最高约8.15542e-3。
+另做KEEP643c NP2-y自动步长，initial_dt1e-4、增长1.1、CFL0.5，
+实际C_upper最高1.08549e-2；其连续/恢复与观察检查通过。
+该自动项没有匹配的自动原参考，只认领控制器/恢复生命周期，
+不伪称另有CPU/旧GPU同轨迹数值对照。
+
+显式滤波项Memcheck覆盖完整、前缀与恢复三段共六份rank日志，
+均0 errors/0 bytes leaked。各精确项15个state数据集、完整q
+含halo、控制、标量及time/dt字词相同；NP1非精确批次确为
+五变量轻量存储，未保存物性缓存、重复halo或精确geometry，
+恢复末q差为0但仍按非精确合同记录。
+
+**必须保留的紧致滤波差异。** compact10项完整RHS最大缩放
+差7.81455e-4。原CPU/旧GPU参考自身的末q差已约2.17608e-5。
+按D10保留逐变量原值；这不等于已排除原生紧致滤波的长期
+精度问题，不因四步有限/正值和恢复通过就给生产精度背书，
+不擅自将滤波升为FP64或修改系数。
+
+**真实数值归档。** KEEP643e＋explicit10、NP2-y发布两帧
+三维基本/梯度/涡量/Q，以及i/j/k三个固定索引产品各0/2/4
+三帧。空间数据实际为FP32，密度与完整步权威q逐字相同；
+三维/二维基本量一致，Q/散度不同计算通道差不超过约
+2.98040e-7，保留原值。续算末帧字段/数据集逐字一致，未
+调用Catalyst或渲染，不能把数值文件称为新图片证据。
+
+首次把归档开在lfilter=f项，在RK前被既有TGV派生量范围拒绝，
+失败保留。按现有准入改在explicit10项做消费者检查，无滤波
+推进仍单列，不改生产限制或自动降级。新增精确调度检查发现
+启用归档时archives.bin末6个int64记录当前输出分段身份，
+续算分段包含检查点/父分段来源，本就不同于从零开始的分段。
+全部前置调度位逐字一致，尾部单独检查自身SEGMENT大小并
+记录父段身份；不要求两个不同来源分段的指纹相同。无归档
+时仍比较完整archives.bin，不修改生产序列化或降低场差门槛。
+一次分析器局部变量重名引起的假标量失败已修正，复读现有
+原始文件通过，没有重算CFD或改写原场。
+
+证据results/multi_backend_mb6_native_keep_main_20261116/summary.json，
+含只读原参考、七项实际运行、两个存储合同、字段/调度/来源
+区分、内存日志及源码/程序身份。该结果限定周期KEEP；物理
+壁面/开放边界的原生KEEP、其他既有原生消费者及新DCU仍待。
+生产代码不变，完整MB6/MB7 goal active，未操作Git或远端。
+
+### 10.125 LA3-14顶面修复及出口/底壁交线新定位
+
+本节更新前文的LA3-14审批状态：CPU顶面漏项修复和低阶
+GRCBC驱动v2到v3已获批准。`nscbc_outlet_top_spanwise_enabled`
+将低阶GRCBC纳入出口顶面交线的z项所有权；顶面本身仍排除
+物理x端点，不重复装配。CPU首阶段权威q不变，新增RHS与
+独立计算的缺失z项残差1.62630e-19；修后CPU/旧GPU首个
+边界RHS最大差5.96099e-19。只改变v3为v2的同后端检查点
+副本在RK开始前明确报边界/驱动身份不符，原始证据未改写。
+
+四步、12个RK相位的严格比较仍未通过。最早差异为第0步RK2
+出口/底壁交线，展向动量RHS差6.48856238107554e-10，大于
+既定2e-10；新C++与旧GPU完整RHS仍仅约2.5e-18。不能因
+四步末场差1.86734e-10而忽略中间RHS失败。
+
+用户随后批准“先施加交点状态再滤波/RHS”的最小时序修订。
+重新检查真实谓词后发现：GRCBC虽然没有COMPACT日志，
+`explicit_profile_nscbc_corrections_enabled`实际为真，CPU与
+GPU早已执行交点状态、出口滤波、出口RHS、整面壁面的顺序。
+只加入同义交点条件不改变结果；将整面壁面提前的候选使首
+阶段底壁密度改变3.29914e-2，已否决并撤掉，不保留该修订。
+临时只读诊断调用亦已从源码移除。
+
+**已定位的剩余原因。** CPU出口z通量循环从`js=1`开始，
+跳过物理底壁`j=0`；旧GPU及新C++在该GRCBC模式包含此项。
+从冻结RK1更新后状态按既有壁面压力外推重建交点状态，再
+独立计算`D_z(J*dxi(3,3)*p_wall)`，所得最大值
+6.488562381617644e-10，与实际CPU/GPU差的残差仅
+2.168404344971009e-19。第一阶段该压力梯度接近零，故首个
+同状态检查没有暴露它。不是放大舍入误差或黏性算子差异。
+
+拟仅在`low_order_incident_enabled()`、bc41且本rank拥有
+物理底壁时，将出口z项循环下界扩展至0。公式、壁面压力
+外推、旧其他模式及2e-10均保持不变；这是新增CPU漏项修复，
+超出仅时序调整的授权，**等待人工批准，尚未实施**。批准后
+重新冻结CPU/旧GPU参考，再复查四步12相位、代表MPI和
+同拓扑精确恢复。当前不宣称黏性GRCBC主链完成。
+
+证据位于`results/la314_repair_20261116/`：`repair_audit.json`
+记录已批准顶面修复和v2拒绝，`lower_spanwise_diagnosis.json`
+及同名生成脚本记录底壁独立重建；失败候选目录保留，不能
+作为参考。`src/bc.F90`当前与顶面修复后快照逐字相同。
+
+本轮另获授权DCU单节点四卡30分钟验证批次，但登录节点
+CMake识别GPUfusion为Clang后进入不合适的CUDA编译器探测，
+构建未完成。已终止本批自有构建进程，未提交Slurm任务，
+未查询或干扰其他作业。完整goal保持暂停；不操作Git。
+
+### 10.126 已批准的底壁漏项修复及GRCBC本地代表闭环
+
+用户批准10.125提出的底壁漏项修复，并恢复原迁移goal。
+本轮仅在CPU `outflow_nscbc` 出口z通量循环增加局部下界：
+当`jrk==0`、bc41且`low_order_incident_enabled()`时，从0
+而不是js开始；其余模式仍用js。顶面所有权保留已批准修订，
+驱动身份沿用v3，不新增数组、通信、兼容转换或时序分支，
+未修改旧GPU或新C++的边界数值公式。
+
+修改前冻结反例由新增的完整RHS检查准确检出：第0步RK2的
+展向动量缩放差6.48856238107554e-10，其他分量约1e-19。
+测试入口原来仅用首阶段的独立边界检查，本轮增加原CPU/
+旧GPU全部12个完整RHS的逐变量2e-10检查；不能把缺少
+C++布局日志的旧程序当作C++布局解析，现直接检查两份
+NP1原参考的实际RHS文件头及数据。
+
+修后CPU第0步RK2的RHS增量与独立重建漏项残差
+1.0842021724855044e-19。旧GPU四步权威q与修复前逐值相同，
+排除通过改变GPU轨迹来匹配CPU。重新生成三份独立只读原
+参考：KEEP643e/643e＋节点黏性、KEEP643c/643c＋节点黏性、
+KEEP643e/643e＋ME6；各16³、Ma2、Re1000、Tw1、固定dt1e-5、
+四完整步、主滤波/crashfix/累计统计关闭，bc11/22/41/52。
+原CPU/旧GPU全部12相位RHS最大缩放差不超过2.98834e-18，
+末q不超过9.92959e-16，保留2e-10原门槛。
+
+| 新C++代表配置 | 通信 | 对原CPU/旧GPU完整RHS最大缩放差 | 末q最大缩放差 |
+|---|---|---:|---:|
+| KEEP643e/643e、节点黏性、NP1 | pinned | 2.53433e-18 | 1.43428e-15 |
+| 同上、NP2-y | pinned | 2.53433e-18 | 1.43428e-15 |
+| KEEP643c/643c、节点黏性、NP2-x | device，紧致私有device-aware | 3.42879e-18 | 1.32395e-15 |
+| KEEP643e/643e＋ME6、NP2-z | device | 2.53433e-18 | 1.43428e-15 |
+
+四项均检查12相位权威场/物性/完整RHS、标量、输出/观察
+开关隔离及2+2同拓扑精确恢复；15个state数据集及控制、
+标量、time/dt记录逐值相同。另单独核对原CPU/旧GPU的
+NP1与NP2-y精确恢复，每项15个state数据集逐字相同，
+NP2-y三份控制文件同样匹配。最大标量缩放差4.66294e-14。
+各新C++末场rho和内能严格正，最大C_upper约9.75742e-4。
+
+独立特征检查仍包括1/4两类传入波数，传入声学残差最大
+6.21725e-15，传出部分改变量最大1.21973e-19；黏性RHS
+最大1.25716e-6或1.44118e-6，未把黏性关闭来规避差异。
+本轮未新跑Sanitizer、长期物理或性能测试，不作这些结论。
+
+证据`results/la314_repair_20261116/closure_summary.json`汇总
+独立反事实、三份原参考、四组新C++主链及原CPU/旧GPU恢复。
+失败与诊断目录保留，新参考不覆盖旧反例。根CMake的FP64
+CPU/CUDA Fortran及C++两构建均完成，源码差异检查通过。
+LA3-14的两处漏项及本地代表窗口已收口；更广工况、原生
+FP32 GRCBC和新DCU证据未被本轮代替，MB6/MB7 goal继续active。
+未操作Git或平台任务；先前授权DCU批次仍未提交。
+
+### 10.127 原生FP32 KEEP低阶物理端代表主链
+
+沿用既有原生FP32实现和D10的逐变量误差原值报告，不修改
+FP64默认、格式系数、主程序或原生精度准入。补齐KEEP低阶
+外推、对称、绝热滑移主链，汇总此前已有的等温/绝热/滑移
+代表项；不是新增FP32滤波候选，也不将FP32误差套用2e-10。
+各项16³、四完整步、固定dt1e-5，原参考由实际原生FP32
+CPU/旧GPU生成，不是FP64量化场。
+
+| 边界与物理方向 | 新C++分解 | 导数/主滤波及工作区 | 末q最大缩放差 |
+|---|---|---|---:|
+| bc41，x | NP1 | KEEP643e/643e，滤波关，scalar | 5.76208e-7 |
+| bc41，y | NP2-y | 同上；Memcheck | 5.76208e-7 |
+| bc41，z | NP2-x | 同上，device | 5.76208e-7 |
+| bc411，y，xslip=3 | NP2-x | KEEP643e/643e，滤波关，device | 4.79694e-7 |
+| bc42，y | NP2-z | KEEP643c/643c、compact10，full | 4.10064e-5 |
+| bc421，y | NP2-z | KEEP643c/643e，滤波关，full，device | 5.75631e-7 |
+| bc50，x | NP2-y | KEEP643c/643e，滤波关，scalar，device | 5.35906e-7 |
+| bc60，z | NP2-x | KEEP643e/643e、explicit10，scalar | 1.34314e-6 |
+
+上述q差均为相对原CPU/旧GPU的逐分量缩放差最大值，完整
+12相位权威q、物性及RHS的各分量原值保存在汇总中。bc42
+紧致滤波项完整RHS差5.17778e-5，不能被其他较小误差项
+掩盖，也不据四步正值/恢复通过就认领长期精度。bc60显式
+滤波项RHS差1.38680e-6，其余项最大约7.98703e-7。
+
+八项均实际核对checkpoint开/关的完整q及halo字词、步长
+时钟，以及连续四步与独立2步前缀+2步恢复的state、三份
+控制、标量/驱动和完整步q/halo。HDF5空间q实际为FP32，
+序列化浮点数据有限，物理rho/内能正；bc41-y现有两份
+Memcheck日志均0 errors、0 bytes leaked。其余项不宣称有
+新增Sanitizer证据。pinned/device通用通信、紧致私有
+device-aware，以及scalar/full和显式/依赖同步取代表组合，
+不作全部开关笛卡尔积。
+
+证据`results/multi_backend_mb7_native_keep_boundaries_20261116/summary.json`，
+含原参考定义、五/六通道分量误差、八个主程序报告、实际
+原生文件与两份内存日志。复用94e7e839...的C++原生程序，
+本轮三项新执行为bc50-x、bc60-z、bc421-y；LA3-14仅GRCBC
+的修订不适用于这些布局，未因此重跑已冻结参考或把该程序
+宣称为已验收原生FP32 GRCBC。
+
+此轮不调用Catalyst，不替代原生高阶/开放边界、更广静态
+CURVE与原位消费者、DCU验证。完整MB6/MB7 goal active，
+未操作Git。
+
+### 10.128 DCU首批MB6/MB7代表矩阵及32通道统计
+
+按用户此前明确批准的单批范围，提交且只查询新任务
+128170436：kshdnormal、1节点、4 DCU/4 rank、每rank 2核、
+30分钟上限。任务在e12r2n08上COMPLETED、ExitCode=0:0，
+实际32秒；未查询或操作127923877、A800及其他作业。
+全部远端源码、构建、HOME/TMP/cache和结果位于
+`~/weiph/mb67_validation_20261116/`。
+
+**构建阻塞处理。** 前次login04的编译器识别构建已明确终止，
+保留原build/log。相同DTK26.04、GNU12.2、私有OpenMPI4.1.5/
+UCX1.18.1/HDF5 1.14.6在固定login09的新目录中完整构建，
+CMake自行识别NVIDIA 12.6.77，显式目标gfx906；未伪造
+编译器识别结果、预置成功缓存或修改公共SDK/驱动。先前
+Clang横幅本身不足以证明编译器错误，具体login04阻塞根因
+未获证明。修正本批构建脚本的工作目录，并将任务cwd和
+日志路径固定在批准目录，防止依赖提交命令所在目录。
+
+根CMake构建astr及已有字段比较工具完成。程序SHA256为
+c47fa335932a8d63b87def084ffa715ab5f3687986553ed0787ba402d22265ac。
+登录及计算节点ldd均无缺失库，GPUfusion/galaxyhip、私有MPI/
+HDF5和GNU12运行库来自所选组合；两份新修复源码散列与
+本地一致。GPUfusion的void-return及不支持forward选项警告
+保留在日志中，未因警告单独修改数值源。
+
+13个运行均为16³、FP64、固定步长四完整步，恢复项仅从
+第2步继续至第4步；各工况沿用独立原参考输入与dt，TGV
+dt1e-3、壁面dt1e-5、MP7/统计dt1e-6。未运行渲染、生产
+长算例或性能窗口。对两份原CPU/旧GPU全局场逐分量使用
+原2e-10缩放门槛；比较工具同时核对全部rank的物理节点。
+
+| 工况 | 实际新DCU分解及通信 | 对原CPU/旧GPU末场最大缩放差 |
+|---|---|---:|
+| 标准643e＋compact10 TGV | NP1 pinned、NP2-x device | 3.70493e-14 |
+| 标准643c＋compact10 TGV | NP2-y pinned、NP4 2×2×1 device及其恢复 | 3.34077e-14 |
+| KEEP643e周期TGV | NP1 pinned、NP4 2×2×1 device | 1.11022e-15 |
+| bc41低阶壁面 | NP2-z device、NP4 2×2×1 pinned | 1.10911e-15 |
+| MP7-LD743e/643c、11/22/41/52 incoming_only | NP2-x device、NP4 2×2×1 pinned | 2.56263e-14 |
+| 同一MP7联合链的主统计启用 | NP1 pinned、NP2-y device | 2.56263e-14 |
+
+各rank实际日志均为backend=gpufusion、device=local_rank、
+sync=dependency；通用pinned/device及紧致私有传输按显式
+输入选择，无自动降级。四卡紧致恢复15个state数据集逐字
+相同，三份控制文件cmp成功，time/dt后两步记录逐值相同。
+最高C_upper约0.081555；所有case实际终止在第4完整步。
+这里的32秒包含MPI启动、诊断/检查点和比较，不是纯RK计时
+或扩展效率，不作性能结论。
+
+作业完成后只取回约246 KiB日志/统计证据。以已有
+`compact_statistics`规范化读取器比较两个统计case的全部
+32通道，最大缩放差2.77556e-16；采样身份及覆盖窗口编码
+逐值相同。版本实际均v3，未假定输出一定为v4；分区相关
+数据通过现有规范化归约比较，不对原文件作转换。13组
+BEGIN/END和330条字段比较记录完整，实际源码中的比较
+工具在计算节点以完整精度执行门槛，不只靠打印数字判定。
+
+证据`results/dcu_mb67_20261116/summary.json`及
+`analyze_results.py`，含授权/提交身份、sacct记录、manifest、
+全部运行日志、库依赖、逐分量场误差及32通道误差。原节点
+失败日志独立保留。本批取得上述跨后端代表证据，不覆盖
+DCU的ME6/一般CURVE/H1/GRCBC、原生FP32及新增归档消费者；
+不包含DCU渲染。下一批外部任务仍须明确授权。完整MB6/MB7
+goal active，未操作Git。
+
+### 10.129 原生FP32选区时间统计及流动派生消费者
+
+本轮仅扩展观察/比较入口，未修改求解器、设备统计公式或
+生产准入。16³周期TGV，12个完整步，原生FP32，显式差分/
+滤波；时间窗按原生类型表示为[5.0000002374872565e-4,
+1.1500000022351742e-2]，实际覆盖时长编码约1.099999994e-2。
+原CPU和旧CUDA Fortran参考为实际原生执行，不是FP64量化。
+
+新C++完成NP1基本六变量瞬时/Reynolds/Favre选区产品，以及
+NP2-x/y/z扩展流动产品：九个速度梯度、Q、涡量、散度、
+密度梯度、Reynolds/Favre均值及脉动、站点剖面的协方差、
+密度加权应力和RMS。逐值检查统计开/关不改变完整state与
+时间步；连续12步和5+7步恢复的state/statistics、数值产品
+及CSV剖面相同，产品保持原采样/完整步相位。空间字段实际
+为FP32，clock/reference_state元数据仍为FP64，不将它们
+误算为双精度流场。物理末场rho和内能有限且正。
+
+**误差按D10原值报告。** 对原CPU/旧GPU，state最大缩放差
+1.89740e-6；流动派生均值产品最高约3.18804e-6，剖面最大
+缩放差4.76838e-7，RMS原值差最高约1.25843e-7。用实际
+完整步时间及归档端点独立作时间积分，均值差最高4.62447e-7；
+独立剖面均值/协方差/应力差2.48724e-7，RMS原值差
+1.16852e-8。恢复及观察隔离仍逐值检查，不因D10放宽。
+
+压力脉动差不能省略：对旧GPU在第11步、局部索引(10,11)
+最大6.103515625e-5。该点瞬时压力差4.57763671875e-5，
+平均压力差-1.52587890625e-5，二者相减完全解释脉动差，
+恒等式残差为0；两套压力约71.46。这是大基值相减的精度
+敏感量，不据短窗生命周期通过认领其长期物理精度。全产品
+脉动+均值恢复瞬时量的最大残差4.54748e-13。
+
+NP2-x实际Memcheck两份rank日志均0 errors；此调用未启用
+leak-check，不能写成零泄漏验证。原FP64独立积分/剖面证据
+复读仍满足2e-10，误差分别约8.88179e-16和4.44090e-16。
+测试工具显式选择FP32时才关闭浮点偏差上限，并继续核对
+类型、布局、有限性、时钟、字段身份及精确恢复；FP64默认
+门槛未变，合成非有限数据在该观察模式仍被拒绝。
+
+首次扩展夹具包含温度梯度产品，在共享准入处被明确拒绝：
+`index_slice_source`仍要求新热/壁面诊断为FP64、非反应、
+笛卡尔状态。该规则同时约束原CPU、旧GPU和新C++，不是
+此次迁移新加的限制。失败目录保留；随后显式选择不含这三
+项的流动派生量夹具执行，不删除生产围栏、不自动替换产品。
+不宣称已支持原生FP32热诊断、lambda识别或新时序产品。
+
+证据`results/multi_backend_mb7_native_selected_20261116/summary.json`，
+含逐字段误差、时钟/测度身份、类型、内存日志和程序散列；
+压力差分解见同目录`pressure_fluctuation_breakdown.json`。
+这四项均为数值存档，无Catalyst出图或渲染结论。完整goal
+继续active，未操作Git。
+
+### 10.130 DCU扩展矩阵、原生精度与数值归档续算
+
+用户另行明确批准第二批后，提交且只查询任务128172334：
+kshdnormal、1节点4 DCU/4 rank、每rank 2核、30分钟上限。
+任务在e18r1n00上COMPLETED、ExitCode=0:0、实际43秒。
+未操作其他任务。全部工作位于`~/weiph/mb67_extended_20261116/`。
+
+FP64数值源码没有变化，复用首批已验证c47fa335...程序；
+同一DTK26.04/GNU12/私有MPI/HDF5组合在login09通过根CMake
+新构建原生FP32程序e5206a31...。登录/计算节点库依赖均无
+缺失。不修改公共软件、不装新依赖，不用CPU执行模拟GPU。
+新增测试工具显式field32读取真实四字节终态与原生参考，
+保留布局/类型/有限性检查并按D10报告误差；field仍用原
+FP64的2e-10。错误类型参考在本地被明确拒绝，非自动转换。
+
+14项均沿用本地已通过的16³、四步固定步长夹具；三项恢复
+只从第2步继续至第4步。具体dt保存在各input.run，不将
+32秒或43秒批次总时长称为RK性能。GPUfusion实际后端、
+device=local_rank、拓扑及pinned/device均由每rank日志核对。
+静态CURVE选已有16³波纹bc41壁面，而不是把32³周期曲线
+夹具默认为已批准的规模。没有更改几何、边界或数值公式。
+
+| 工况 | 实际代表配置 | 对原CPU/旧GPU末q最大缩放差 |
+|---|---|---:|
+| KEEP643c/643c＋ME6＋compact10 | FP64，NP1 pinned、NP2-y device | 3.65744e-14 |
+| 静态波纹bc41壁面＋KEEP643e/ME6 | FP64，NP2-z device、NP4 2×2×1 pinned | 1.10912e-15 |
+| 已修复低阶GRCBC＋KEEP/ME6 | FP64，NP1 pinned、NP4 2×2×1 device及恢复 | 1.11008e-15 |
+| 生产H1黏性短窗 | FP64，NP2-z device、NP4 2×2×1 pinned | 8.21533e-15 |
+| KEEP643e＋explicit10 | 原生FP32，NP2-x pinned | 7.15256e-7 |
+| KEEP643c＋compact10 | 原生FP32，NP4 2×2×1 device及恢复 | 2.07406e-5 |
+| 三维基本场和九个固定索引切片 | FP64标准643c＋compact10，NP2-y device及恢复 | 3.34078e-14 |
+
+两个FP32原参考没有正式检查点，仅有原CPU/旧GPU的真实
+末RK3快照。本轮将物理值逐字复制到仅含五变量的HDF5比较
+容器，保留四字节类型及原始快照散列；不是量化FP64，不
+把该容器称为检查点。FP32误差按原值留存，不能因能运行
+和精确恢复通过就认领长期精度。未据此新增FP32 H1/GRCBC
+或热诊断范围。所有实际终态另取回只读复查，rho/内能有限
+且严格正；每个比较使用完整精度，而不只汇总打印值。
+
+三项2+2恢复分别为GRCBC/ME6、原生FP32紧致KEEP及归档链。
+各15个state数据集逐字相同，control/insitu_control及后两步
+time/dt记录一致。无归档的两项archives.bin完整cmp一致。
+启用归档的一项按既有合同核对其调度前缀逐字一致，尾部
+六个int64记录各自SEGMENT号/字节数/指纹；恢复段始于step2，
+确实指向连续段的父路径、117字节及相同父指纹。不能要求
+起点不同的分段身份相同，未更改此格式或生产恢复检查。
+
+三维场两帧和9切片各0/2/4三帧，共27张数值切片，与独立
+原CPU/旧GPU归档最大缩放差3.34473e-14。恢复仅发布step4
+一帧三维场及9张切片，字段/元数据逐值相同；几何空间值
+相同，其创建step/time另属恢复段。没有渲染、EPS或图像，
+不把数值HDF5产出当作DCU Catalyst可用性。
+
+证据`results/dcu_mb67_extended_20261116/summary.json`和
+`analyze_results.py`，包含14项实际输入/原参考来源、任务
+授权/会计记录、程序散列/库依赖、全部终态、逐分量误差和
+归档父链。预备阶段一次误把CPU输入与GPU输入逐字比较，
+因use_gpu字段不同而停止，未启动CFD；改为各自对应原
+参考后通过，未修改输入中的数值参数。该组证据覆盖的是
+既有成熟代表窗口，不是长期SBLI/H1稳健性、性能或MB9。
+动态入口、非零修复/保正历史、更多可选消费者和统计生命周期
+的DCU代表仍待核对。完整MB6/MB7 goal active，未操作Git。
+
+### 10.131 统计窗口十步复核及第三批DCU生命周期结果
+
+本地以当前FP64普通C++程序重新执行既有16³、NP2-z十步统计
+窗口及5+5恢复：禁用期间不保存统计，step6重启窗口，
+step9改变采样间隔；正常input.run轮询由已有测试预载库提供
+只读输入序列，不给生产程序增加控制分支。末场对原参考最大
+缩放差8.65322e-15，32通道累计统计最大差3.97772e-15，
+归一化CPU均值/应力最大差约5.106e-15；state、统计、控制
+及后五步时钟精确相同。step9/10样本数分别2/3，覆盖时长
+分别3.7202781e-6和8.221814601e-6。
+
+证据`results/multi_backend_mb7_dcu_lifecycle_prep_20261116/`。
+测试比较器新增显式可选STEP，默认仍为4；实际第10步终态
+对原参考比较通过，不将文件不存在视作跳过，FP64门槛不变。
+
+用户已另行批准第三批及仅查询该任务：1节点4 DCU/4 rank、
+每rank2核、30分钟，仍为16³四步代表（窗口十步），无渲染、
+性能或生产长算例。输入/脚本位于
+`results/dcu_mb67_lifecycle_20261116/`。21项包含动态入口及
+自动步长、KEEP/MP7非零crashfix历史、混合黏性工作区、RTI
+重力、海绵、原随机吹吸、统计开关/改频率及代表精确恢复。
+登录节点预检完成后已提交任务128175780，仅查询该任务。
+GPU程序仍为前两批c47fa335...，CPU参考72369146...、
+注入入口4047ef8f...、比较工具17cc7cde...。提交不等于
+数值通过，实际结果如下，整批没有完成。
+
+登录节点CPU参考经根CMake、四路并行构建完成。首次独立
+比较器误用g++，因并行HDF5头文件需要mpi.h而停止；将该
+测试工具改用同一私有MPI的mpicxx编译，失败build.log保留，
+后续构建另存build_v2.log。此项不改HDF5库或求解器数学。
+
+任务128175780在i01r1n13运行41秒，最终FAILED、1:0。
+前14项00--13均完成在线比较；取回实际终态后再次按完整
+精度核对，最大五变量缩放差2.83412e-14（KEEP修复夹具），
+动态入口最高1.75198e-15，MP7修复1.06582e-15，混合黏性
+1.33227e-15，重力5.32814e-16，海绵1.56386e-15。全部实际
+物理节点rho及内能严格正且有限。四项2+2恢复分别为动态
+入口、KEEP修复、MP7修复及混合黏性：state全部数据集、
+三份控制文件、后两步time/dt和flowstate逐值相同；入口
+inflow.h5也逐字相同，cursor已滚动到4，修复历史确为非零。
+同拓扑混合黏性与FP64末q最大绝对差3.26406e-14，标量差
+3.23901e-17，满足该候选原有1e-9/1e-10门槛；这些时长
+不是性能计时，不认领长期物理验证。
+
+随后14_random_cpu_np2x在推进前报错：
+`new restart first gate requires explicit sync`。
+脚本给CPU参考继承了GPU的ASTR_GPU_SYNC_MODE=dependency；
+当前CPU检查点入口要求explicit。该次没有完成任何CPU步，
+不能生成吹吸参考；末尾PMIX信息发生在MPI_Abort之后，
+不是此次首因。仅在后续测试模板中将CPU显式设为explicit，
+每项GPU仍恢复dependency，不改生产同步策略、CPU准入或
+数值公式。原任务、日志及原执行脚本保留，不覆盖失败证据。
+
+剩余14--20共7项（含失败CPU项）须在新任务执行；已提出
+相同资源范围、只补余项及仅查询新任务的授权请求，未自动
+重提交。统计窗口本轮仅有前述本地证据，尚无这批DCU结果。
+实际证据`results/dcu_mb67_lifecycle_20261116/summary.json`，
+独立复核脚本`results/analyze_dcu_mb67_lifecycle_20261116.py`。
+会计状态FAILED与14项已完成数值结果分别保留，不改写为
+整批COMPLETED，也不因未执行的项目而抹去有效前缀证据。
+
+随机吹吸使用原Fortran随机数生成器；GNU与NVHPC的序列
+不能假定相同。对照计划先在同一GNU12构建下按相同NP2-x、
+NP4-xy拓扑生成CPU参考，再比较DCU及其RNG续算历史。
+crashfix仅复用既有测试入口注入初始单个非法节点；恢复用
+普通主程序，不重复注入。生产数值源码沿用前两批，不因
+测试新增或改变物理模型。
+
+明确未实现项：新C++主链尚未接入原`mp_positivity_gpu`的
+通量保正。现有输出身份识别positivity选项不等于实际执行
+限制器；前两批及本批均显式off，不据crashfix结果认领
+MP保正。后续须先冻结原高/低阶面通量、完整低阶RK基准、
+预算系数及MPI协调参考，再实现并验证实际激活路径。
+本节统计/本批通过与否均不能替代这一缺项，完整goal保持active。
+
+### 10.132 MP界面预算的原始有限精度缺陷、批准修订及组件验证
+
+第三批剩余7项仍待新的提交授权，未提交或查询新的DCU任务。
+本地继续执行MB7的MP通量保正前置，先复制原CUDA Fortran
+程序b3657d63...及实际设备函数参考，再修改新C++预算组件。
+没有将crashfix、仅识别输出选项或关闭保正的旧结果作为此项
+已迁移证据，也没有接入新的C++主程序保正调用。
+
+原参考直接调用`admissible_mp_state`和`mp_face_budget`。
+526组包括14个解析/异常状态、256个固定种子有限状态，及
+后者按密度归一化到rho=1的256组；519组初始合法，411组
+产生小于1的限制系数。旧函数有5组返回系数施加后再次被
+它自己的严格可容许域检查拒绝，其中3组rho=1；不是仅有
+极大/极小数量级才出现。新C++初始直译同样失败，系数对
+原参考最大差6.93890e-16，因而不是通过移植误差掩盖原问题。
+
+例如有限状态`finite_116_rho1`：初始rho=1，守恒量
+`[1,-2.0112166803917715,-0.23938122410562723,
+-1.025470278327342,2.5890573561629076]`，初始内能约
+0.0121147573。原预算theta=0.0011021496660001632。
+候选rho约0.9967994606，两种生产动能顺序计算的内能分别
+为0及-4.4408920985e-16。以已舍入候选的精确二进制值作
+高精度运算，内能仍约2.586e-16：这是域边缘的有限精度
+失效，不是这组分量本身包含NaN或负密度。原完整RK更新
+仍有失败检查；未据此认定过去某次M12崩溃的根因。
+
+用户已明确批准最小数值修订及有界验证，数学依据先说明后
+实施。保留原严格可容许域、两种动能乘法顺序、64次二分、
+完整低阶RK基准及默认off。只修改内点预算选择：
+
+- 令u=epsilon/2，gamma_n=n*u/(1-n*u)。密度用gamma_2
+  的插值误差尺度，能量用gamma_16的插值/动能运算链尺度。
+- 误差尺度先逐项乘gamma再相加，避免先加大数而溢出。
+  密度余量不超过base_rho/2，能量余量不超过两种基准内能
+  中较小者的一半，使合法基准仍是搜索起点。
+- 二分直接寻找留有该状态空间余量的系数，不再对已找到的
+  系数乘未经复核的(1-256*epsilon)。最终按实际候选状态及
+  原严格判据复核；若内部不一致，返回显式失败标记，由
+  现有全局失败路径报告，不能把它当成可用系数继续。
+
+gamma尺度是本函数的浮点内点选择依据，不是压力/温度的
+物理下限，也不宣称是任意网格、源项或整个RK的保正定理。
+完整低阶基准和完整受限更新的原检查继续保留。CPU没有
+新增此算法，修改仅在旧CUDA Fortran模块及新C++私有数学
+组件；未改AIR5、滤波、传感器、边界条件或生产默认。
+
+修订后实际CUDA Fortran526组全部返回可容许候选，原5组
+失效消除。C++组件同样全部通过，对修订CUDA Fortran系数
+最大绝对差7.21645e-16；对原未修参考最大差1.85562e-13。
+独立rho/能量/动量解析边界仍满足原2e-10。实际Memcheck
+0 errors、0 bytes leaked，不能外推到尚未接线的MPI/主程序。
+
+另执行已有16³剖面平板、743e/643c、bc11/21/41/50、
+dt=1e-6四步；NP1和NP2 x/y/z各检查off/flux、修订前/后，
+共16次实际原主程序运行。所有12个RK阶段场、完整步标量
+及time/dt逐值相同；每次flux路径实际报告12次预算调用。
+该平滑窗口限制节点计数为0，411组激活证据来自前述组件，
+不能把两者合并成强反扩散全RK已验收。首次尝试743e周期
+TGV被旧程序在推进前拒绝，保留目录；未删除该准入，随后
+明确改选已经覆盖的MP7平板夹具，无运行时自动切换。
+
+第一版修订在最后重复余量等号判据，出现44次内部不一致；
+失败目录保留。最终核查改为用户冻结的原严格可容许域，
+不在人工构造的余量等号边界再作额外放行条件。该最终
+实现已重新构建原程序和C++组件，并完成上述全部新检查。
+
+证据`results/multi_backend_mb7_mp_positivity_20261116/`，
+原始与修订参考独立保留，`summary.json`含代码/程序散列、
+原失效状态、系数差、内存日志及16次RK记录。独立汇总为
+`results/summarize_mp_positivity_repair_20261116.py`。
+
+待办：新C++尚未接面通量/六面预算/MPI系数协调/完整RK，
+仍不能宣称MP保正已迁移。强反扩散完整阶段、代表恢复与
+DCU也尚未执行。预算修订会影响flux开启后的精确续算身份，
+已另请用户批准在现有control.bin的标志中记录修订位；等待
+答复期间这些实际RK测试不写正式检查点，不引入附属文件
+或兼容层，未操作Git，完整MB6/MB7 goal继续active。
+
+### 10.133 新C++ MP保正计算/私有MPI主链及激活型阶段
+
+上一轮已取得预算修订证据，本轮继续本地接线，不查询或操作
+平台作业。第三批余7项和数值修订身份的两个授权请求仍待答复。
+新增`mp_positivity_operator.{cu,F90,h}`，复用已移植的上风界面
+计算，另存三方向高低阶面通量差和单标量系数；这些临时字段
+仅在显式flux模式分配，沿用统一设备状态的可选字段22/23。
+原有字段编号不变，权威q地址稳定，默认off不分配两项工作区。
+
+Fortran仍拥有时间步、拓扑和阶段顺序。每阶段先构造高低阶面
+通量差并交换相邻面；黏性、边界及源项完成后，才对完整RHS
+构造低阶RK基准和六面预算。MPI共享节点系数取最小值而不是
+平均，再更新hm层系数halo；修正RHS并核对完整RK候选，之后
+调用原有设备RK更新。没有添加CPU推进、失败重试、状态截断
+或回滚。工作数组可重建，不计划加入检查点历史。
+
+新私有通信使用独立MPI通信子、固定21401起的方向tag和循环
+复用的显存包。pinned模式的主机固定页缓冲仅分配一次；device
+模式把实际显存指针交给MPI，不在应用层转成主机包。应用侧
+不回读三维q/几何用于限制器，仅回读失败记录/计数等小数据；
+验证环境启用的整场快照不属于正常推进。MPI库内部是否中转
+不能仅凭该选项保证，不把设备地址等同于某种硬件链路。
+
+**先冻结原实现的完整阶段。** 测试专用入口先执行正常旧GPU
+四步steploop，末步三个更新场必须与10.132已有参考逐字相同，
+然后导出同状态q/物性/几何、面通量差、qsave和完整RHS。另以
+2^40放大反扩散通量并相应调整高阶RHS，使低阶基准在实数
+代数上不变，交给原设备限制器实际检查。这个构造不是物理
+长算例，也不将基准的浮点值宣称为逐字不变。初次导出误把
+四整数物性头按五整数读取，失败记录保留；只修正测试解码，
+没有修改原求解器数据格式。另一探针误以MPI_PROC_NULL识别
+物理面，混淆了单rank局部周期方向；改按原npdc规则识别，
+不改生产边界或将失败数值换成零。
+
+**激活型RHS差已定位后修正。** 首个强反扩散对照中，系数差
+仅5.42102e-20，应用权重1-theta在全部内点完全相同，但RHS
+最大缩放差2.08908e-9，超过2e-10，因而停止扩大运行。最差
+点为局部(9,3,9)的x动量，原RHS约5.78745e8、修正后约48.06。
+独立逐项重算复现了分离乘加结果和原结果，原CUDA Fortran
+内核SASS确认实际使用先右面再左面的连续两次DFMA。仅将
+C++该处显式写成同序两次fma，不改通量、系数、放大量、
+全局编译精度或误差门槛。失败输入/输出及SASS独立保留。
+
+| 本地检查 | 实际范围与结果 |
+|---|---|
+| 同状态面通量/通量差 | NP1、NP2 x/y/z；最大差约1.56159e-17 |
+| 激活型完整阶段 | 两种通信各8项，每项内部explicit/dependency两模式；系数最大绝对差5.42102e-20，修正RHS数值差为0，新RK实际更新后正密度/正内能 |
+| 限制诊断计数 | 与旧GPU相同：NP1为3825，NP2 x/y为4080、z为4050；这是协调前各rank节点求和，含共享节点重复，非唯一全域计数 |
+| 普通MP7-LD/643c平板 | 16³、bc11/21/41/50、z周期、dt=1e-6四步；原GPU/新C++各RK阶段、完整RHS和标量对照，最大场差1.59873e-15，时钟相同 |
+| 全设备通信联合 | 主halo/MP选device，私有紧致接口另选device-aware；dependency短测通过，不把默认pinned的PCR误写为设备通信 |
+| 自动步长代表 | NP2-y、全设备通信；实际dt为1e-6、1.1e-6、1.21e-6、1.331e-6，无量纲末时间4.641e-6，原/新完整步时钟相同 |
+| pinned内存检查 | 普通双卡主程序和双卡激活型阶段各两份Memcheck日志，均0 errors、0 bytes leaked |
+
+普通四步/自动窗口的限制计数为0；激活证据来自独立构造阶段，
+不能把它们拼成生产冲击流的长期保正或物理验证。原生FP32
+共享构建完成，并以MP默认关闭的NP2-z、KEEP643e＋explicit10
+四步TGV作受影响核对；对原CPU/旧GPU末q最大缩放差约
+9.53675e-7，RHS差约4.91e-5，沿D10原值记录而非套FP64
+门槛，不宣称已通过FP32 MP联合物理验收。旧CUDA Fortran的MP面布局/拆分缓存调优
+环境变量不在本节认领为已映射到C++；新C++使用已有x连续
+界面实现，后续CPP-P再评估相应性能策略。
+
+**CUDA-aware与Sanitizer分开报告。** 双卡device主程序完成
+四步且数值对照通过，但Sanitizer退出99，记录大量UCX/MPI
+CUDA API返回错误，并有每rank三项、189584字节泄漏报告。
+未抑制API错误、未改库或悄悄改成pinned后宣称device通过。
+用未包含MP代码的原halo二进制独立复核，8项逐位交换检查
+完成，同样退出99：每rank32个API错误加3项IPC映射泄漏；
+泄漏栈始于cuIpcOpenMemHandle_v2/UCX。它证明不需要新MP
+模块就能复现这类工具报告，不能据此把MP原失败日志改为
+零错误。此工具联合门槛仍未闭环；pinned内存证据、device
+数值证据以及第三方报告各自保留。
+
+证据`results/multi_backend_mb7_mp_positivity_20261116/`
+下`integration_summary.json`、`stages_pinned/`、`stages_device/`、
+各`cpp_main_*`、`stage_memcheck/`与`aware_tool_baseline/`。
+`stage_stress_diagnostic/rounding.json`及SASS记录舍入归因。
+普通主程序早期e6f8f75b...与显式FMA后的1f40c898...分别保留
+实际程序身份，不把旧二进制运行改记为新程序已执行。
+
+当前已实现的是上述本地计算链，不是完整MB7收口。正式
+MP精确/非精确恢复尚待既有control.bin数值修订位的人工
+决定；更广NSCBC/H1/SBLI联合、原生精度MP及DCU MP仍待。
+没有提交新的DCU任务，没有执行Git写操作，完整goal保持active。
+
+### 10.134 MP联合NSCBC/H1短窗及遗漏的边界对流装配
+
+继续本地既有16³四步夹具，关闭滤波、crashfix、统计和正式场/
+检查点输出。先用10.132冻结的修订版CUDA Fortran程序重新生成
+MP=flux参考，再比较新C++全部12个RK更新场、对流/完整源后/
+限制后RHS、标量与完整步时钟。incoming_only采用743e/643c、
+dt=1e-6；H1采用743e/643e、dt=1e-5。两者均为bc11/22/41/52、
+z周期，不把原MP关闭参考直接当作MP开启参考。
+
+**首个失败已定位并修正。** incoming_only先通过；H1首阶段
+更新场最大缩放差2.87449e-6，停止扩大测试。边界阶段RHS逐值
+相同，对流阶段最差点为(16,3,4)总能量，旧值8.77226e-6、新值0。
+旧CUDA Fortran在内点MP之后调用high_order_face_convection_kernel，
+单独装配出口/顶面三方向对流项。C++新MP分支只装配body范围，
+遗漏了这一步；不是本次内点预算改变了边界状态。
+
+只修正C++接线：在各方向现有面缓存被下一方向覆盖前，复用
+upwind_operator.cu的高阶通量差/八节点法向导数核，对出口和
+顶面的并集补装该方向RHS，排除规定状态入口/底壁。出口顶角
+每方向只处理一次；未改变旧CPU/GPU边界公式，也未扩大MP
+对物理边界的限制范围。失效比较保留在joint_h1_np1/comparison，
+修订后为comparison_v2；首阶段同点误差降至舍入量级。
+
+| 检查 | 实际结果 |
+|---|---|
+| incoming_only与H1 | 各NP1及NP2 x/y/z，全部12阶段对照通过；共8个数值运行，另有1个H1 pinned内存运行 |
+| 场/RHS/标量 | 最大缩放差分别5.77086e-15、5.83301e-17、5.30687e-14；完整步时钟一致 |
+| 通信/同步代表 | x方向pinned/dependency，y方向pinned/explicit，z方向device/dependency；不宣称两种后端全组合均测 |
+| H1 NP2-y Memcheck | 两份rank日志均0 errors、0 bytes leaked |
+
+原始incoming_only NP1用1f40c898...二进制；随后8次比较/内存运行
+采用补接后的2cb3f4ab...。逐项身份保存在report.json，不把早期
+结果改记为新二进制已执行。所有这些平滑轨迹的限制计数为0，
+不宣称完成激活型H1激波长窗、原生FP32 MP或DCU MP验收；
+10.133的独立激活阶段与CUDA-aware工具失败记录仍原样保留。
+
+证据为results/multi_backend_mb7_mp_positivity_20261116/下
+joint_boundary_summary.json和joint_*，复现/汇总脚本为results/
+run_mp_joint_boundary_20261116.py及summarize_mp_joint_boundary_20261116.py。
+正式MP续算身份及DCU补充批次仍待人工决定；本轮未操作Git、
+未提交/查询远程任务，完整MB6/MB7目标未标记完成。
+
+### 10.135 原生FP32 MP正常数范围、实际RK及激活阶段
+
+本轮只扩展既有测试的存储类型，不修改生产公式、编译浮点
+模式或默认MP开关。预算探针和完整阶段探针现在按构建类型
+读取4/8字节数据；FP64仍使用2e-10，FP32按原生精度D10报告
+绝对/缩放差，不另设误差上限。新旧实际主程序均经根CMake
+构建，旧GPU参考先生成并冻结，再比较新C++消费者。
+
+**次正规数差异单列且不放行。** 首个270状态参考在第11项
+失败：rho=E=9.9999461e-41、动量为0，位型0x000116c2，旧
+CUDA Fortran判非法，新C++判合法。完整组只有这一个判定
+不同，双方均无非法预算返回。旧可容许域PTX函数包含39条
+带.ftz的指令，包括密度与零的比较；不是输入文件丢位或
+新C++擅设物理下限。用户批准保留各自设置、单列差异，仅
+对共同支持的正常数范围继续。原失败270组及诊断仍保留，
+没有把该状态的预期标志改为0后称作通过。
+
+正常数比较保留其余269项，包括262个合法基准及7项异常/
+非法控制状态；明确排除的次正规诊断名称写在参考清单。
+207项触发预算限制，新旧系数最大绝对差1.19209e-7，合法
+基准的返回状态全部通过各自严格可容许域检查。解析密度/
+能量/动量界限差也分别报告，不把机器精度余量误称为物理
+压力下限。H1原有FP64限制不因本轮探针支持FP32而改变。
+
+| 本地FP32检查 | 结果与范围 |
+|---|---|
+| incoming_only实际RK | 16³、743e/643c、bc11/22/41/52、z周期，dt=1e-6、四步；NP1和NP2 x/y/z，12个阶段全部物理节点有限且正密度/正内能，完整步时钟相同 |
+| 实际RK原值差 | q最大绝对差1.19210e-6，阶段RHS最大绝对差1.90303e-8；缩放差逐分量保留，未套FP64门槛 |
+| 激活型完整阶段 | pinned/device各8项，每项实际执行explicit/dependency；系数最大绝对差5.96047e-7，修正RHS最大缩放差2.58229e-6，实际新RK更新后保持正值 |
+| 限制计数 | 激活阶段NP1/NP2 x/y/z为1207/1462/1224/1278，均与旧参考相同；含共享节点重复，不是唯一全域节点数 |
+| pinned Memcheck | 普通NP2-y主程序与激活型NP2-y阶段，各两份日志均0 errors、0 bytes leaked；不外推device工具联合门槛 |
+
+普通四步窗口限制计数为0。激活型阶段使用同状态反扩散
+通量放大2^20；FP64原参考仍为2^40。精度对应的测试幅度
+在运行前确定，没有在失败后缩小幅度。两者只是算子压力
+测试，不是物理算例，也不保证低阶基准的浮点值逐位不变。
+旧参考测试入口的末步三个物理更新场与普通旧GPU运行逐字
+相同；新限制过程不改输入q的整包位型，并实际调用设备RK。
+这些证据不等于反应流、H1 FP32或激波长时物理验收。
+
+测试类型化后的FP64复核复用原冻结输入：526组预算差仍为
+7.21645e-16、无非法返回；NP2-y普通/激活完整阶段仍通过
+2e-10。仅重跑受影响的小探针，没有重跑昂贵物理参考。
+
+证据为results/multi_backend_mb7_mp_positivity_20261116/下
+native32_summary.json、native32_math_normal_reference、
+native32_underflow_diagnostic_v2、native32_stage_reference、
+native32_stages_pinned/device及native32_incoming_*。
+原失败为native32_math_reference；不可用它宣称参考冻结
+验收通过。汇总脚本record_mp_native32_evidence_20261116.py
+记录两个精度的实际程序身份和工具命令。
+
+正式MP精确/非精确恢复仍等待现有control.bin数值修订位的
+批准；DCU MP及第三批余7项未提交，device Sanitizer原问题
+未改写为通过。本轮没有Git写操作或Slurm操作，完整goal
+保持active，未将已有FP32/H1限制扩大为全组合支持。
+
+### 10.136 原生FP32修复组件、周期主程序及有效历史生命周期
+
+MP正式续算身份仍待审批，本轮推进独立缺口。旧原生FP32
+已经具有crashfix，新C++算子、报告结构、MPI与历史接口也
+已类型化，但fluid_runtime的主程序条件仍硬限64位。先冻结
+旧FP32的修复参考，再检查新包装层，最后移除这一精度条件；
+原有五变量、格式和非mixed条件保留，默认开关不变。没有
+改恢复算法、平均规则、压力/温度门槛或增加失败重试策略。
+
+**先修测试类型与比较阶段。** 原探针固定按8字节传输/读取，
+现改为构建精度；NaN状态及重复健康调用的位比较使用同宽
+整数，流文件长度按实际布局核对。这些都是测试代码，不在
+生产I/O中增加扫描。溢出场的huge也按当前类型构造，避免
+把FP64 huge转换成FP32无穷后误当有限供体。
+
+首个ordered探针在历史标记比较失败，记录保留：新冻结的旧
+生产包装层已经完成共享OR/halo，而新局部ordered API尚未
+调用该协调。没有把差异置零、忽略掩码或改生产历史规则。
+改为在同相位比较完整修复/协调包装层；最初四项仍实际执行
+有序修复，另覆盖扩大邻域、跨rank供体和有序求和溢出。
+
+| 本地FP32检查 | 结果 |
+|---|---|
+| 完整修复与重协调组件 | NP1和NP2 x/y/z，各含explicit/dependency；最大缩放差7.60264e-8，历史标记逐值一致，扩大遍历/修复进展记录相同 |
+| device代表 | NP2-y完整修复同样通过；不据此宣称device Sanitizer已清零 |
+| 无供体失败 | NP2-y正确返回原失败状态，仅一轮检查；未发明新状态，q原位型不变 |
+| 三组实际TGV生命周期 | 16³四步：NP1中心/no-filter；NP2-x中心/explicit10；NP2-z KEEP643c/compact10/自动步长，均有真实非零修复历史 |
+| 同构建精确恢复/观察隔离 | 三组各4步对2+2步；18项state数据集、控制/归档/原位控制、标量及时钟逐字一致；关闭输出的完整q也逐字一致 |
+| 开关与历史 | 实际input.run轮询off/on/off/on，NP1/2及pinned/device代表；新鲜off不分配修复历史，激活后修复，健康状态和历史不因切换改变 |
+| 显式非精确迁移 | 普通新C++主程序读取旧GPU FP32非零历史检查点，时钟一致且历史不变；相对同后端非精确续算末场最大缩放差5.10018e-7 |
+| pinned Memcheck | NP2-y实际扩大/协调修复、NP2热开关两组，各两份日志零错误、零泄漏 |
+
+实际TGV中的初始非法节点仅由已有测试入口注入，后续修复、
+RK、输出和恢复全部走原主程序；不能把此构造当作自然流动
+失稳或物理算例。三组新/旧GPU末场最大缩放差9.86032e-6，
+RK准备场最大1.58106e-5，按D10原值记录而非套FP64门槛。
+自动组保留0.5目标、1.1增长，紧致PCR通信单独保持pinned；
+表中device指主halo/修复通信，不冒称PCR也使用设备直传。
+关闭修复后非零历史的固定步长代表，还验证了显式非精确
+关闭/续接：历史不丢失，连续与分段末场、标量和时钟相同。
+
+受影响的FP64检查仍使用原门槛：局部ordered组件与已冻结
+参考差为0；非零历史四步TGV最大准备场缩放差7.91652e-16，
+精确恢复及输出隔离通过。没有为了类型化重复跑长物理参考。
+
+证据results/multi_backend_mb7_native_crashfix_20261116/，
+summary.json由results/summarize_native32_crashfix_20261116.py
+汇总，含各实际程序身份与首次失败的比较阶段说明。
+本轮不认领FP32 MP7-LD平板/其他复杂边界联合或新DCU证据，
+mixed仍未准入。MP数值修订身份和DCU补充批次的决策未被
+本轮替代；完整MB6/MB7 goal保持active，未操作Git或Slurm。
+
+### 10.137 FP32 MP7-LD平板的非零修复历史与NSCBC短窗
+
+复用10.135既有16³、743e/643c、bc11/22/41/52 incoming_only、
+z周期夹具，关闭主滤波、MP通量保正、统计和正式输出。已有
+测试入口只在rank0注入一个非法初始密度，随后修复、传感器、
+重构、黏性和NSCBC均走主程序。每项先运行/冻结旧原生FP32
+参考，再运行新C++。不修改边界、恢复规则或生产I/O注册。
+
+覆盖NP1、NP2 x/y/z和一项NP2-y pinned Memcheck。x/y固定
+dt=1e-6，z使用0.5目标、1.1增长、initial_dt=1e-6/max_dt=2e-6
+的自动步长；主halo/修复通信分别取pinned及device代表，
+紧致PCR独立保持pinned/explicit。每次四个完整步，核对全部
+12个RK的准备q/六项原始量、更新q、对流及完整RHS。
+
+| 量或合同 | 结果 |
+|---|---|
+| 更新q最大绝对差 | 1.19210e-6 |
+| 准备原始量最大绝对差 | 1.90735e-6 |
+| 对流/完整RHS最大绝对差 | 2.15587e-8 |
+| 物理节点/时钟 | 两实现q/原始量有限，rho/内能/p/T均正；完整步时钟相同 |
+| 非零历史 | 整包标记逐值一致；NP1/NP2 x/y/z原始包计数1/2/2/3，含halo和共享副本，不是唯一全域节点数 |
+| pinned Memcheck | NP2-y两份rank日志均0 errors、0 bytes leaked，包含实际启动修复及后续边界链 |
+
+按D10报告FP32原值及逐分量缩放差，不增加数值差上限，也不
+宣称长期精度。注入点按rank0局部索引选择，因此这些是各自
+同拓扑的新旧对照，不是同一全域扰动的分区不变性试验。
+x分解的修复点在共享面，y/z代表同时覆盖hm层历史传递。
+
+测试入口增加可选末态历史导出，仅在显式设置测试前缀时
+读取int8标记。观察隔离最终使用同次运行中导出前后设备q
+的全包位比较，取消额外quiet轨迹；没有加入生产开关或
+生产整场传输。原首轮已经完成计算和对照，但JSON写出因
+NumPy int64计数失败；只修汇总并读回既有数据，保留原目录。
+后续因观察检查本身改为同次前后比较，另建v2目录执行，
+不把早期数据冒记为新观察检查已执行。
+
+证据results/multi_backend_mb7_native_crashfix_plate_20261116/
+summary.json及np1_v2、np2x/y/z、np2y_memcheck；汇总脚本为
+results/summarize_native32_crashfix_plate_20261116.py。未创建
+正式检查点，原生静态剖面的正式输出/恢复仍是独立待办；
+不扩展H1 FP32或DCU，也不认领真实流动失稳的物理修复效果。
+
+### 10.138 FP64主状态/FP32黏性工作区的非零修复与续算
+
+继续补已有可选能力的组合，不进入CPP-P性能优化。旧GPU
+允许viscous_flux工作区与crashfix，新C++修复算子/接口本身
+支持主状态类型，但主程序条件此前拒绝全部mixed。先冻结
+可信旧参考，保持原公式、门槛和默认，再仅开放FP64主状态
+的viscous_flux；原生FP32＋mixed、derivative、物理/特征通量
+mixed修复仍保持原限制，没有为这些组合增加默认放行。
+
+**旧参考的I/O限制原样保留。** 首轮旧GPU在RK前报
+`checkpoint state rejected: new restart requires FP64`，不是
+数值失败。没有修改旧检查点范围或自动改用CPU。明确选择
+无正式输出的同一GPU四步轨迹，用原生FP64 q/RHS和int8
+历史冻结参考。新测试的frozen-reference选项显式读取这类
+既有原始阶段文件，不把它们叫作旧检查点，也不在文件缺失
+时自动切换参考格式或数值后端。
+
+单卡旧mixed与原FP64非零修复参考首个准备q逐字相同。全部
+RK更新的最大绝对差1.42109e-13，标量1.66534e-16，满足既有
+viscous_flux对FP64的1e-9/1e-10门槛。随后按同模式新旧对照
+使用主计划2e-10及既有标量绝对差门槛，不用降低要求收口。
+
+| 检查 | 实际结果 |
+|---|---|
+| 新旧完整计算链 | 16³ TGV四步、非零初始修复；NP1固定及NP2-x自动代表，逐RK q/RHS及历史对照通过，最大RHS缩放差约3.53607e-14 |
+| 新后端输出/恢复 | 上述两组新C++均完成4步对2+2，18项state数据集、控制/归档/原位控制、完整q、标量及时钟逐字一致 |
+| 同模式末场 | 最大缩放差7.77102e-16；单卡显式/pinned，双卡dependency/device，未认领多节点或全部分解组合 |
+| 观察隔离 | 原始参考和无正式输出对照的历史导出前后q位型不变；新后端关闭正式输出不改变轨迹 |
+| pinned Memcheck | 双卡实际启动修复、自动步长及后续RHS链两份日志均0 errors、0 bytes leaked；不将其替代device工具证据 |
+
+新后端沿用已批准的mixed配置身份与现行历史格式，没有新增
+字段、文件或数值版本，也未解除MP预算身份的待审批事项。
+重启时重建FP32黏性临时工作区，不将它作为新的持久历史。
+本轮只改变准入组合；默认仍为FP64，修复算法和物理门槛不变。
+诊断文字同步去掉过期的FP64-only说法，两种原生精度的根
+CMake构建完成。最终文字改动和对已测纯FP32不活跃的条件
+未改变其数值运算，复用原有效证据，不为文字重跑CFD。
+
+证据results/multi_backend_mb7_mixed_crashfix_20261116/summary.json
+及viscous_*，汇总脚本results/summarize_mixed_crashfix_20261116.py。
+各数值运行保留其实际6885c8d6...程序身份，不把最后重编程序
+冒记为已经执行；当前源码散列单独标注。未扩展混合修复到
+平板/其他边界或新DCU，也没有进行性能计时或Git/Slurm操作。
+
+### 10.139 最新公共源码的DTK FP64/FP32构建准备
+
+仅在DCU登录节点的新工作目录编译，不提交、查询或修改Slurm
+任务，不在登录节点运行GPU程序。根CMake使用DTK26.04
+GPUfusion、gfx906、GNU12.2、私有Open MPI4.1.5/HDF5 1.14.6；
+分别构建FP64和原生FP32，关闭Catalyst/AIR5。后者的主程序
+flags.make实际包含ASTR_REAL32，前者不包含；不是量化FP64
+数据后冒称原生FP32。源码来自当前未提交工作区，
+以588项文件散列记录，不将其标记为纯2df6d1d提交构建。
+
+两种精度均完成astr、astr_backend_mp_positivity_math、
+astr_backend_mp_positivity_stage、astr_backend_crashfix四个目标。
+八份ldd清单均无缺失库；FP64主程序身份08d88cf1...，FP32为
+81dd6045...。构建源文件与本地快照仍逐字相同。通用
+build_gpufusion.sh的目标列表另补入两个MP探针，shell语法已检查。
+没有为适配DTK更改生产数学、浮点模式、默认值或物理准入。
+
+首轮配置因本轮脚本选择h5pfc而未发现已有高层库，改用既有
+成功配置的h5hlfc；第二个配置问题是编译快照漏带根CMake会
+复制的examples/datin，已补入60个原始输入文本及所需目录。
+两份失败配置日志保留，不修改根CMake或公共HDF5，也没有传输
+历史流场/检查点。GPUfusion既有void-return及forward-unknown
+警告保留原日志，没有据此修改SDK或宣称数值/内存检查通过。
+
+证据results/mb67_compile_latest_20261116/summary.json及evidence/，
+包括实际构建日志、CMake缓存、主程序编译参数、库依赖、八个
+程序散列及源码清单。该证据仅覆盖构建/链接，不能替代计算
+节点的MP、FP32修复或MPI数值运行；10.135的次正规数差异仍
+按用户批准单列，不因本轮编译而变成一致性通过。
+
+当前仍待MP正式续算的数值修订身份、原生FP32静态剖面正式
+输出/恢复准入，以及限定范围的新DCU数值任务授权。主计划
+中仍将N9几何缺陷写为待审批的旧状态已按10.87更正；该更正
+不扩展CURVE均值组合的已验证范围。完整MB6/MB7 goal仍active，
+没有进行Git写操作。
+
+### 10.140 自适应输出设备采集器与监测/恢复链
+
+按5.1继续补实际缺失的消费者，而非扩张格式/边界组合。原
+C++主程序在计算前明确拒绝adaptive-output field collector；
+拒绝及原程序保存在cpp_before。先冻结FP64原CPU/旧GPU的
+16³、Re=1、四步、固定/自动代表，再实现公共类型的设备
+采集器；随后另冻结实际原生FP32参考并补主程序证据，没有
+将FP64量化数据作为原生参考。FP64旧程序3efee4eb...，FP32
+旧程序953bbcb4...；两个原实现的数学与浮点设置均未更改。
+
+新接口在fluid_diagnostics.cu、fluid_explicit.{h,F90}及
+fluid_runtime.F90中接线，只读权威q，保持每rank的0:upper-1
+唯一节点、sum((mx²+my²+mz²)/rho)、原256线程/最多256块
+归约。MPI、参考密度/速度归一化、事件/窗口、采样和序列化
+仍使用原Fortran实现。复用13通道的小型统计工作区，不新增
+整场影子数组；监测返回2个Real，公共健康检查另返回1个int，
+不因监测回读全场。不启用/未到监测时刻不调用新设备采集器。
+仅去掉C++未接通的总拒绝，原16/32³周期Cartesian、五变量、
+非反应TGV准入、adaptive默认关闭及ASTROC08格式均保持。
+
+| 本地实际检查 | 结果/范围 |
+|---|---|
+| 独立组件 | FP64/FP32，显式/依赖同步，每模式7项；多项式闭式节点和严格相等，覆盖非法密度、NaN、平方溢出、排除重复上端点、空和及完整q位型保护 |
+| FP64完整步 | NP1固定/pinned/explicit；NP2-y自动的device/dependency及pinned Memcheck代表；对原CPU/旧GPU，动能最大绝对差8.88179e-16、变化率1.16574e-12、末场最大缩放差8.88179e-16 |
+| 原生FP32完整步 | NP1固定/pinned及NP2-y自动/device；按D10报告，不设FP64误差上限；末场最大缩放差5.10082e-7、逐帧六字段最大缩放差4.74397e-7 |
+| 原监测与物理时钟 | 保留初始step0及后四步监测，事件/窗口标志、time/dt、fields在1/2/3步的实际出帧一致；从同相位检查点q独立计算动能，新GPU FP64差≤1.38778e-17、原CPU/旧GPU参考差≤5.41234e-16，FP32保留原值 |
+| 五组同拓扑2+2 | 15项state数据集、control.bin、监测值逐字一致；恢复后的step3场文件8项数据集/元数据逐字一致，出帧序列等于连续段 |
+| 开关隔离 | 五组开启/关闭监测、开启/关闭输出的完整q及halo快照文件、步长时钟逐字一致；不是仅比较物理内点 |
+| 同二进制CPU路径 | 新C++构建use_gpu=f的监测、末q与冻结原CPU差为0；未调用设备采集器 |
+| 跨实现非精确 | FP64/FP32分别从旧GPU step2恢复至4，明确exact_restart=f；监测/窗口、出帧、时钟接续，源检查点大小/mtime不变，不称跨实现精确恢复 |
+| 内存与共享存储 | 两种类型组件Memcheck零错误/零泄漏，FP64组件Racecheck零hazard/error/warning；FP64双rank实际主链pinned Memcheck零错误/零泄漏，device模式不据此认领工具清洁 |
+
+FP32旧CPU/旧GPU本身的动能差最大7.74861e-7，变化率差
+9.90928e-4；新C++对旧GPU分别为1.49012e-8和1.49012e-5。
+变化率的差分除以时间间隔会放大动能舍入差，记录这些原值，
+不改变累计精度、生产阈值或FTZ设置，不据四步时钟一致认领
+FP64级精度/长期物理验证。API两种类型实际构建并运行，不仅
+由模板支持推断。已有错误采样期望（漏step0）及h5py newaxis
+分析错误保留说明；后者修复后只重做分析，未重跑原有计算。
+
+证据results/multi_backend_mb7_adaptive_output_20261116/summary.json、
+summarize.py和独立不可变reference*；工具为
+run_cpp_adaptive_output_gate.py、adaptive_energy_probe.cu。实际新
+程序FP64 bd4117dd...、FP32 da395411...。本轮无新渲染、生产
+长窗、性能或DCU运行；10.139的DTK快照早于新采集器，不能
+作为它的DTK构建/运行证据。主计划和构建入口同步，完整goal
+仍active，待批事项不因本轮本地证据自动放行，未操作Git/Slurm。
+
+### 10.141 原生FP32曲线网格、同状态梯度与完整步归档
+
+沿用原FP5的32³周期及y-wavy静态映射（幅值0.15）、643e/643e、
+scalar十阶显式滤波、dt=2e-5和四个完整步。先以实际原生FP32
+原CPU/旧GPU冻结六组参考，再运行新C++普通主程序；不是把
+FP64参考量化成FP32。六组为两种映射的NP1、周期NP2-x、
+y-wavy NP2-y及两种映射的相容常量场NP2代表。常量场分别为
+周期运动状态及壁面相容的静止热状态，不将其称为湍流物理解。
+使用pinned/explicit及pinned或device/dependency代表组合。
+
+| 检查 | 实际结果 |
+|---|---|
+| 原生布局与几何 | q、原始量、13项几何字段及实际三维场均为4字节；几何相对原实现最大绝对差0，Jacobian为正 |
+| 几何分区身份 | 内部Jacobian/九个度量halo及共享重复节点与全局所有者逐字一致；改为保留实际dtype的离线读取器亦复核既有FP64证据，数值差0、两类逐字检查均通过 |
+| 普通RK主链 | 共240份物理区RK状态快照，有限且密度/内能为正；时钟及CFL符合原FP5短测设置，未增加FP32偏差上限 |
+| 同状态梯度 | 40份原CPU/旧GPU实际原始量与完整九度量输入包；显式/依赖两模式输出逐字一致、输入位型不变，常量梯度严格为0，计算坐标仿射场经完整度量投影的最大绝对差0 |
+| 完整步归档 | 六组各step2/4共12帧，六原始字段与同相位检查点缓存逐字一致，密度与q1一致；time/dt元数据为实际原生时钟位型 |
+| 同拓扑2+2 | 每组15项state数据集、control.bin、insitu_control.bin及后两步时钟逐字一致 |
+| 输出/观察隔离 | 六组关闭输出/观察后完整q和halo文件逐字一致，完整步时钟不变 |
+| 内存检查 | y-wavy NP2-y实际pinned主链的两份Memcheck日志均0 errors、0 bytes leaked；不据此认领device模式工具清洁 |
+
+按既有D10报告：q最大缩放差2.39257e-6，原始量7.17716e-6，
+冻结状态梯度7.77128e-5；动能、拟涡能、耗散标量最大绝对差
+分别3.27826e-7、8.94070e-8、5.86733e-8。这些标量保留原
+唯一节点定义，不额外宣称为CURVE体积加权积分。相容常量场
+仍有约1.28e-6至1.37e-6缩放漂移，保留原值，不称精确保常。
+
+最大梯度差位于y-wavy静止热状态的上壁温度梯度。捕获温度为
+273.1499938964844、273.14990234375、273.1497802734375；
+相同二阶边界公式的分离乘加和融合末项分别得到计算坐标导数
+6.103515625e-5与7.62939453125e-5，经dxi22=5.092988967895508
+投影，精确复现新C++的0.00031085137743502855和原CPU的
+0.0003885642217937857。原diff6ec反汇编包含FMA，新C++既有
+--fmad=false，说明这处差异来自FP32抵消/乘加舍入，而非本点
+模板或几何索引不同。保留现有编译设置；弱梯度相对误差不能
+据此忽略，也不据四步运行宣称热流或长期物理精度已验证。
+
+首轮分析因两种flowstate文本分别打印13/17位而误判采样时间。
+实际FP32时间位型及完整步日志相同。仅修改测试读取器：严格
+核对步号、原生时间位型与完整步日志，不放宽物理误差；四项
+单元检查覆盖有效舍入文本及错误步号/时刻。原失败日志保留，
+已完成主计算显式复用，仅运行尚未执行的计划内续算/隔离项。
+
+工具为prepare_native_curve_reference.py、run_cpp_native_curve_gate.py、
+native_curve_gradient_probe.F90和run_native_curve_gradients.py，
+均通过根CMake既有精度/C ABI及实际主程序，不替代CFD推进器。
+证据results/multi_backend_mb7_native_curve_20261116/summary.json及
+gradient_roundoff_replay.json，原程序953bbcb4...，新程序da395411...。
+本轮未修改生产数值代码，未运行渲染、DCU、长窗或性能测试，
+未操作Git/Slurm。更广消费者、待批准入及完整MB6/MB7仍待收口。
+
+### 10.142 原生FP32新NVIDIA主程序的设备图像与续算
+
+不修改生产数值或浮点模式，另以根CMake构建新C++原生FP32
+渲染主程序，复用既有匹配的ParaView/Viskores native32依赖。
+原CUDA Fortran参考也从当前源码重编，逐组先运行其实际图像
+参考，再运行新主程序的关闭渲染、开启渲染、两步前段和两步
+恢复段。两程序及源码/缓存保存到binaries/，五组原图像参考
+完成后设为只读，不把旧图像当作新C++的图像证据。
+
+全部为32³、643e/643e、scalar十阶显式滤波、四个完整步，
+求解器/后处理采用pinned代表。本轮五组如下，不扩为全部
+精度/边界/通信开关的笛卡尔积。
+
+| 工况 | 实际配置 | 相对原GPU末场最大缩放差 | 实测最大CFL上界 |
+|---|---|---|---|
+| 笛卡尔TGV NP1 | standard-device，固定dt=1e-3 | 1.42304e-6 | 0.163108 |
+| 笛卡尔TGV NP2-x | direct-device，固定dt=1e-3 | 1.42304e-6 | 0.163108 |
+| 周期CURVE NP2-x | standard-device，固定dt=2e-5 | 1.54163e-6 | 0.00359610 |
+| y-wavy/bc41 NP2-y | direct-device，固定dt=2e-5 | 1.36642e-6 | 0.0506973 |
+| 笛卡尔TGV NP1 | standard-device，CFL目标0.5、initial_dt=1e-3、增长1.1，产品按物理时间出图 | 1.48233e-6 | 0.217097 |
+
+每组检查截面、Q_rs=0.25等值面和瞬时流线。固定组在0/2/4步
+出图；自动组按0.002物理时间间隔在相同完整步触发，实际
+时刻分别为0、0.0021000001579523087、0.004641000181436539，
+不把名义事件时间写成实际状态时间。自动组dt逐次为原生
+FP32的0.001、0.0011、0.00121、0.001331，日志保留完整值。
+
+五组共45张正式段800×600 JPEG，72份逐rank渲染记录的
+field_d2h_bytes与geometry_host_bytes均为0；这是渲染路径
+记录，不声称检查点I/O也不传场。没有EPS输出。各物理场
+有限、密度/内能/压力/温度为正，实际权威字段为4字节。
+关闭/开启渲染的state.h5各数据集逐字一致；每组连续四步与2+2恢复
+的15项state数据集、control.bin和insitu_control.bin逐字
+一致，时钟、产品清单与调度接续。恢复段共15张JPEG与连续
+段对应图片逐像素一致，非仅要求图像非空。
+
+跨实现的末场差按D10保留，不套FP64的2e-10。JPEG通道
+0--255尺度上的最大平均绝对差为0.169946，报告此原值，
+不设新的跨实现像素偏差上限，也不把像素相近等同物理精度。
+已实际查看笛卡尔末步Q图及y-wavy末步流线图，图像非空且
+轴、色标和几何显示可辨；并非对所有视角作美学或物理验收。
+
+构建初次遗漏显式Viskores_DIR，补入既有native32路径后通过，
+失败配置日志保留，未更改依赖或系统库。旧参考缓存选择
+userdefine_hbl、新程序选择默认用户模块；差异核查确认本轮
+TGV/读网格、周期或bc41不调用其不同网格/边界入口，两者
+udf_src均无生效的源项运算，缓存与源码分别保留，不伪称
+构建配置相同。旧参考的原有PTX优化与FTZ设置未改；新程序
+沿用已有可视化构建的快速汇编参数，本轮不能用来比较性能。
+
+工具为run_cpp_insitu_gate.py新增的--precision fp32及y-wavy
+夹具选项，默认FP64检查保持；原生采样、色标/相机和真实
+渲染器均复用现有实现。证据为
+results/multi_backend_mb7_native_images_20261116/summary.json、
+run_matrix.py及automatic_command.json；原程序69e1a8a2...，
+新程序af182676...。本轮未增加原生均值/热壁面图像、化学、
+新内存工具、性能或DCU运行；自适应步长不是10.140自适应
+输出事件采集器的图像联合验收。完整MB6/MB7 goal仍active，
+待批的MP正式续算身份与静态剖面原生精度输出准入仍保留，
+没有Git写操作或远程任务操作。
+
+### 10.143 原生FP32均值图像与统计存档解码
+
+复用10.142只读冻结的原CUDA Fortran程序69e1a8a2...、新
+C++程序af182676...及匹配native32 ParaView/Viskores，不再
+重编。生产统计公式、设备数组、渲染器、采样/恢复协议及
+浮点设置均未修改。本轮只扩展测试的原生精度与时钟读取。
+
+| 实际32³四步代表 | 设备管线/分解 | 产品及数值范围 |
+|---|---|---|
+| 笛卡尔TGV，dt=1e-3 | standard-device，NP1 | velocity-time的Reynolds/Favre速度截面与Favre流线 |
+| 笛卡尔TGV，dt=1e-3 | direct-device，NP2-x | selected-time的Reynolds速度、Favre温度截面及Reynolds压力脉动截面；不含新温度梯度 |
+| 周期CURVE，dt=2e-5 | standard-device，NP2-x | velocity-time的两类速度截面和Favre流线，时间窗沿用原FP7曲线夹具[1e-5,2e-4] |
+
+逐组先运行真实原GPU参考，再运行新C++的统计但不渲染、
+统计/渲染同时启用、两步前段与恢复段。三组末场/统计数据集
+均与关闭渲染时逐字一致，末场密度/内能有限且正、字段为
+FP32；连续四步与2+2的15项state数据集、统计数据集和两份
+控制文件逐字一致。均值图在实际完整步1/3触发，恢复后仅
+重现第3步，不用step乘名义dt代替原生实际时间。
+
+正式段共18张800×600 JPEG、30份逐rank渲染记录；恢复段
+共9张JPEG与连续段对应像素一致。全部渲染记录的字段/几何
+回读为0，无EPS；不包含检查点/统计存档本身允许的传输。
+已实际查看周期CURVE末次Favre流线图，几何、轴与色标可辨，
+不以此宣称湍流统计充分或物理轨迹正确。
+
+原生误差按D10保留：相对旧GPU末场最大缩放差1.54163e-6；
+两个velocity-time组的34通道点统计及区域状态最大缩放差
+1.13249e-6，实际点载荷为4字节。selected-time组仍采用现行
+rank_words整数序列化，其图像接线/精确隔离已检查，但本轮
+未新增跨实现选区累积量的解码误差统计，不把缺测写成0，也
+不宣称其存盘大小减半。原生选区数值门槛另见10.129。
+跨实现JPEG通道0--255尺度平均绝对差最高0.111683，保留
+原值而不新增上限；同构建恢复仍要求像素差严格为0。
+
+测试修订只涉及run_cpp_mean_images_gate.py及统计比较器：
+原比较器将metadata中的34个整数位型固定view为FP64，会把
+FP32负数位型误解为非有限/次正规double。现按显式精度将
+有符号32位或64位字恢复为对应Real，再作分析比较；同时
+检查存档kind标记、字段dtype与有限性。FP64的2e-10不变，
+只有显式FP32选择沿用D10；没有改生产序列化或放宽NaN检查。
+六项单元检查覆盖两精度负位型、FP32原值差、FP64超差拒绝、
+FP32非有限拒绝及伪造kind标记。另复读原FP7不可变CPU/旧GPU
+存档：FP64最大缩放差1.33227e-15，FP32为8.34465e-7；不是
+重新运行旧CFD。与10.141读取检查合计10项通过。
+
+**壁面缺项定位，不混淆未实现与未验证。** 当前新式温度梯度/
+剪切/热流图像走index_slice_source，>=28字段仍要求FP64且
+为其原有非反应Cartesian子集，此限制同时约束原后端；本轮
+未解除。另一条仍受支持的旧式wall_curve/wall-time路径则
+不是仅缺图：insitu_fields的capture_channel_walls只有_CUDA
+设备取层支路，C++进入明确的“wall GPU capture requires CUDA
+build”拒绝；insitu_catalog_wall的驻留壁面生产者接线也只有
+_CUDA。不能删检查后读取已过期的主机q，也不能拿旧GPU图像
+充作C++结果。其后续任务是先冻结对应CPU/旧GPU壁面参考，
+再补C++设备壁面供给和所需统计取层，保留原低阶/既有FP64
+高阶公式、几何投影与各自适用范围，不借新FP64诊断替换旧
+原生路径，不因此扩大到AIR5或新的壁面物理精度。
+
+证据results/multi_backend_mb7_native_mean_images_20261117/summary.json、
+run_matrix.py、原始图片/控制与只读参考；没有新Sanitizer、
+性能、长期统计、DCU或Git操作。完整MB6/MB7 goal仍active，
+不能因三组均值图像完成而将旧式壁面或整个消费者范围关闭。
+
+### 10.144 旧式壁面参考冻结遇到共享解析冲突
+
+继续10.143定位的旧式壁面C++缺项，先准备原CPU/旧GPU的
+FP64/FP32参考，而非删设备拒绝后读取过期主机q。夹具沿用
+32³ y-wavy bc41、643e/643e、scalar十阶显式滤波、dt=2e-5、
+四完整步。上下壁各配置瞬时及Reynolds/wall-time的压力、
+有符号剪切和热流曲线，12个CSV产品，固定全局k=4；两精度
+程序分别只读复制已有3efee4eb...与69e1a8a2...，不重编或改
+浮点设置，不运行平台任务。
+
+首个FP64 CPU计算正常推进到4步，末场密度/内能有限且正，
+但检查产品状态时发现上下壁两个wall_shear_x-reynolds记录
+被标为invalid-configuration，其余10个记录active。因此参考
+矩阵立即停止，后续旧GPU/FP32未启动，不能宣称参考冻结通过。
+本次失败是准入/语义分派，不是已观察到的流场数值崩溃。
+
+原因位于insitu_catalog.F90的read_catalog_body：wall_shear_x
+既是旧式wall_curve字段名，也是新分子壁面诊断的字段31。
+通用的31--34均值保护规则要求catalog_wall_mean，但该谓词
+针对新的selected-time壁面路径，导致旧式Reynolds/wall-time
+曲线在进入insitu_catalog_wall.wall_source之前被拒绝。后者
+明确支持Reynolds＋wall-time，并读取现有瞬时壁面量时间累积；
+不应把它解释为“对平均原始量求导后计算剪切”。
+
+待人工决定的最小提案：仅在该解析保护规则中区分
+wall_curve＋reynolds＋wall-time；其余源组合、新温度/剪切
+诊断的FP64/几何限制、瞬时壁面公式、时间累积、窗口及文件
+协议均保持。不要扩大catalog_wall_mean的通用含义，以免让
+旧曲线进入另一套selected-time累积。批准后先验证该组合及
+仍应拒绝的原始量均值路径，再重新冻结受影响参考，随后才
+补C++设备壁面生产者和统计/续算。当前未实施生产修订。
+
+证据results/multi_backend_mb7_legacy_wall_20261117/diagnosis.json、
+freeze.log、首个CPU的输入/状态/输出及insitu_catalog_before.F90；
+freeze_reference.py保留失败版本，不覆盖原始记录。不将已
+完成CPU计算误写为12产品通过，也不绕过拒绝继续生产C++图像。
+完整goal保持active，等待该共享参考规则的人工决定；没有
+Git写操作、Slurm或其他远程操作。
+
+### 10.145 已批准的旧壁面均值解析修复与原参考冻结
+
+用户批准10.144最小提案并恢复goal。仅修改read_catalog_body：
+旧wall_curve＋reynolds＋wall-time不再误入“平均原始量再求
+壁面梯度”的拒绝条件；没有扩大catalog_wall_mean的selected-time
+含义，没有改壁面公式、权重、窗口、协议或新诊断的FP64限制。
+两精度各四项解析对照通过：该合法组合接受，错误velocity-time、
+Favre/wall-time及原始量均值壁面梯度组合仍拒绝。
+
+重新准备既有32³ y-wavy bc41、643e/643e、scalar显式10阶
+滤波、dt=2e-5四步参考。FP64/FP32各有真实CPU/旧CUDA
+Fortran一对；上下壁各三量、瞬时/壁面时间均值共12个CSV
+产品全部active，每精度30帧，每帧33个壁面节点。步号、
+实际时刻及global_i逐值相同，x/y/z/quantity逐列比较，FP64
+最大缩放差1.37266e-15，FP32为7.36942e-7（按D10报告）。
+原程序和四组已验证计算均保存为只读，未量化FP64冒充原生参考。
+
+保留两次测试准备/分析错误：CSV实际为step,time,global_i,x,y,z,value
+七列，最初按四列检查导致分析停止；只重做已完成CPU64的
+分析，不重跑它。另一次给无图像参考设置device处理但render=f，
+被原启动合同拒绝，未进入GPU时间推进。随后明确改用原默认
+无渲染CSV配置，保留失败目录，不改生产准入、不自动切后端。
+旧GPU统计参考按既有路径每样本回读三层壁面状态（FP64
+261360字节），曲线设备生产者每帧仅回读两条线3168字节；
+不将这种参考配置冒称C++全设备壁面链已实现。
+
+证据results/multi_backend_mb7_legacy_wall_20261117/reference_v2/
+reference.json、程序/输入、只读CPU/GPU计算和原失败日志；
+工具prepare_legacy_wall_reference.py。整域壁面ROI覆盖本精度
+可表示的端点，不增加几何裁切容差。当前C++旧壁面设备
+供给和wall-time历史仍未接回；本节只解除参考解析阻断。
+
+### 10.146 已批准的MP续算身份与静态剖面FP32输出
+
+用户同时批准MP预算修订身份及已验证静态读网格剖面的
+FP32正式输出/恢复。根CMake完成两种精度的原实现与新C++
+构建；实际执行的程序散列逐组记录，后补的位用途注释不改
+数值逻辑，不因注释重跑计算。
+
+现有control.bin的contract(7)第5位标识roundoff-interior
+预算，第1位仍区分MP off/flux；字段宽度、魔数和文件数不变。
+标量、非mixed代表中off仍为24、旧预算flux为26、新预算flux
+为58。精确恢复拒绝旧预算；显式非精确仅更新修订位（原
+24掩码扩为56，含几何/历史/MP修订），仍严格检查MP模式。
+没有增加废弃旧I/O格式兼容或新的生产CRC。
+
+实际冻结旧预算整程序b3657d63...产生26标志的新式检查点，
+新C++精确恢复在任何RK前拒绝；显式非精确恢复成功，写回
+58，新旧同相位五变量最大缩放差1.59872e-15。借非精确恢复
+将MP从flux改为off仍被拒绝。该项是数值版本迁移，不是跨
+实现精确续算；强激活保正证据仍见10.132--10.135，不能由
+这些平滑四步窗口代替。
+
+FP32仅扩展现有static_read_profile_definition的输出条件：
+ninit=3、静态Cartesian读网格、无随机吹吸、原有固定吹吸
+容差及格式/边界定义保持。没有连带开放读网格随机吹吸的
+FP32输出，也未改H1/ME6/SBP原生精度围栏。已有743e/643c
+标准出口或incoming_only联合22/52，以及543e/643e的21/52
+子集各作代表，不新增数值格式。
+
+本地10组实际16³四步主程序覆盖CPU32、旧GPU32/64、新C++32/64，
+NP1与NP2-x/y，pinned/explicit及device/dependency代表，固定及
+一组自动步长；包含MP开关、显式滤波和上述两类格式。每组
+连续4步与2+2的15项state数据集、主控制及原位控制逐字
+一致，体场/三方向数值切片恢复帧逐值一致。完整步2/4共20帧
+体场、初始及2/4共90帧切片，六原始字段与同相位权威缓存
+逐字一致，速度向量/分量位型与原生dtype相符；初始切片仅
+核对清单，不当作独立初值物理参考。156份完整RK q/halo
+快照证明输出开关不改变推进；这些诊断回读不是生产默认，
+本轮不作性能或无传输测量。
+
+另在FP32静态剖面＋滤波代表中，实际检查完整源与轻量源的
+非精确恢复：输出仅5个守恒量、rank_extras为空，末物理场
+对连续段缩放差0，时钟衔接。这里不承诺非精确模式一般
+逐值一致；原网格/剖面等输入资源仍按既有协议共享存档，
+RESOURCES含flowini3d.h5、grid.h5、inlet.prof、input.txt，
+不把“无计算geometry.h5”误称为“完全无坐标资源”。
+
+第一组分析误要求archives.bin全文件相同；差异只在末48字节
+的分段回执，调度载荷完全相同。改用既有archive_schedule_payload
+核对调度，保留失败和原计算，仅执行此前未运行的旧版本
+迁移检查，没有改生产恢复合同或放宽数值容差。
+
+证据results/multi_backend_mb7_approved_output_20261117/summary.json
+及逐组report；工具run_profile_checkpoint_gate.py。新MP/静态
+FP32输出尚无DCU执行、更多时间统计/混合/H1联合、跨精度
+或跨拓扑证据，本节不将这些自动标为通过。
+
+### 10.147 已授权DCU补余七项及嵌套统计离线复核
+
+用户批准补交原第三批剩余7项。本次仅提交128215915：
+kshdnormal、单节点4DCU、4rank、每rank2核、30分钟；不重跑
+已通过14项，不修改旧任务。所有远端准备、输入、缓存和
+结果均在~/weiph/mb67_lifecycle_remaining_20261117下；复用
+原冻结GPU c47fa335...、GNU12 CPU 72369146...及原输入，
+只修CPU explicit/GPU dependency的测试配置，未冒称最新
+MP、FP32输出或设备产品也已在DCU运行。
+
+登录节点完成脚本/依赖预检，不在登录节点运行GPU。七项
+CFD均正常执行结束：随机吹吸NP2-x pinned、NP4-xy device、
+四卡RNG恢复，以及双卡z分解自动步长的统计窗口/恢复。
+CPU参考与GPU同为GNU12、同拓扑；实际壁面法向速度最大
+9.80560e-5，非零，未以关闭吹吸绕过。最大五变量缩放差
+6.76726e-15，密度/内能有限且正。随机续算state、三份
+控制、time/dt与标量一致，RNG新式控制魔数为ASTROC09。
+
+原脚本最后的统计文件比较失败：旧C++比较器仅枚举顶层链接，
+把inherited组当成数据集调用H5Dopen。原输出/脚本/失败记录
+均保留，未重新提交、重算或修改该任务的软件。修正本地测试
+工具递归列举组/数据集并检查全部对象身份/类型及数据位型，
+六项定向测试覆盖两精度相同嵌套数据及嵌套值/缺项/类型/
+空组差异，防止仅跳过组掩盖内部差异。
+
+取回实际结果后，独立h5py与修正C++比较器都确认窗口恢复
+74项（含inherited）数据集逐字一致；状态/控制/时钟/标量
+亦一致。窗口启停及采样钟切换发生在0/3/4/6/9，恢复后
+6/9衔接；继承统计非零。窗口输入显式logging.list_steps=0，
+未输出CFL诊断，记录为未测而非0；完整步time/dt日志仍核对。
+
+证据results/dcu_mb67_remaining_20261117/summary.json及evidence/，
+analysis保留原脚本比较器失败与全部7项数值门槛通过这两件事，
+不写成作业脚本通过；未调用Slurm状态查询，会计状态未查询。
+比较器改动仅在测试工具，不向生产检查点增加递归扫描或CRC。
+没有新性能、渲染、MP-on DCU或长期物理验收。完整MB6/MB7
+goal仍active，当前继续项是C++旧壁面设备供给及统计历史。
+
+### 10.148 C++旧壁面私有采样组件，不等于消费者收口
+
+新增共享设备源src_gpu/insitu_wall.cu及C ABI/Fortran接口，
+通过根CMake的astr_device_state构建。只采集y物理壁面的
+守恒量层，借用主程序已有设备度量，不下载或复制完整三维
+流场。静态几何接口接收每壁面节点的坐标、内法向和投影
+切向共9分量，初始化上传一次；生产几何初始化的主程序
+接线尚待完成，当前真实场测试从冻结geometry资源构造。
+
+源码核对确认旧complete_sample_wall_fields_gpu采用的是
+“邻rank下端点复制到本rank上端点”的唯一端点所有权，
+不是在采样时再次平均。新组件严格先补齐守恒量端点，再
+重建物性；曲壁再交换私有壁面速度/温度的x/z三层halo。
+单rank周期路径是设备内复制，多rank显式选择固定pinned
+缓冲或真实device MPI，独立通信域，不自动切换后端。
+
+Cartesian沿用三层单边壁面导数及原八节点高阶壁面闭合；
+曲壁沿用三层法向导数、六阶中心切向导数、完整度量投影、
+Sutherland黏度、应力投影及入气体热流。这里没有以新的
+七节点Cartesian诊断替换旧壁面公式，也未开放新热诊断的
+FP32围栏。当前仅支持既有非反应五变量，未接AIR5。
+
+本地组件矩阵16组：两精度各6个解析/通信代表及2个冻结
+CPU/旧GPU真实场。解析代表包含NP1三层/八层/曲壁，NP2
+x/y/z分解、pinned与真实device通信；每组检查显式/依赖
+同步、父q逐字不变、仅显式观察才下载壁面字段、实际一维
+线与设备字段一致、非法壁面状态集体拒绝以及零壁面拥有
+者生命周期。固定端点故意填入非法值，验证私有端点修复
+后才进行物性转换，而不是依赖主场恰好已有可用重复节点。
+
+FP64解析最大缩放差5.10443e-16；冻结32³ y-wavy、bc41、
+完整步4的上下壁压力/有符号剪切/入气体热流，对原CPU和
+旧GPU实际CSV最大缩放差均5.19146e-16。FP32解析最大
+1.90456e-7、真实场最大2.78715e-7，按D10报告原值，不
+套用FP64误差门槛。两种同步模式的壁面字段逐字一致。
+
+首轮真实场分析脚本误将CSV注释头当作列名；补非法输入
+检查后，测试程序又未恢复用于第二种同步模式的主机副本。
+两次均为测试问题，未修改生产公式/容差，失败与后续证据
+保留。最终证据目录为
+results/multi_backend_mb7_legacy_wall_components_20261117_v5/，
+保存冻结测试程序、源码指纹、各组日志和summary.json；
+工具为run_legacy_wall_components.py、insitu_wall_probe.F90。
+另用最终冻结程序作定向Compute Sanitizer检查：FP64曲壁
+Memcheck含完整泄漏检查为0 errors、0 bytes leaked；FP32
+八节点闭合Initcheck为0 errors，见同目录的memcheck_curve64.log
+与initcheck_sixth32.log。它们不替代后续主程序集成的内存检查。
+
+本节不认领catalog壁面产品已可在新C++主程序中运行。
+下一步仍需接现有wall-time的30分量设备状态与34分量
+序列化、均值供给、选定曲线产品和主程序精确恢复/观察
+隔离，并补实际NVIDIA消费者。最新组件无DCU运行证据，
+不把旧128215915补测移作此组件的证明，也无新增性能结论。
+
+### 10.149 旧壁面曲线与wall-time接入普通C++主程序
+
+insitu_wall_runtime.F90连接设备采样、既有wall-time累积、
+34分量打包/恢复及catalog曲线。三个瞬时壁面量作为单位
+密度的三分量样本，沿用原30分量中心矩状态和截断梯形
+时间权重；没有将“壁面量的平均”改为“平均流场再求梯度”。
+设备历史仅在实际采样/恢复时分配，静态几何在每个私有
+plan建立时上传；历史plan常驻，临时产品plan结束后释放。
+
+共享src仅增加CPP分派，CPU与旧CUDA Fortran的原分支保留。
+新CPP统计不读取陈旧的主机q，也不经CPU计算壁面物性。
+每次壁面统计采样只回读三个int状态标志（12字节），实际
+一维产品另回读六分量选定线；检查点/最终统计输出的事件
+传输不在“每步无流场回读”的范围内。没有新增文件格式、
+CRC、失败后后端切换或任意资源上限，沿用输入中的预算。
+
+本地普通主程序六组代表：FP64/FP32各NP1 pinned；FP64
+NP2-x pinned；FP32 NP2-y pinned；FP32 NP1设备配置的
+direct-device曲线图片；FP64 NP2-z、自动步长、私有真实
+device MPI与standard-device曲线图片。主求解器halo在本轮
+保持pinned，不将私有后处理通信与主求解器通信混为同一设置。
+每组32³ y-wavy、bc41、643e/643e与显式十阶scalar滤波，
+完整四步对照两种冻结参考，并比较连续四步与2+2步续算。
+
+上下壁压力、有符号剪切、入气体热流各含瞬时/壁面时间
+均值，共12个数值产品。NP2参考按匹配拓扑实际冻结，不
+把NP1分区副本直接用于比对NP2的本地历史。最大缩放差：
+FP64五守恒量2.34938e-15、曲线1.76485e-15、壁面34状态
+3.09649e-15；FP32分别1.34541e-6、8.42220e-7、1.52272e-6。
+后者按D10报告原值，无FP64误差上限或长期精度结论。
+
+六组的15项state与79项statistics数据集同构建续算逐字
+一致，主控制、原位控制和产品调度载荷一致；同时关闭
+统计与产品不改变权威状态。自动代表实际dt为2e-5、2.2e-5、
+2.42e-5、2.662e-5，末time为9.282e-5，最大C_upper约
+0.06748。两rank壁面统计的device模式没有主机MPI暂存。
+
+两组实际图片各输出五张正式段、两张续算JPEG（不计前缀
+运行的三张）。压力/平均剪切图均含33个点，数值范围与同帧
+CSV一致，续算像素一致，两张FP32末帧已目视检查。这里
+复用的曲线后端是existing-host-matplotlib：只绘制已归约的
+一维数据。standard/direct是本次设备处理配置，不将此证据
+冒称完整三维GPU场图或GPU绘图器；曲线回执只由rank0保存。
+
+另两组从旧GPU完整步2检查点显式exact_restart=f恢复到4：
+FP64守恒量最大缩放差1.72288e-15、曲线1.21134e-15；FP32
+分别7.56788e-7、6.31665e-7。壁面历史的采样数、窗口及覆盖
+时长保留；它们是跨实现非精确恢复，不称逐字一致续算。
+组件的两点均值/中心矩独立公式、状态逐字打包恢复、均值
+供给检查已扩入16组组件矩阵；Memcheck（含泄漏）及FP32
+Initcheck均0 errors，非主程序渲染依赖的全量内存证明。
+
+证据目录（均保留report.json或summary.json）：
+
+- multi_backend_mb7_legacy_wall_history_components_20261117
+- multi_backend_mb7_legacy_wall_main64_20261117_v2
+- multi_backend_mb7_legacy_wall_main32_20261117
+- multi_backend_mb7_legacy_wall_np2x_20261117_v2
+- multi_backend_mb7_legacy_wall_np2y32_20261117
+- multi_backend_mb7_legacy_wall_images32_20261117_v3
+- multi_backend_mb7_legacy_wall_images64_np2z_auto_20261117_v2
+- multi_backend_mb7_legacy_wall_migration64_20261117
+- multi_backend_mb7_legacy_wall_migration32_20261117
+- multi_backend_mb7_legacy_wall_migration64_memcheck_20261117
+
+以上均位于results/，工具为run_legacy_wall_runtime.py与
+run_legacy_wall_migration.py。最后一组还在普通主程序中以
+Memcheck执行实际旧GPU恢复、壁面采样、曲线和检查点，
+报告0 errors；不是仅对独立核函数的检查。
+失败记录也保留：首轮测试错误
+地在host配置指定postprocess_transport、给CPP求解器传了
+旧GPU的device-aware名称、使用了相对可执行路径，以及
+错误要求每rank都写归约曲线回执。测试修订不改计算公式。
+
+自动步长还暴露通用CflGate只接受固定dt：新增显式变量dt
+测试模式，逐步核对正有限步长、原C_upper门槛和实际RK末态
+time_end/dt_used，不只是删除相等检查。现有CFL日志的
+complete_step是0基循环序号，实际RK完整步号加1；记录中的
+state_time对应末态，工具显式映射，不改CPU/GPU原日志。
+16项单测覆盖原固定/恢复行为及变步、缺项、错时钟/错步长
+与越界CFL拒绝。测试范围不扩大到未测的物理稳定性。
+
+壁面图片调用同时将Fortran的step声明修为c_int64_t，匹配
+既有C++签名，避免32位实参截断；图片准入/渲染宏同时覆盖
+已实现的CPP分支。FP64渲染旧构建的CUDA主机编译器意外
+采用系统GCC15，而C++/ParaView为GCC13，链接缺少
+__cxa_call_terminate；本地改用从首次配置即固定GCC13的
+build_backend_cpp_insitu64_gcc13_v2，不在源码增加兼容垫片。
+其间一次配置被SIGTERM中断，随后默认配置的CPU缓存没有
+用作GPU证据；缺少Viskores_DIR也明确补接现有依赖路径。
+
+MB6/MB7完整goal仍active：原八层壁面闭合的主程序联合、
+其他既有壁面场/物理中跨消费者及本轮新增能力的DCU执行
+仍待，不将此32³ bc41代表扩大成全部壁面或生产级物理验收。
+无Git写操作，也没有提交或查询新DCU任务。
+
+### 10.150 高阶壁面消费者推进：参考诊断头错误，待人工批准
+
+本轮核对现有Hermite7壁面消费者，发现两类问题，尚未修改
+共享CPU写出代码，也没有将失败参考用于数值或图片验收。
+
+新CPP包装层prepare_handle将lreadgrid直接作为curve标志。
+原CPU capture_channel_walls及旧GPU采样器实际使用的是
+lreadgrid.and..not.high_order_wall_enabled：现有Cartesian
+Hermite7子集即使从文件读网格，也使用八节点法向闭合，
+不是普通曲壁的三层法向导数。这是新CPP的分派缺口，
+不是原CPU公式缺陷；依赖匹配参考冻结后再接修订与检查。
+
+准备原CPU/旧GPU的16³ Hermite7 bc41＋local-f6参考时，
+CPU四步正常结束，但现有ASTRIW01读取器无法按协议读入
+壁面诊断快照：应为9个int32的头实际只有7个，缺少末两个
+原点分量，使时间和数组在读取时错位。文件34732字节，
+对应完整9整数头应为34740字节。没有把读取器改为猜测
+7整数头，也没有用“CPU/GPU都写错”认领正确性。
+
+根CMake目标astr_wall_header_probe独立复现：NVHPC26.1
+将int([integer(int64)::1,step,rank,shape(owned),ig0,jg0,kg0],
+int32)的长度计算为7，实际输出[1,1,0,17,17,2,11]；
+显式固定长度数组给出的期望是9项，末三项11/22/33。
+同样的构造式还用于ASTRWS01壁面统计摘要，应为11项、
+实测表达式长度9。上一轮现有实际摘要文件217884字节，
+正确11整数头应为217892字节，原时间数组从offset44
+已开始，而协议读取位置应为52。两项均少8字节。
+
+这影响CPU/旧GPU共用诊断快照及壁面统计摘要；正式HDF5
+state/statistics检查点、已验证的79数据集恢复和CSV/JPEG
+不使用这两个原始二进制头，现有证据不因此失效。原始
+摘要的读取能力不能由HDF5或图片通过推断为正确。
+
+待人工批准的最小方案：两处写出分别用固定header(9)
+与header(11)，逐段赋值版本/步号/rank、三个shape值、
+三个原点，以及统计摘要的nfields/profile，再写原数据。
+保持ASTRIW01/ASTRWS01魔数、数值数组、类型和正式检查点
+合同不变，不增加旧损坏诊断文件兼容。批准后先验证实际
+文件字节长度与字段身份，再冻结参考、补新CPP八节点分派
+和显式壁面数据消费者，不能靠放宽误差阈值继续。
+
+证据results/multi_backend_mb7_high_wall_consumers41_20261117/
+中的CPU原始输出、header_probe*.bin及header_probe.log；
+prepare_high_wall_consumers.py和wall_header_probe.F90保存
+具体复现步骤。GPU参考尚未执行，新CPP高阶消费者未运行。
+
+另核对当前消费者入口：native_output只设为true，生产
+render_native_if_due在进入旧静态壁面渲染前即返回；不为
+移植而恢复已停用的旧输出入口。仍活跃的wall_curve、显式
+壁面数据、FP64 Cartesian七节点诊断/壁面场和物理中跨
+曲线应分别核对，不互换三层、八节点与七节点定义。最后
+一类wall_midspan的CPP分派仍未实现；此处仅记录真实依赖，
+不将死入口重新列为新增三维产品任务。整个goal仍active。
+
+### 10.151 SBLI物理中跨壁面曲线接入与双卡内存检查未决项
+
+在10.150共享诊断头修订待批期间，完成不依赖该二进制格式的
+wall_midspan新C++设备供给。冻结实际原CPU与旧CUDA Fortran
+参考，使用既有64×48×5区间HCW夹具、四个完整步、FP64、
+743e/643e、11/22/41/52边界，关闭全局滤波。只覆盖静止、
+不可穿透、可分且递增的Cartesian底壁与x方向分解；不扩大
+到吹吸、均值、FP32、一般CURVE或AIR5。
+
+保留原七节点六阶壁面导数及归一化：输出p/pinf、Cf及正向
+进入固体的归一化热流。分别在物理z中跨两侧层计算非线性
+诊断，再按实际几何位置插值，不能先插值守恒量再计算。
+制造场两层采用不同密度、温度与斜率，另含六次项，独立
+检查七节点导数及插值顺序。组件最大缩放差1.18309e-15，
+NP1/NP2、pinned/device及两种同步配置通过；pinned双卡
+Memcheck、单卡Initcheck均为0 errors。
+
+新增供给复用insitu_wall.cu及C ABI，借用权威设备状态，
+只采集每rank的7层×2个中跨层×5守恒量条带；私有通信先
+规范共享x端点，不再次平均。静态x坐标在创建时上传，
+每事件仅回读四列曲线及状态标量，不回读三维场。双卡实际
+每rank曲线回读1056字节，rank1发送560字节设备端点包，
+私有device模式的主机暂存H2D/D2H均为0。
+
+普通主程序NP1 pinned及NP2 device代表取得：五守恒量对
+原CPU/旧GPU最大缩放差6.53305e-15，曲线5.28714e-15；
+独立从q和七节点权重重算也通过2e-10门槛。连续四步与
+2+2续算的15项状态、控制与调度一致，关闭观测不改权威场。
+三种曲线由既有主机Matplotlib绘制，正式段9张JPEG和恢复
+段3张JPEG像素一致；不是三维GPU渲染器或全设备出图。
+参考dt=1.9193784207523191e-4，实际最大C_upper约0.500048，
+不声称严格CFL≤0.5或四步已形成物理充分发展的SBLI。
+
+单卡普通主程序Memcheck为0 errors；另加的双卡device
+Memcheck未通过，两个rank分别报告8556/12999个CUDA API
+错误，以99退出。首个错误位于MPI_Init中的
+uct_cuda_copy_set_ctx_sync_memops/cuCtxSetFlags，随后还有
+UCX分配句柄查询错误，早于新采样器执行。CFD虽到达第四步，
+不能据此认领该双卡内存检查通过，也未屏蔽错误、改MPI或
+自动重试。需要独立定位工具/通信上下文交互；不以单卡或
+无工具双卡数值结果替代它。失败原日志完整保留。
+
+最新共享源另以原生FP32完成原有wall-time的旧GPU→C++
+非精确恢复回查，最大五变量缩放差7.56788e-7，壁面历史
+7.39322e-7，均按D10报告原值；未开放FP32 SBLI中跨产品。
+
+证据均在results/：
+- multi_backend_mb7_sbli_wall_reference_20261117
+- multi_backend_mb7_sbli_wall_components_20261117
+- multi_backend_mb7_cpp_sbli_wall_np1_20261117_v3
+- multi_backend_mb7_cpp_sbli_wall_np2_device_20261117_v2
+- multi_backend_mb7_cpp_sbli_wall_memcheck_20261117
+- multi_backend_mb7_cpp_sbli_wall_np2_device_memcheck_20261117（失败）
+- multi_backend_mb7_sbli_shared_legacy32_regression_20261117
+
+工具为prepare_sbli_wall_reference.py、run_sbli_wall_components.py
+及run_cpp_sbli_wall_gate.py。参考/首轮失败目录不覆盖；测试
+元数据、输出目录遗漏与过早检查context的接线缺陷已修正，
+没有放宽数值阈值。高阶八层闭合主程序、共享诊断头审批、
+双卡工具错误及最新模块DCU执行仍待。原1--3项审批已按
+10.145--10.146落实，第4项授权已用于10.147任务128215915，
+不重复提交，也不作为新模块DCU提交授权。未进行Git操作。
+
+### 10.152 双卡设备通信工具报错的独立归因与pinned内存检查
+
+新增根构建测试目标astr_backend_mpi_cuda_context，源文件仅含
+MPI_Init、rank/size、整数Allreduce及Finalize，不链接本项目
+设备状态库，不调用任何ASTR采样器、CUDA分配或计算核。
+构建由根CMake完成，测试程序散列6c47cc294cdbfef2...。
+这个最小程序在相同HPC-X双rank UCX环境下完成sum=1，
+Compute Sanitizer却分别报25/29个CUDA API错误、以99退出，
+首个仍是MPI_Init内cuCtxSetFlags无当前上下文。显式指定
+--report-api-errors explicit后结果相同，不是ASTR新采样核
+造成的首个错误，也不是最新手册中extended默认值的变化。
+本地实装工具为2025.4.0，帮助给出的默认本来就是explicit。
+
+纯MPI的ob1对照不调用CUDA：工具默认要求CUDA初始化而以
+255结束；该记录不冒称内存错误。仅对这个明确无CUDA的
+对照指定--require-cuda-init no后，双rank正常归约且退出0。
+该选项未用于ASTR实际计算，未关闭CUDA API错误检测。
+无工具的同一UCX程序也正常归约退出0。
+
+LD_DEBUG=libs实际加载记录确认原任务环境使用HPC-X2.25.1
+的ompi与ucx/mt/lib及对应CUDA模块，不是裸ldd插件时显示
+的系统路径混装。匹配运行库的ucx_info为1.20.0、be940c1。
+官方UCX的同版源码中，detect_vmm主动调用
+cuMemRetainAllocationHandle，失败就按非VMM返回；这解释
+为什么地址属性探测可能产生API报错，并非一次设备越界读。
+源码行号与厂商构建不同，不把上游标签当成本地补丁逐字证据。
+上游也曾记录MPI_Init无上下文探测的同类问题，但旧修复记录
+不证明本地新调用已修复。参考：
+- https://github.com/openucx/ucx/blob/v1.20.0/src/uct/cuda/cuda_copy/cuda_copy_md.c
+- https://github.com/openucx/ucx/issues/9493
+- https://docs.nvidia.com/compute-sanitizer/ComputeSanitizer/
+
+另外完成真正的双rank普通ASTR短测：NP2-x、pinned私有
+后处理通信、同一13a02688...主程序及原四步SBLI输入。
+两个rank的Memcheck均0 errors；五变量最大缩放差仍为
+6.53305e-15、壁面曲线5.28714e-15。连续/2+2续算15项
+权威状态逐字一致，关闭观察的15项状态一致。pinned端点
+每事件发送560字节，发送/接收rank分别如实记录D2H/H2D
+暂存；没有把pinned结果标成device零暂存。
+
+纯MPI复现及实际加载记录在
+results/multi_backend_mb7_ucx_context_diagnosis_20261117/；
+普通双rank通过证据在
+results/multi_backend_mb7_cpp_sbli_wall_np2_pinned_memcheck_20261117/。
+独立复现已定位至少初始化错误属于UCX探测，不是新增壁面
+核；原device主程序日志仍有未打印的API报告，不能据此
+把其全部8556/12999项都判无害或宣称完整工具检查通过。
+未修改公共MPI、SDK或ASTR生产初始化，没有加抑制文件、
+错误白名单、fallback或自动重试；没有Git或远端操作。
+
+后续仍保留10.150共享诊断头的人工决策，以及高阶壁面
+消费者和最新DCU联合验证。完整MB6/MB7 goal继续active。
+
+### 10.153 M12稀疏监测点与MP7兼容出口阶段补接
+
+按4.3.1继续迁移仍活跃的消费者：原m12_probes在旧GPU可用，
+新C++此前会拒绝。新增insitu_m12_runtime.F90，只管理原72点
+映射、唯一所有者、MPI归约及生命周期；设备算术放在共享
+insitu_sampling.cu，通过C ABI调用，不从CPU q取值或整场回读。
+每点仍输出u/Uinf、v/Uinf、w/Uinf、rho/rhoinf、p/pinf、T/Tinf，
+速度尺度沿用全域自由来流速度模长，温度按原p/rho*const2重建。
+保留原CSV列、完成步相位、产品清单及恢复格式。初始化时
+只上传索引，未启用时不分配设备缓冲；完成时释放父状态借用。
+
+先冻结实际原CPU/旧GPU的64×32×24区间、NP2-x四步参考，
+dt=0.02、Ma12、743e/643e、11/22/41/52 compatibility、原
+legacy_random吹吸与海绵。原二维资源只读：按原UDF的
+z=(90/ka)*k写成静态三维网格，并沿z复制原二维初场，显式
+使用lreadgrid/ninit3，以便通用根构建读取；未改变网格节点
+或初场值。第一轮遗漏UDF而得到零几何的夹具失败保留，
+没有将它解释成求解器网格缺陷，也没有修改原M12目录。
+参考五变量最大缩放差1.90399e-15，旧探针对终态q的独立
+重算最大1.97135e-15。它只覆盖本短窗，不是生产转捩验收。
+
+接入时发现新C++尚缺原743e/643e compatibility出口分派：
+两个出口标志均为false，basic_boundaries的bc22返回-1，
+早于首次探针调用。现复用原profile_nscbc_outlet判据，把非
+提前RHS分支接到已有出口滤波/交换与随后完整对流RHS；
+按原profile_low_order_nscbc定义决定是否保留底壁展向项，
+仅在已有top_keep_corner模式施加出口/顶面投影。未改CPU、
+旧GPU、边界公式、目标、滤波或默认模式，不靠切换边界绕过。
+该缺口对应的首个失败目录也保留。
+
+实际新C++普通主程序通过：每步72点，4步共288条；每rank
+4324字节设备缓冲、初始化索引上传864字节，每次回读3456
+字节归一化数据及4字节状态。两rank分别唯一拥有54/18点，
+不是只有一个rank实际采样。父q只读、不规范化/平均节点，
+不借用可过期物性缓存；归约是现有的小型主机MPI归约，不能
+把它称为设备MPI零回读。相位回执逐rank核对1/2/3/4步。
+
+对原CPU/旧GPU，五变量最大缩放差2.09439e-15，六探针量
+4.19358e-14；从当前同相位q独立重算探针差为0。全物理场
+有限且rho/internal-energy最小值0.0815162/0.0114837；
+最大C_upper约0.061420。观察开关不改15项状态，连续4步
+与2+2的15项状态、控制（含既有RNG历史）、调度及恢复后
+CSV数值逐字一致。两个rank普通主程序Memcheck均0 errors。
+
+共享稀疏组件另检查不同参考尺度、重复点、非所有者零贡献、
+非法索引拒绝、非法选点密度后恢复、父状态逐字隔离和借用
+生命周期，以及精确的分配/传输计数。FP64解析差0；NP2
+Memcheck为0 errors/0 bytes leaked，NP1 Initcheck零错误。
+原生FP32同源组件完成NP2 Initcheck零错误，解析差原值
+7.45059e-9，按D10保留，不据此开放FP32随机吹吸输出或
+认领原生FP32 M12完整消费者。原CPU/旧GPU共享分支也已
+重新构建；数值参考仍使用原先冻结的9afc4cbf...程序。
+
+为检查未改动的既有分派，另以新4b38a033...程序复核NP2-x
+KEEP/ME6计划中的KEEP nonreflecting代表（非本次M12格式）：
+准备场/缓存最大缩放差2.88658e-15，完整RHS2.28568e-17，
+末场1.24164e-15；观察隔离、15项精确恢复、全部q、控制与
+标量一致。未重跑完整旧矩阵，也未把此代表扩大为全部联合。
+
+证据results/下：
+- multi_backend_mb7_m12_probes_reference_20261117_v2（只读原参考）
+- multi_backend_mb7_sparse_probes_components_20261117
+- multi_backend_mb7_cpp_m12_probes_20261117_v2/report.json
+- multi_backend_mb7_m12_unchanged_keep_regression_20261117/report.json
+
+工具为run_cpp_m12_probes.py、sparse_probe.F90。此次仅接通
+m12_probes；新C++的m12_wall、M12预设二维/三维设备出图、
+一般平板预设与只读预览尚未接完，不把已有通用catalog图片
+当成这些入口的证据。新模块尚无DCU执行，10.150诊断头
+修订仍待人工批准，10.152 device/工具问题仍独立保留。
+本轮无Git或远端操作，完整goal继续active。
+
+### 10.154 M12展向平均壁面CSV及与探针的联合续算
+
+接通旧m12_wall产品，不用10.151物理中跨的七节点定义替代。
+原壁面量为展向几何加权平均：三层二阶法向导数计算du/dy
+及dT/dy，壁面吹吸的dv/dx用原物理端2/4/6阶闭合；
+剪切为mu*(du/dy+dv/dx)，再以0.5*rhoinf*Uinf²归一化。
+热流正向进入固体，按((mu/Pr)/const5)*(dT/dy)/(rhoinf*Uinf³)
+归一化。速度尺度仍是自由来流速度模长。先逐k计算物性和
+壁面量，再按周期末端归并的梯形几何权重平均，不先平均
+温度或速度。该旧M12定义只用相应对角度量，不能冒称为
+一般曲壁的完整张量投影，也不替代新七节点热壁面产品。
+
+先冻结实际原CPU/旧GPU的同一64×32×24区间、NP2-x、
+Ma12、743e/643e、compatibility联合NSCBC、随机吹吸及海绵，
+dt=0.02四步。独立从q与几何重算时，初版测试误用110.4 K
+而原ASTR默认Sutherland常数为110.3 K，产生约1.06e-7差；
+核对perfect_gas_transport后仅修测试常数，同一已完成旧结果
+重算差降至2.30393e-19。失败夹具保留，新只读v2参考另存；
+没有改变原物性模型或把该差异归咎于CPU/GPU。
+
+共享insitu_wall.cu新增profile-wall设备观察者及C ABI，
+insitu_m12_runtime.F90提供原调度调用。直接只读当前完成步
+q及其halo、设备度量，保留原端点语义，不再平均节点或读取
+可能过期的物性缓存。静态展向权重仅初始化上传一次；设备
+完成三层转换、导数、Sutherland、归一化及展向积分，每次
+只下载三列曲线和状态，不下载壁面平面或三维场。
+
+本地FP64普通程序e0b7457b...实际完成NP2-x pinned和真实
+device solver-halo两组。每组四个完整步，探针每步72条，
+壁面每步覆盖全部65个唯一x节点；保留原global_i,x,Cf,
+q_into_wall_rhoinf_Uinf3四列CSV。两种通信下，相对原GPU
+壁面最大缩放差1.90075e-18，独立q/几何重算差1.08421e-19；
+五守恒量2.09439e-15、探针4.19358e-14，仍在原2e-10内。
+两组均通过15项状态的观察开关隔离、连续4步与2+2精确
+恢复，控制/RNG/调度及恢复后CSV逐字一致。pinned普通
+主程序两个rank的Memcheck均0 errors；device组未运行
+Memcheck，不抹除10.152既有UCX工具问题。
+
+此夹具每rank的壁面可控设备缓冲7132字节，静态权重上传
+6336字节，每次曲线回读792字节及状态4字节。若同时启用
+72点探针，两者设备缓冲合计11456字节；不含求解器、驱动、
+正式检查点及第三方资源。两类观察者独立按产品首次调用
+分配并在结束时释放，没有给checkpoint增加设备指针或
+可重建工作数组。这里的device是求解器halo后端，壁面
+观察者自身没有新增MPI或主机暂存交换。
+
+根目标astr_backend_profile_wall以独立多项式速度/温度和
+非均匀展向权重检查：法向与吹吸切向剪切贡献、热流符号/
+尺度、周期末端权重、MPI物理端/内部模板、非法权重拒绝、
+非法密度后恢复、父q逐字隔离/生命周期、精确字节计数。
+未消费的q区域置为非法测试值，不能误读成有效物理场。
+FP64 NP1/NP2、两同步模式最大解析差3.46945e-18，NP2
+Memcheck零错误/零泄漏，NP1 Initcheck零错误。原生FP32
+同源组件的NP2 Initcheck零错误，解析差原值3.49246e-9按
+D10保留；仍不据此开放FP32 M12完整随机吹吸归档/消费者。
+共享原CPU/旧GPU分支另已重新构建，没有改变其数学。
+
+证据results/下：
+- multi_backend_mb7_m12_wall_reference_20261117（测试常数错误，保留）
+- multi_backend_mb7_m12_wall_reference_20261117_v2（只读有效参考）
+- multi_backend_mb7_profile_wall_components_20261117
+- multi_backend_mb7_cpp_m12_wall_20261117/report.json
+- multi_backend_mb7_cpp_m12_wall_device_20261117/report.json
+
+工具run_cpp_m12_probes.py的--wall联合原两个产品，
+--transport显式选择solver halo；profile_wall_probe.F90保存
+制造量与失败控制。此处没有新图片、M12预设设备渲染/一般
+平板预设/只读预览或新DCU证据，亦不是生产转捩/物理定常
+验收。10.150共享诊断头仍待人工批准；完整MB6/MB7 goal
+继续active。本轮未执行Git或远端操作。
+
+### 10.155 M12/通用平板动态清单图像、两设备管线及恢复
+
+确认生产出图只走完成步动态清单；旧render_native_if_due
+在native_output下直接返回，未恢复旧静态渲染器。先用当前
+源码重编原CUDA Fortran Catalyst分支，冻结真实四步M12
+图像并核对既有CPU/旧GPU主场。旧Nov14二进制在读网格/
+随机吹吸检查点登记前拒绝，保留失败目录，不改边界或
+关掉吹吸绕过。原渲染构建使用examples/userdefine_hbl.F90；
+夹具显式读取三维网格/初场且环境UDF为空，不调用其网格
+生成，实际主场对既有参考通过。新旧使用NVHPC26.1、GCC13、
+CUDA13.1、私有Catalyst2.1/ParaView6.1.1，不作性能结论。
+
+新增profile_insitu_cpp_supported，匹配原GPU的MP7-LD剖面
+供给条件；configure_session接回既有m12_diagnostics及
+64×32×24 boundary_layer范围，不用尚未初始化的context
+作启动判定。M12第一个完成步还残留旧隐式采样围栏，现
+仅在旧输出分支调用原采样器，当前C++产品由动态清单
+执行，不重复生成旧统计文件或增加空实现成功。只读预览
+明确仍未接入；数值公式、物理边界及阈值不变。
+
+使用原M12短测JSONL的固定k=12截面、z=45物理切片、
+Q_rs=0.001等值面、bl-layered64瞬时流线、六字段数值截面
+及压力点监测。测试频率为每2步，800×600 JPEG only；CFD
+仍为64×32×24、NP2-x、dt=0.02四步，743e/643e、11/22/
+41/52 compatibility、原随机吹吸及海绵。旧预设不接受预算
+-1时直接传既有unlimited_budget_bytes值，不增设资源上限。
+
+首版示例相机遗漏上游Q几何，虽有282个三角形，图片接近
+空白；未据此认领有效展示。仅调整测试相机/视野：二维图
+覆盖整域，Q对准上游，流线斜视；采样范围、Q阈值、种子、
+积分与CFD参数不变。保留v2，原GPU与新C++以同一新相机
+另验v3。实际JPEG已检查，Q在视野内；800×600下长条域
+64条层流流线仍投影密集，不宣称生产展示质量或成熟湍流。
+
+新普通程序bc35ccbe...通过三组代表，不做配置笛卡尔积：
+
+| 预设 | 管线 | 求解器halo / 后处理私有通信 |
+|---|---|---|
+| m12_diagnostics | standard-device | pinned / pinned |
+| m12_diagnostics | direct-device | device / device-aware |
+| boundary_layer | standard-device | pinned / pinned |
+
+boundary_layer先误选direct-device，被原解析器拒绝；随后
+按原standard/pinned范围验证，未放开该组合。三组各12张
+正式段JPEG（步0/2/4）、4张恢复JPEG，共36+12张。主场
+最大缩放差2.09439e-15，数值截面1.88702e-15，其中Q_rs
+7.72828e-16；当前截面五原始量对终态q独立重算差0，坐标
+对静态资源逐字一致。末步Q合计248点/282三角形。跨实现
+图像差保留原值，最大8位通道平均绝对差1.40278e-4，不
+称全部跨实现像素一致。
+
+三组观察开关的15项状态逐字一致；连续4步与2+2恢复的
+15项状态、控制、调度、数值截面及恢复图片像素一致。
+图像field_d2h_bytes与geometry_host_bytes回执均0；pinned
+流线私有halo每rank每事件H2D/D2H各174096字节，device-aware
+应用层计数均0，不推断UCX内部一定无主机中转或RDMA。
+数值产品及正式检查点自身允许传输，不能称整次测试完全
+无流场回读。本轮未对渲染联合运行Memcheck。
+
+历史test_m12_integration_contract.py与test_m12_render_config.py
+合计16 passed、2 skipped、5 failed。失败为旧源码文本断言：
+crashfix条件及CPU临界通量fallback、MP旧环境变量入口/
+旧续算位表达式、旧sample_insitu_step(nstep+1...)调用字样
+不匹配当前源码；指向本轮未修改的主循环、旧GPU crashfix/
+MP及output_runtime。未顺手改测试或代码，未认领该组通过，
+也不用上述实际数值/图像矩阵代替该历史测试组。
+
+有效证据results/：
+- multi_backend_mb7_m12_images_reference_20261117_v3（只读原GPU）
+- multi_backend_mb7_cpp_m12_images_20261117_v3
+- multi_backend_mb7_cpp_m12_images_direct_device_20261117_v2
+- multi_backend_mb7_cpp_boundary_layer_images_20261117_v2
+
+各组report.json、runner.py、输入、回执、JPEG/HDF5及续算
+输出保留，旧二进制拒绝、原相机及首轮围栏失败目录亦保留。
+工具run_cpp_m12_images.py。仅本地FP64短窗，无生产规模/
+物理定常、原生FP32 M12或新DCU证据。只读预览、高阶壁面、
+10.150共享诊断头人工决定仍待；完整goal继续active。
+本轮未执行Git或远端操作。
+
+### 10.156 FP64 TGV只读瞬时及已保存均值预览
+
+新增insitu_preview_runtime.F90，复用既有Catalyst设备流线与
+预览候选缓存；没有自建渲染器。output_runtime的CPP分支
+读取完整role2状态和保存几何，cpp_prepare_preview_state只
+分配并上传q、rho/vel/prs/tmp缓存及度量。不调用普通推进初始化，
+不配置/推进边界、驱动力、RNG、修复历史或RK；x/Jacobian
+保留在恢复后的主机数组，周期TGV追踪不消费求解器Jacobian。
+渲染Fortran模块仅在CPP且Catalyst/设备产品开启时链接，
+关闭Catalyst的普通C++主程序也已重新构建。
+
+均值来源是检查点实际保存的30分量中心矩历史，不以瞬时值
+代替均值、不新增样本。insitu_sampling新增唯一节点向量入口，
+直接读取Reynolds的6/7/8或Favre的9/10/11零基列；私有
+设备缓冲先复制所有者到重复上端点，再按原规则交换halo。
+不平均历史、不写回原场。只为候选实际请求的均值分配私有
+halo，不再构造整场主机均值。原34分量打包接口仅用于显式
+测试审计，逐字比较原始历史、上一采样状态、窗口和时钟。
+
+本地实际预览矩阵使用已有完整检查点，不启动新CFD：
+- 32³、NP1及NP2-x、step4/t=0.004的瞬时两视角；
+- 32³、NP1、step4/t=0.004的瞬时两视角加Reynolds/Favre各一图。
+
+全部采用standard-device/pinned、FP64、800×600 JPEG only。
+均值实际覆盖0.0005至0.004、时长0.0035，不宣称统计充分。
+原CUDA Fortran分别冻结实际只读参考；新C++的八张JPEG与
+对应原图像素一致。每rank相机变化的积分回执为1/0，均值
+速度改变各新增一次积分。恢复后advances=0；没有RK推进、
+新检查点/整场/EPS输出。源运行所有文件的内容、大小和mtime
+不变，审计的q/原始量缓存/度量以及加载的34分量统计逐字
+不变；不加载统计的瞬时组明确记录statistics_loaded=0。
+最新候选b6e9ebb7...的NP1均值与NP2瞬时Memcheck均零错误。
+审计会显式整场回读，仅BUILD_TESTING且选择测试开关时执行，
+不能把测试审计传输或恢复上传称为零传输生产运行。
+
+独立astr_backend_owned_vector使用不同的解析Reynolds/Favre
+列、周期唯一节点、独立q=77，检查全部重复端点和±3 halo。
+NP1、NP2-x pinned、NP2-y device、NP2-z pinned，两同步模式
+均逐值等于解析值；统计与父q逐字隔离。NP2-x Memcheck为
+0 errors/0 bytes leaked，NP2-z Initcheck零错误。该组件检查
+不代替双卡均值真实图片、非周期或物理坐标预览验收。
+
+保留以下未通过范围，不扩大准入：尝试复用的NP2均值来源
+实际上为16³，被原32³预览条件在恢复前拒绝，没有新建场
+冒充该参考；direct-device预览已恢复并追踪，但预览脚本为
+显示范围添加六个裁剪面，既有DirectDeviceMapper明确拒绝
+非零裁剪面，因此未出图。标准设备管线成功不替代该失败，
+未自动切换管线或修改共享Mapper。原、新标准预览也均报告
+既有vtkVectorText的Text is not set诊断；实际图片已查看，
+不把文件产出称为渲染诊断完全无误，未修无关文字组件。
+
+证据results/：
+- multi_backend_mb7_preview_reference_20261117
+- multi_backend_mb7_preview_np2_reference_20261117
+- multi_backend_mb7_preview_means_reference_20261117
+- multi_backend_mb7_cpp_preview_np1_20261117
+- multi_backend_mb7_cpp_preview_np2_20261117_v2
+- multi_backend_mb7_cpp_preview_means_20261117_v2
+- multi_backend_mb7_owned_vector_components_20261117
+- multi_backend_mb7_preview_means_np2_reference_20261117（16³来源拒绝）
+- multi_backend_mb7_cpp_preview_np2_direct_20261117（裁剪拒绝）
+
+工具run_cpp_preview_gate.py和owned_vector_probe.F90。早期
+已通过的逐步候选目录保留，未覆盖原证据。没有新DCU执行、
+生产计时、原生FP32预览或M12物理预览证据。10.150的共享
+壁面诊断头修订仍待独立人工批准；原1--3项已按10.145--
+10.146实施，第4项已用于128215915，不重复消耗授权提交。
+完整MB6/MB7 goal继续active；本轮没有Git或远端操作。
+
+### 10.157 M12物理坐标只读预览及TGV双卡均值预览
+
+继续补10.156的真实消费者，不修待批准的10.150诊断头。
+现存M12来源为450×130×96区间、NP2-x、743e/643e、
+11/21/41/50、step10000、t=200.00000000002851。它来自已
+结束的历史运行，不新生成CFD。脚本明确将保存的旧输入与
+controller离线转换为具名输入，不向程序恢复旧解析入口；
+恢复仍只读取控制前缀、完整场及静态几何，不导入吹吸RNG/
+控制器/修复历史，也不调用普通求解初始化或重建物性。
+
+insitu_sampling增加保存坐标的独立入口：一次上传物理节点
+的(3,N)坐标，复用已有内部MPI坐标halo扩展，不做周期坐标
+回绕。保留打包坐标和halo直到消费结束，随私有plan释放；
+按现有输入预算核对峰值，不新加固定资源上限。新预览只给
+原设备产品提供实际物理坐标和速度halo，不自写积分器或
+渲染器，不改变原种子、相机、RK45、色标或显示裁剪范围。
+
+独立astr_backend_insitu_vectors组件增加新入口与原设备坐标
+来源的逐字比较，检查两种光滑映射、重复捕获、两同步模式、
+唯一原始值和整个±3 halo、外部零填充、不发生坐标周期回绕、
+原输入与父q隔离。NP1、NP2-x pinned、NP2-y device与NP2-z
+pinned均无坐标/速度差；x的Memcheck零错误/零泄漏，z的
+Initcheck零错误。原断言也同步计入新增坐标halo通信和峰值，
+没有把一次坐标上传混进既有MPI暂存H2D计数。
+
+先冻结当前原CUDA Fortran的实际64/256分层种子预览，再由
+新C++程序d2d8dbfe...读取同一来源，各出两张800×600 JPEG。
+两图像素完全一致；256种子组的512条已记录终止状态、步数、
+长度和终点文本逐rank完全一致。日志按rank重复全局轨迹，
+不合计成1024条独立粒子。图片已查看，不以此认领转捩物理
+验收；来源本身不是本轮新生产仿真。新C++每rank一次坐标
+上传68922768字节，提取几何的主机回读为0；恢复、测试审计
+和pinned halo各有其必要传输，不能称整次运行完全零回读。
+
+新预览额外的BUILD_TESTING审计核对进程Fortran RNG：两个
+rank均rng_mismatches=0；q/缓存/度量的全部字逐值不变，源
+运行文件内容、大小和mtime不变。advances=0，没有新场、
+检查点、EPS或统计样本。此M12大来源未联合Memcheck；上面
+的组件检查与下面的TGV检查不能替代它。原/新M12均有既存
+vtkVectorText空文本诊断，未修无关文字模块或宣称诊断全清。
+
+另找到此前已经合格的32³ TGV NP2-x历史源，显式离线转换
+输入，保留保存的统计窗0.003至0.004、覆盖时长0.001。
+新旧各出瞬时两相机、Reynolds、Favre共四张图，逐像素一致。
+每rank积分回执1/0/1/1，流场/完整34分量历史与窗口/进程
+RNG逐值隔离，原文件不变，无推进；新程序两个rank的
+Memcheck均0 errors。它是新的有效来源，不改写上一轮16³
+来源被拒绝的记录，也没有放宽原32³准入。
+
+有效证据results/：
+- multi_backend_mb7_preview_coordinates_components_20261117
+- multi_backend_mb7_m12_preview_reference_20261117（只读原参考）
+- multi_backend_mb7_cpp_m12_preview_20261117/report.json
+- multi_backend_mb7_cpp_m12_preview_20261117/trajectory_comparison.json
+- multi_backend_mb7_preview_means_np2_32_reference_20261117（只读原参考）
+- multi_backend_mb7_cpp_preview_means_np2_32_20261117/report.json
+
+根CMake的FP64有/无Catalyst、原生FP32无Catalyst三种C++
+主程序已重新构建；后者仅核对公共接口构建，不开放FP32
+预览或外推本次FP64图像门槛。历史
+test_insitu_preview.py默认单元检查为15 passed/19 skipped/
+1 failed，首个失败是独立c++命令未提供公共src/astr_precision.h
+的搜索目录；不涉及本次坐标核的执行。该旧测试未修改，也
+未用新组件通过掩盖其失败。新工具run_cpp_preview_gate.py
+的Python语法检查完成；未改已有输入或检查点格式，新增
+坐标供给C ABI与Fortran绑定独立于求解器状态和历史。
+
+本轮无Git/远端操作。高阶八节点消费者仍需10.150诊断头
+修订的独立人工批准；direct-device预览的原裁剪面限制仍
+未解决，最新消费者/DCU数值批次亦无新运行证据。完整goal
+继续active，不把此次消费者闭环当作整个MB6/MB7完成。
+
+### 10.158 当前公共源的DTK FP64/FP32构建与输入准备
+
+在10.150诊断头修订等待决定期间，继续不依赖它的跨后端
+构建。仅通过ssh cancon在~/weiph/内创建独立目录
+mb67_consumers_build_20261117；不覆盖旧源码/二进制/算例，
+未调用任何Slurm命令，也未在登录节点执行GPU程序。
+
+实施HEAD仍为2df6d1d及本地未提交改动；快照1901个当前
+源/构建/原示例文件，未压缩88534745字节、压缩约5.3 MiB。
+实际逐文件摘要、归档成员和传输归档摘要均保留。没有包含
+chem/、私人手册或图片/演示文件；包含仓库已经跟踪的旧
+示例机理文件，初次manifest的no chemistry data措辞过宽，
+已在build_receipt中明确更正范围，不改写原快照/参考。
+
+构建实际在login07、pid43229启动。DTK26.04/GNU12.2、
+gfx906目标、原私有ROCm-aware UCX1.18.1/OpenMPI4.1.5及
+GNU12 HDF5 1.14.6组合不变；两种precision均通过根CMake，
+ASTR_GPU_CPP_BACKEND=gpufusion，CUDA Fortran/Catalyst/AIR5
+关闭。全部源、HOME、临时目录、缓存、日志位于工作边界内。
+
+完成的目标与证据界限：
+- FP64普通astr/比较器，以及采样、保存坐标向量、唯一节点
+  均值、Index、全域/选区统计、旧壁面/剖面壁面/SBLI中跨、
+  稀疏探针、MP数学及实际阶段组件，共14个可执行文件。
+- FP32普通astr/比较器，以及MP数学/阶段、剖面壁面和稀疏
+  探针，共6个可执行文件。没有借此开放FP32物理M12预览。
+- 两次构建命令均实际返回0，BUILD_ONLY_COMPLETE和
+  FP32_COMPONENT_BUILD_COMPLETE标志存在；所有20个程序
+  完成动态库列表，均无not found。MPI/HDF5指向原私有前缀，
+  libgfortran/libstdc++指向GNU12，设备运行库来自DTK。
+- FP64普通程序sha为0e9d1059c32c5b2a...，FP32为
+  9a6f334d8064211e...，全值及20个程序身份在binaries.sha256。
+
+保留已有工具链告警：void函数return诊断、forward-unknown
+选项，以及登录节点rocm_smi路径提示；没有新增屏蔽选项、
+改SDK/驱动或用默认成功替代失败。一次日志读取连接被网关
+重置，原构建句柄持续跟踪至终态，没有重启构建。新的SSH
+连接可能落到别的登录节点，未用该连接的进程列表推断原
+构建已经停止；构建位置由原日志及实际完成标志确认。
+
+后续本地仅准备数据，未运行/提交：现有16³静态平板的四个
+输入族（FP64 incoming_only MP7/643c的NP2-y device、NP4
+2×2×1 pinned；FP32 incoming_only自动步长NP2-x；FP32
+标准壁面显式滤波NP1），以及两精度已有MP数学/阶段包。
+固定/自动步长仍用对应原夹具值，拟作四步、2+2恢复及输出
+隔离，不是性能或物理定常验收。准备的数据包约17 MiB。
+
+另离线核对FP64普通incoming夹具与原CUDA Fortran参考：
+input.case、初场、网格、inlet.prof逐字相同；从原step3的
+RK3后快照直接提取完整步4的五守恒量，不插值或重构。
+对现存NVIDIA C++结果最大缩放差1.22888e-15，提供直接
+原GPU全域参考和桥接记录，而不是仅凭同名算例关联。
+FP32自动窗使用匹配物理时钟的已有参考，按D10记录误差。
+
+证据根results/dcu_mb67_consumers_build_20261117/：
+source_manifest.json、source.tar.gz、build_receipt.json、
+evidence/里的完整日志/缓存/依赖/程序摘要；validation/和
+validation_inputs.tar.gz保存输入、原MP参考和原GPU字段桥接。
+NEXT_VALIDATION_PROPOSAL.md只是一份待批准的计算节点批次，
+不是任务脚本或提交回执。该私有MPI使用ROCm-aware UCX，
+不能照搬NVIDIA脚本的CUDA支持开关或backend=cuda断言。
+
+本轮只完成构建、依赖及数据准备，不是最新源码的DCU数值/
+通信/内存工具/性能验收，也不完成MB6/MB7。新批次任务及
+仅查询该任务的授权已单独提出，未收到确认前不执行；
+10.150诊断头仍待独立决定，未修改CPU参考代码。整个goal
+保持active，没有Git写操作或既有任务操作。
+
+### 10.159 固定壁面诊断头、Hermite7会话及DCU批次入口修订
+
+用户已批准10.150诊断头最小修复及一个新DCU短测批次，随后
+批准已通过几何检查的笛卡尔Hermite7读网格槽道进入现有
+channel_walls会话。不改变壁面公式、文件格式或默认配置，
+不扩大曲壁、AIR5或生产规模。
+
+共享ASTRIW01/ASTRWS01输出改为显式9/11个int32成员，
+避免NVHPC混合SHAPE构造器写短。独立头分别36/44字节。
+原CPU32³实际统计文件FP64为217892字节，原生FP32为113332
+字节；均为11整数、5个采样、有限统计值。两种精度的五个
+守恒量相对各自不可变旧参考差均为0。实际16³原CPU/旧GPU
+壁面文件均34740字节，坐标、所有权、时钟一致，壁面量最大
+缩放差4.90006e-15。旧失败文件保留，不加入损坏格式兼容。
+
+新C++壁面供给按high_order_wall_enabled区分已验证Cartesian
+Hermite7与普通读网格CURVE，前者保留原八节点闭合。正式会话
+仅接入已有非反应供给判据允许的channel/bc41子集，保留其
+643e、规模和rank限制；前置几何检查仍先于正式采样。
+run_cpp_high_wall_consumers.py在16³、dt=1e-5、NP1与NP2-y
+完成原GPU/新C++四步对照。两壁面的压力、剪切、入气体热流
+各有瞬时/时间平均CSV，共12个产品；q最大缩放差1.42873e-15，
+曲线5.36151e-15、历史4.82011e-15，均小于2e-10。2+2恢复的
+状态、统计、控制、调度和曲线逐值一致，关闭观察不改变状态。
+新C++两个拓扑的Memcheck各rank均0 errors。本项未输出图片，
+不认领生产物理验证；原始ASTRIW01调试采样的新C++接线仍待。
+
+本地证据results/：
+- multi_backend_mb7_wall_headers_fixed_20261117/summary_report.json
+- multi_backend_mb7_wall_headers_fixed_20261117/summary_report32.json
+- multi_backend_mb7_high_wall_consumers41_fixed_20261117
+- multi_backend_mb7_cpp_high_wall_consumers41_20261117_v3/report.json
+- multi_backend_mb7_cpp_high_wall_consumers41_np2y_20261117/report.json
+
+DCU保留10.158原源快照，另保存approved_update增量及两种
+普通程序摘要，增量包含固定诊断头、壁面分类和批次脚本，
+不包含随后本地批准的Hermite7正式会话扩展。两种程序均构建
+完成、动态依赖可解析。默认PATH缺少Python的预检失败单列
+保留；明确使用公共Python3.9.6后，脚本入口检查完成。
+
+新增run_mb67_consumer_batch.py只实现计算节点任务体，不含
+Slurm操作：29项既有组件调用及四组16³静态剖面族的四步、
+2+2恢复、观察隔离、代表非精确恢复与输出检查。原生FP32
+仅报告误差，不套FP64门槛。保留ROCm-aware UCX，显式关闭
+私有MPI不具备的CUDA支持，不自动替换通信后端。离线复用
+三组现有NVIDIA结果检查比较器/时钟/状态/输出清单；相关
+批次及头布局单元检查合计6 passed，不算DCU执行证据。
+
+获批唯一新任务128241288耗时14秒、FAILED 1:0。测试脚本把
+数据目录写成validation_v2，而归档解出validation；在读取
+manifest时退出，尚无GPU组件或CFD启动，不是设备/数学失败。
+原日志和任务回执保留。已修正脚本路径，登录节点逐项确认
+四组输入及参考存在、Python入口通过；没有重启该失败任务。
+第二个同范围任务已单独申请授权，尚未批准前不提交/查询。
+远端仍仅~/weiph/mb67_consumers_build_20261117，无其他作业
+操作或登录节点GPU执行。完整goal继续active，本轮无Git写操作。
+
+### 10.160 新C++原始壁面采样输出与传输量核对
+
+继续补10.159明确未接通的ASTRIW01采样入口，而不是重跑已通过
+的正式统计矩阵。insitu_wall_runtime_cpp新增私有壁面采样包装，
+复用现有wall_create/capture/download数学与通信：从常驻q提取
+所需层、完成周期端点，再在设备求压力/剪切/入气体热流/法向y。
+仅将四列二维派生量交给原文件写入器，坐标来自现有静态几何，
+所有权仍排除x/z重复末端。私有句柄当次释放，不改q、统计或
+检查点状态，不增加全场回读或CPU物性计算。
+
+session只在新C++且use_gpu时分派到该入口，CPU/旧CUDA Fortran
+路径不变。复用已有壁面供给准入和测试专用通信选择；不新增
+运输回退、格式兼容或生产默认。此处是BUILD_TESTING原始采样
+消费者，不恢复已退役的静态渲染，不把文件生成当作正式图像。
+
+新增run_cpp_high_wall_raw.py，沿用已有16³、dt=1e-5、四步
+Hermite7夹具，分别运行匹配原GPU、新C++及关闭采样的新C++。
+NP1 pinned、NP2-y pinned、NP2-x device-aware三组取得：
+- 每rank四份完整步文件，头、时钟、坐标、所有权逐字一致；
+  四壁面量最大缩放差5.36151e-15，最终q为1.42873e-15。
+- 采样开关后的完整状态含halo/缓存逐值一致；原参考不覆盖。
+- NP1/NP2-y的新程序各rank Memcheck均0 errors。设备通信
+  这组未联合内存工具，不抹掉10.152的UCX初始化工具问题。
+- 每步NP1/NP2-y合计回读18496字节，原八层守恒量采样为
+  184960字节；NP2-x含各rank端点合计19584/195840字节。
+  四步总数亦按文件节点及日志逐项核对，均为原来的1/10。
+  这只比较该原始采样的字段回读，不包含检查点、私有MPI
+  暂存或原实现测试专用二次审计，不能据此宣称整步十倍加速。
+
+证据results/：
+- multi_backend_mb7_cpp_high_wall_raw_np1_20261117/report.json
+- multi_backend_mb7_cpp_high_wall_raw_np2y_20261117/report.json
+- multi_backend_mb7_cpp_high_wall_raw_np2x_device_20261117/report.json
+- multi_backend_mb7_wall_headers_fixed_20261117/raw_packet_report.json
+
+本次FP64正式渲染构建完成；原生FP32无Catalyst根构建用于
+公共绑定编译检查，不据此认领ASTRIW01的原生FP32文件合同。
+未扩大壁面类型/网格/物理验证范围，无Git或远端操作；新DCU
+第二次提交仍待单独授权，完整MB6/MB7 goal保持active。
+
+### 10.161 曲壁/绝热壁原始采样覆盖及H1主统计准入阻点
+
+本轮继续4.3.1消费者要求，不改动旧参考、边界数学或生产默认。
+新增的原始壁面包装不应只靠Cartesian bc41证明曲面几何投影，
+因此复用已有32³ y-wavy/bc41夹具，dt=2e-5四步、NP2-z pinned，
+以原GPU及关闭采样的新C++分别核对。头/时钟/坐标/唯一所有权
+逐字一致，壁面量最大缩放差2.34938e-15、最终q为2.34938e-15，
+完整状态采样隔离；两个rank Memcheck零错误/零泄漏。
+这是普通曲壁的三层原定义，不借此声称Hermite7适用于曲壁。
+
+另复用已有16³ Hermite7绝热夹具，不改变输入公式：bc42单卡、
+bc421双卡y分解，均dt=1e-5、四步、显式十阶滤波。原GPU/
+新C++的四壁面量最大缩放差分别9.52713e-15/8.86595e-15，
+最终q分别8.86185e-15/8.16680e-15；元数据/坐标/所有权逐字
+一致，采样开关不改完整状态。这两组未加内存工具，不外推
+正式channel_walls会话（仍仅bc41）或生产物理精度。
+
+证据results/：
+- multi_backend_mb7_cpp_curve_wall_raw_np2z_20261117/report.json
+- multi_backend_mb7_cpp_high_wall_raw42_np1_20261117/report.json
+- multi_backend_mb7_cpp_high_wall_raw421_np2y_20261117/report.json
+- multi_backend_mb7_wall_headers_fixed_20261117/raw_coverage_report.json
+
+后者独立读取已完成结果，核对冻结二进制摘要、实际backend=cuda、
+每rank/步的四列回读字节和所有权计数，不再次推进CFD。常规
+raw测试脚本也补上实际C++后端断言，未修改上述有效结果。
+
+随后尝试补H1主时间统计，使用原有16³、NP2-x、dt=1e-6、
+743e/643e、11/22/41/52 sbli_grcbc、原legacy_random夹具，
+仅启用现有主统计。首个原CPU运行在推进前由共享输出准入
+明确拒绝：src/output_runtime.F90的joint_mean仅接受低阶
+NSCBC或743e/643c incoming_only，不能把已完成的H1选区统计
+当作主统计参考。未继续运行旧GPU/新C++、未绕过检查，也
+没有证据将此称为统计数值错误。
+
+失败记录保留在
+results/multi_backend_mb7_h1_main_means_np2x_20261117/cpu/run.log。
+run_cpp_h1_mean_consumers.py已准备原CPU/旧GPU/新C++字段对照、
+原GPU32通道统计对照、采样隔离、2+2状态/统计/RNG恢复及代表
+工具检查，但尚未得到执行结果。已请求批准仅扩展这一主统计/
+同拓扑恢复范围，保留自适应输出限制及原算法/文件协议；未获
+确认前不修改准入。另一个待决定项仍是10.159的新DCU第二次
+提交授权。本轮无Git或远端操作，整个goal继续active。
+
+### 10.162 最新壁面接线的独立GNU/DTK构建
+
+在10.161两项授权待决定期间，继续不依赖它们的工具链检查。
+通过ssh cancon仅在~/weiph/mb67_wall_build_20261117建立独立
+构建，不修改上一候选、输入或任务脚本。复用10.158不可变
+源归档，并明确覆盖三份当前生产源及CPU头探针：
+insitu_session.F90、insitu_wall_statistics.F90、
+insitu_wall_runtime.F90、wall_header_probe.F90。实际摘要记录于
+results/dcu_mb67_wall_build_20261117/source_delta_v2.json；
+首份未包含探针差异的准备归档未部署，保留原记录，实际使用v2。
+
+根CMake选择GNU12.2、DTK26.04 GPUfusion、gfx906及原私有
+ROCm-aware MPI/HDF5；CUDA Fortran、Catalyst和AIR5关闭。
+HOME/缓存/临时文件仍限定在新工作目录，四路并行构建。
+实际构建在login01、pid46613，已有SDK告警保留未屏蔽。
+另一个只读检查连接落在login04，未用其进程列表判断原
+login01构建终态；始终跟踪原命令句柄与日志，没有重启构建。
+
+两精度普通程序现均完成链接，原命令实际返回0；两份依赖
+列表均无not found，MPI/HDF5/Fortran运行库使用原私有栈。
+FP64程序摘要为5e1aa990391a4b86...，FP32为710e3c1342f0d725...，
+全值、CMake缓存、依赖、原日志及实际四份源文件保留在
+results/dcu_mb67_wall_build_20261117/evidence/。
+
+两次纯CPU探针的固定头均为9个int32、36字节，统计头均为
+11个int32、44字节；本地struct独立解码核对全部字段值，
+并核对部署源摘要及实际精度/后端/架构配置。正式回执为
+同目录build_receipt.json，分析工具analyze.py不再运行CFD。
+该探针只有整数布局，不推进流场、不初始化GPU，不能作为
+DTK壁面数值验收或原生FP32浮点采样协议的验收。
+
+本项没有Slurm操作或登录节点GPU执行，没有公共依赖修改，
+没有绕过H1主统计准入。新的第二批DCU提交授权与H1主统计
+范围扩展仍独立待确认，整个goal保持active，未操作Git。
+
+### 10.163 自适应监测与动态设备出图的本地联合
+
+补10.140尚缺的图像联合消费者：已有32³周期TGV、Re=1调度
+夹具，FP64、NP2-x、固定dt=1e-3、12个完整步。可变的是
+输出频率，不是本次时间步。原事件阈值、滞回/保持时间及
+[3,7)步数窗不变；不将短窗称为DNS物理验收。三产品使用
+动态input.products.jsonl及原采样/提取/渲染实现，800×600、
+JPEG only、standard-device、显式pinned私有通信，无生产源改动。
+
+先完整运行原CUDA Fortran参考，再比较新C++主场、监测和
+事件标志，完成5+7精确恢复及两个隔离对照。事件1--5步有效，
+时间窗3--6步有效，实际出图为：
+- Q：0/1/3/5/11步，立即响应事件进入，再恢复粗频率。
+- 瞬时流线：0/1/3/5步，按时间间隔加密；恢复段无到期事件。
+- 固定索引切片：0/3/5/11步，由步数窗加密。
+
+共13张正式段JPEG、26份rank收据。收据字段/几何回读均0，
+私有pinned halo/控制元数据传输另计，不称整程序零回读。
+最终q对原GPU最大缩放差2.01922e-15；动能绝对差1.38778e-17、
+变化率绝对差1.38778e-14。场严格有限，rho/internal-energy
+最小值0.9999971/177.7418。完整state含halo/缓存、两控制文件、
+输出调度及恢复图片一致；前5步与后7步图片库存拼接及逐文件
+字节另行核对。关闭产品、同时关闭监测/产品，均不改完整
+state或time/dt序列。
+
+原/新切片及Q图片逐像素相同；流线1/3/5步的像素平均绝对差
+0.009938/0.012706/0.010101（8位0--255尺度），最大单通道差
+89/78/52。沿原门槛报告跨实现像素原值，不称全部图片相同，
+也不以实际TGV轨迹作恒速解析门槛。三类第5步图已查看；
+未据图像差调整相机、色标或算法。
+
+两次测试分析错误保留：误把window_phase=2当窗内，以及对
+无到期流线的恢复段强求图片目录。仅修分析为phase=1有效/
+无到期则无新图，不改生产逻辑；复用原参考、连续/前段/恢复
+计算，只补跑原先未启动的两个隔离对照。两个时钟单元检查
+覆盖窗口结束后恢复粗频率和事件立即进入。
+
+证据results/multi_backend_mb7_adaptive_images_np2x_standard_20261117_v2/：
+report.json、completed_analysis.json及实际日志/检查点/图片；
+原参考在无_v2目录。工具run_cpp_adaptive_images.py和离线
+check_completed.py。未扩大FP32/其他管线或DCU运行，无Git/
+远端操作。H1主平均与第二次DCU提交仍待批准，完整goal active。
+
+### 10.164 已批准H1主统计及第二批DCU消费者验证
+
+用户明确批准H1主时间统计/四步/2+2，以及修正路径后的第二个
+DCU任务并仅查询新任务。两项授权均已使用，不再列待决定；
+没有新Git授权或其它作业操作。
+
+#### H1本地接线与代表结果
+
+src/output_runtime.F90只将已配置的high_order_boundary_enabled且
+diffterm=true纳入joint_mean，沿用现有H1定义，因此仍为FP64
+非反应743e/643e黏性bc11/22/41/52；不放开无黏421、原生FP32
+或自适应输出。没有修改主统计算法、边界公式、默认或文件格式。
+原/新程序均根CMake重建，源/二进制身份见实际报告。
+
+复用16³、NP2-x、dt=1e-6四步的既有弱扰动/legacy_random夹具。
+CPU/旧GPU/新C++主场最大缩放差6.70062e-15，旧/新GPU32通道
+序列化统计最大缩放差3.33067e-16。两种统计协议不混作相同
+数组：CPU是44矩+14积分端点，共58个持久化字段；GPU沿原
+12平面矩/3壁面矩及端点、测度等32通道保存。
+
+CPU、旧GPU、新C++各自的2+2全部15项state、统计、RNG及
+控制/标量序列逐值一致。采样开关保持物理场和完整守恒halo
+逐字一致；原流程允许vel/tmp单方向halo因采样刷新，不称
+全部派生缓存也相同。新C++普通程序两个rank的Memcheck均
+0 errors/0 bytes leaked。固定步与pinned代表，不外推其它
+组合、长时统计充分性或生产SBLI物理验证。
+
+证据results/multi_backend_mb7_h1_main_means_np2x_20261117_v2/：
+report.json、cpu_lifecycle.json、冻结两程序及实际日志/检查点。
+CPU补项曾将44矩误作44个文件字段；按源声明44+14改分析，
+只重读已完成计算，没有改程序或重复运行。旧准入拒绝记录在
+无_v2目录保留。原AP图片对应程序仍有逐字相同冻结副本，
+10.163的binary_provenance.json明确关联，未用重建后的程序
+冒称原图来源。
+
+#### DCU任务128249156
+
+登录节点重新核对4组输入/参考、Python入口及冻结脚本/程序
+摘要后，按批准的原脚本提交一次：kshdnormal、1节点4 DCU、
+最多4 rank、每rank2核、30分钟。该任务在e05r1n15完成，
+Elapsed=00:01:31，ExitCode=0:0。只查询该任务及其子步骤；
+原128241288失败记录不改，不修改其它任务。此耗时是整组
+验证作业耗时，不是RK性能或扩展效率。
+
+实际完成29项组件调用、18次主程序运行，覆盖4输入族：
+- FP64 incoming_only MP7-LD/643c：NP2-y device、NP4 2×2×1 pinned。
+- 原生FP32同类自动步长：NP2-x pinned。
+- 原生FP32 bc11/21/41/50显式滤波：NP1，另含轻量非精确恢复。
+
+三方向代表/双方向分解、真实设备缓冲及pinned的采样/保存坐标/
+唯一节点均值/旧壁面含八层与曲壁/SBLI中跨/剖面壁面/稀疏探针
+组件，以及两精度MP数学与实际激活阶段均在29项内。它们不是
+DCU图片或渲染证据。4主程序族分别核对4步、2+2、输出关闭、
+q含halo字词、15项精确state/控制/归档时钟及三维场/三方向
+数值切片的恢复一致，物理节点严格有限且密度/内能正值。
+
+对冻结NVIDIA C++，FP64分rank最大缩放差1.33227e-15，对原
+CUDA Fortran参考最大1.24164e-15。原生FP32自动/滤波分别
+7.53997e-7/1.12448e-6，按D10原值报告，无FP64上限或生产
+精度宣称。另在本地独立读回四卡FP64和双卡FP32的HDF终态，
+各15数据集与恢复逐字一致；全域FP64对原GPU差1.22888e-15。
+FP32滤波为原生全流程FP32，不是恢复已撤销的混合滤波候选。
+
+证据results/dcu_mb67_consumers_build_20261117/：
+submission_128249156.json、validated_128249156.json、
+evidence_128249156/的29项日志、四族比较器日志及代表HDF。
+分析analyze_128249156.py只读，不再次运行GPU；导入目录
+遗漏的分析错误补齐后只重做分析。
+
+版本边界：本任务仍用原审阅的b7039c2a.../26ed3718...两程序，
+未替换为10.162的新壁面接线或本节新H1主统计准入；4主程序
+族关闭主统计，不认领H1主统计/DCU原位或其它新组合已运行。
+本轮两项通过不等于整个MB6/MB7完成，完整goal仍active。
+
+### 10.165 收口核查：H1混合黏性参考的物理端闭合遗漏
+
+按5.1核对已有mixed子集，不把源代码“允许选择”直接认作
+已验证组合。旧/新实现均已有viscous_flux工作区和H1分派，
+缺少该组合的同模式参照/生命周期证据，因此复用10.105的
+既有无吹吸16³ H1黏性夹具，NP2-x、dt=1e-5、四步，关闭
+滤波/MP保正/crashfix/主统计；不改变物理或生产默认。
+先冻结旧GPU两模式参考，再测试新C++；程序及输入均保存在
+results/multi_backend_mb7_h1_mixed_viscous_np2x_20261117/。
+
+#### 已通过与失败边界
+
+FP64对照先完成：准备q/原始量最大缩放差6.30095e-15，
+完整源项后RHS为8.45678e-18；终态5.77086e-15。输出/观察
+开关保持完整q字词，2+2全部15项state及control逐值一致，
+场有限且rho/internal-energy最小值0.8117173/0.3623738。
+这些结果已从完成的文件独立重读，记录fp64_control.json。
+
+mixed运行本身完成四步，但阶段比较失败，未继续其quiet/
+prefix/tail，也没有性能结果或通过报告。两边实际工作区均
+为FP32且498636字节，不是候选未启用。初次准备态物理q差
+仅1.33227e-15；首步RK1的完整源项后能量RHS差4.18430e-7，
+随后RK2的近壁密度差约5.96267e-7。四步旧mixed相对自身FP64
+最大绝对差5.71812e-6，新C++相对自身FP64为1.23613e-12。
+旧结果已超过既有viscous_flux场量1e-9门槛，不能仅以“FP32
+舍入”解释，更不能靠放宽比较容差放行。
+
+#### 源码明确不一致
+
+src_gpu/solver_gpu.cuf的FP64
+diffusion_rhs_x/y_xyphysical_stored_global_kernel在H1物理端
+前三节点使用boundary_derivative6及八节点通量值；对应
+diffusion_rhs_x/y_xyphysical_stored_sp_global_kernel却没有
+high_order_boundary_enabled_d分支，仍调用原低阶物理端
+deriv6_x_physical：端点二阶、近端二/四阶、内部六阶。
+只切换存储精度，实际却同时切换了物理端离散闭合。
+
+新C++fluid_viscous_high_open与high_wall_flux_correction通过
+带类型视图读取FP32存储，仍使用原H1高阶行。因此不能把它
+降到旧SP闭合以求一致。这是旧参考的明确漏接；是否为全部
+数值差的唯一来源，须在批准修正后复验，当前不提前断言。
+
+提出的最小修订仅覆盖旧CUDA Fortran H1的上述SP x/y分支，
+沿用FP64八节点系数、符号、适用行与FP32存储；原失败参考
+不覆盖，重新冻结后复验四步及C++ LP1的2+2。不改默认、
+文件格式、门槛或其它Hermite7组合。已请求人工批准，未收到
+决定前不修改参考算法，也不继续依赖它的mixed验收。
+
+本轮工具run_cpp_h1_mixed.py；诊断phase_diagnosis.json及
+diagnose_phases.py只读原快照。早期分析还尝试将未完成边界
+赋值的conv中间槽当作全域有效RHS，遇到旧快照未定义值；
+随后仅分析既有合同明确有效的pre_rhs/post_source/post_update，
+不屏蔽完整物理状态或已定义RHS中的异常。没有重复GPU计算、
+生产源码修改、Git或远端操作，完整goal继续active。
+
+### 10.166 MP3 x物理端核查：近零散度传感器的同输入回放
+
+H1混合黏性修订仍待人工决定，未修改依赖的旧SP算法。继续
+检查另一条原有混合精度子集：旧gpu_shock_characteristic_s0b0_
+xphysical_supported允许Shu--Osher、543e/643e、MP7 recon=3、
+特征分解、bc50/50及y/z周期、无黏/无滤波、NP1或NP2-x。
+新C++ characteristic_flux只有周期Euler和原黏性剖面平板分支，
+尚缺上述准入；不能把相同核已有物理端参数当作子集已交付。
+
+#### 冻结参考与首次失败
+
+prepare_characteristic_flux_reference.py增加显式boundary选择与
+明确的原程序路径；默认周期行为不变。16³、Mach3、dt=1e-5、
+两完整步只作接口检查，不称原400×8×8物理基准。分别用历史
+冻结程序及当前已批准修订的2bca043d程序冻结CPU/旧GPU FP64/
+旧GPU MP3三组；两套观察相同，排除仅因历史参考缺少N8修订。
+CPU/旧GPU FP64终态差2.14372e-16；旧MP3相对自身FP64最大
+场量绝对差9.68328e-11、统计7.58505e-11，初始传感器字词及
+六阶段激波标记一致。参考均只读保存，没有覆盖已有失败记录。
+
+新C++先只跑FP64、NP2-x。定义明确的各阶段场/RHS最大缩放差
+4.44090e-16，终态2.40563e-16；但首步RK1的x=0原始传感器
+差0.0341861，超2e-10，旧值0.00688163、新值0.0410677。
+六阶段所有rank的整数激波标记仍相同。原脚本在该失败处停止，
+没有继续mixed运行、出性能结论或标记该子集通过。
+
+#### 同输入算子与梯度回放
+
+prepare_sensor_replay.py仅将已存在的物理梯度、完整压力及
+原始传感器/标记快照打包；不推进CFD。shock_sensor_probe沿用
+既有十个int32头，启用原保留的逐方向low/high标志；原全零头
+仍表示三方向周期。没有更改生产C ABI、halo、核或传感器公式。
+
+同一旧CPU/旧GPU的三阶段输入经新C++ raw/halo/expand组件，
+NP2-x pinned和真实device通信的原始值/标记均逐字相同；两同步
+模式也相同。每rank12项冻结输入、10项制造量及6项阈值相邻
+值检查完成；pinned两rank Memcheck均0 errors/0 bytes leaked。
+旧周期Shu--Osher头的12项冻结/10项制造对照亦逐字一致。
+首次误选不完整的历史TGV包，缺gpu.rk01.bin而退出，保留日志；
+随后明确选择完整Shu--Osher来源，不添加缺失输入fallback。
+
+再复用native_curve_gradient_probe，将实际原始量与冻结度量
+通过现有basic_boundary梯度ABI回放，不改变边界状态。
+首节点旧速度模板[3.5058253333333336,2.629369,0]在原GPU给出
+du/dx=-3.55271e-16，新C++对同一模板给出0；全域梯度差仅
+3.55271e-16。新程序自己的首节点速度3.505825333333333使
+回放du/dx=1.42109e-15，复现其实际原始传感器0.0410677448。
+此处旋度平方为0、压力曲率0.0614035070，原固定1e-30正则项
+令Ducros权重分别为0.11207224、0和0.66881758。约机器精度的
+端点导数/输入差被这一近零比值放大；同输入raw组件本身一致，
+不将其误报为传感器公式移植错误，也不静默更换正则项。
+
+#### 待决定与证据
+
+已请求仅对该子集区分：同输入算子仍2e-10，演化轨迹raw报告
+原值且整数标记完全一致，主场及RHS仍2e-10；未获批准前保留
+当前失败状态，不修改判据或继续依赖该门槛的MP3推进。
+该请求与10.165的H1旧SP闭合修订是两项独立人工决定。
+
+证据目录：
+- multi_backend_mb7_mp3_xphysical_reference_20261117与
+  multi_backend_mb7_mp3_xphysical_reference_current_20261117：两套冻结参考。
+- multi_backend_mb7_mp3_xphysical_cpp_before_20261117：原FP64轨迹/失败日志。
+- multi_backend_mb7_mp3_xphysical_sensor_replay_20261117：六个输入包、
+  trajectory_analysis.json、gradient_replay/diagnosis.json及只读分析脚本。
+- multi_backend_mb7_mp3_xphysical_sensor_replay_np2x_20261117、
+  对应_np2x_device_20261117和_np2x_memcheck_20261117：真实组件记录。
+- multi_backend_mb7_sensor_periodic_header_regression_shuosher_20261117：
+  原周期头对照；无shuosher后缀目录保留缺失参考输入的首次失败。
+
+本轮没有修改生产算法、Git或远端任务；原第二批DCU已完成，
+没有新的提交授权。完整goal保持active，不以这些诊断缩减目标。
+
+### 10.167 原生FP32时序入口的实际主程序与窗口恢复
+
+避开10.165/10.166尚待决定的参考修订/判据，核查原实现允许的
+另一既有可选子集。此前10.67只有FP64时序入口主链证据，
+原生FP32的入口四槽缓存/阶段/续算未独立核对；不能从FP64
+结果或普通FP32周期TGV直接推断这一组合。
+
+复用原16³、NP2-y、bc11/21/41/51、543e/643e、静态读网格
+平板及12个非多项式时序入口文件，间隔1e-5。入口数据、边界、
+物理和插值算法不变；原有HDF输入的FP64字段按已有I/O转换
+到原生FP32。共享源及旧CUDA Fortran已经有相应类型，不增加
+生产源码修订或FP32准入。两个程序经根CMake更新，冻结身份：
+原CPU/旧GPU共用39ebee8c...、新C++038568c3...，详见report.json。
+
+run_cpp_native_inflow.py实际覆盖CPU、旧GPU和新C++，每个后端
+均做四步、关闭检查点输出的四步、两步前段及恢复到第四步。
+固定dt=8e-6；另做原有auto配置，初始8e-6、上限1.6e-5、
+CFL目标0.5、增长1.1。实际auto步长依次约为8e-6、8.8e-6、
+9.68e-6、1.0648e-5，第四步time=3.7128003896e-5；这是本
+无量纲夹具的时间。固定第四步time=3.1999999919e-5。
+三后端完整步时间/步长字词分别严格相同，最大CFL分别
+3.75724e-4/4.99810e-4；本短窗是增长限幅控制，不声称触及CFL目标。
+
+| 结果 | 固定步 | 自动步 |
+|---|---|---|
+| 新C++对CPU最大阶段守恒量缩放差 | 9.53673e-7 | 8.58305e-7 |
+| 新C++对CPU最大阶段原始量缩放差 | 1.42958e-6 | 1.13178e-6 |
+| 新C++对CPU完整源项后RHS最大缩放差 | 1.31768e-8 | 1.47230e-8 |
+| 关闭输出后的完整q/halo及标量/时钟 | 三后端各自逐字一致 | 三后端各自逐字一致 |
+| 2+2 state/inflow/control/标量/时钟 | 三后端各自逐值一致 | 三后端各自逐值一致 |
+| 旧/新GPU入口metadata及26字段 | 逐值一致 | 逐值一致 |
+
+物理节点各阶段有限、密度/内能正值；权威state及入口缓存的
+HDF浮点载荷均为FP32，未用FP64内部参考替换推进。26个保存列
+中20列为四槽乘五变量，其余沿原布局保留为零，不是26种物理量。
+第4个入口
+文件实际载入，最终cursor=4；恢复时保留原四槽顺序/时间位模式。
+CPU采用原自己的插值历史布局，不能把它与GPU的环形槽meta
+直接要求字节相同。跨实现阶段及标量/CFL差按D10原值报告，
+无FP64偏差上限或长期物理精度宣称。原GPU对CPU的标量最大
+差1.96696e-6亦保留，不只报告较小的新C++数值。
+
+固定步新C++完整运行的两rank Memcheck均0 errors、0 bytes leaked；
+自动组不重复工具。本地pinned/explicit代表，不称新DCU、GPU-aware
+入口联合、FP32随机吹吸输出、统计或渲染验收；相应目标范围仍按
+已有合同推进，不凭本次短窗扩大。
+
+首次选择的build_backend_cpp_insitu32此前为BUILD_TESTING=OFF：
+普通四步完成且正式检查点存在，但没有测试专用RK快照，因此
+分析因缺文件停止。没有为此修改生产算法。随后明确选择
+BUILD_TESTING=ON的build_backend_cpp_native32_main，经根CMake
+更新后只补新C++四组；原CPU/旧GPU八组按相同二进制/输入身份
+显式复用并重新读回核对，不重复运行。自动组另完整执行。
+首轮失败目录保留，不将缺快照写成计算失败或一致性通过。
+
+证据results/multi_backend_mb7_native_inflow_np2y_20261117保存原
+CPU/旧GPU完成结果及第一次缺快照记录；
+multi_backend_mb7_native_inflow_np2y_20261117_v2保存新C++固定步
+report.json、Memcheck及clock_buffer_analysis.json；
+multi_backend_mb7_native_inflow_auto_np2y_20261117为自动组。
+只读complete_analysis.py复核两个模式的实际时钟、入口26字段、
+跨后端标量/CFL和输出隔离，不运行CFD。两程序及runner.py副本
+均保留，当前工具另支持显式复用已完成原实现结果。
+
+本轮新增的是既有路径的真实消费者证据，没有Git、远端或Slurm
+操作。H1旧SP闭合和MP3轨迹判据两项仍待决定，完整goal active。
+
+### 10.168 原有HIT、涡输运和Sod初始化入口的C++接线
+
+对照USER_GUIDE和旧GPU实际入口，发现新C++的flowtype检查漏掉
+hit、2dvort、sod，尽管相同周期中心/物理端MP7推进算子已在。
+它们不是新物理模型或新初始化算法：CPU原hitini/vortini/sodini
+已经生成初场，旧GPU也能推进。本节只补上述既有入口，不把
+CPU的其它任意flowtype都放开，不改变格式、默认或统计公式。
+
+#### 先冻结、再接线
+
+run_cpp_initial_families.py先以原2bca043d...程序分别生成CPU和
+旧GPU参考，各16³、dt=1e-5、四完整步。HIT用原
+generate_hit_velocity.py的确定性无散速度文件、幅值0.05，
+不是随机湍流DNS初场或物理充分发展证据。代表配置为：
+- hit：NP2-z，643e/643e、黏性及显式十阶滤波，Mach0.1。
+- 2dvort：NP2-y，643e/643e、无黏及显式十阶滤波，Mach0.5。
+- sod：NP2-x，543e/643e、recon3物理空间MP7、bc50/50及y/z周期，
+  无黏、无滤波，Mach3；不是新增早期一阶/线性重构路径。
+
+原CPU/旧GPU全部物理准备态、原始量、源项后RHS和更新态
+满足2e-10；最大缩放差1.71105e-14。首次新C++ HIT在原初场
+成功读入后被flowtype检查拒绝，尚未推进，该记录保留。
+随后仅在src_gpu/fluid_runtime.F90原名称条件中补三个入口，
+更新原错误文字中已不准确的FP64限定。不改核、数组布局、
+初始化、物性、源项、统计、输出或恢复公式。
+
+根CMake更新后的新C++程序963797a5...，三个代表均实际完成
+四步与关闭阶段观察的四步：
+
+| 输入族 | 对CPU最大阶段场/缓存缩放差 | 对CPU源项后RHS差 | 对旧GPU最大flowstate差 |
+|---|---|---|---|
+| hit | 1.99841e-15 | 1.68755e-14 | 4.97866e-16 |
+| 2dvort | 1.99822e-15 | 8.04844e-16 | 2.71434e-13 |
+| sod | 1.12785e-15 | 3.12251e-17 | 4.63408e-13 |
+
+以上均为按分量max(1,maxabs(ref))归一化的实际差，未放宽门槛。
+新C++的flowstate与CPU逐值相同；三者完成步时钟相同，CFL
+满足原2e-10交叉检查。所有物理节点有限、rho/内部能量及
+缓存rho/p/T正值；观察开关保持完整q/halo及时间序列字词。
+三个新C++代表各两rank Memcheck均0 errors/0 bytes leaked。
+没有性能计时、长期解精度/激波物理或原生FP32准入验收结论。
+
+#### 现行检查点缺口与单独发现的CPU报表缺陷
+
+原共享output_runtime的现行检查点合同未登记这三个名字。
+本轮不擅自解除原CPU/旧GPU的合同：正式检查点/场存档均关闭，
+checkpoint_tested=false。已另请求登记同拓扑输出/精确续算，
+HIT需一并冻结velocity.h5并走现有静态资源读取接口；未获批准
+前不宣称这些新入口具备完整恢复，也不修改共享输出/初场资源。
+普通推进接线的完成不等于整个MB7已完成。
+
+只读核查CPU HIT专用turbstats发现：
+- src/statistic.F90:780把div赋值注释掉，798仍在dissa使用div**2；
+  该局部量从未初始化或赋值。
+- 同一过程的局部type(tsta)没有默认初始化，796直接累加stas%rhoe，
+  前面的清零只有urms和machrms，没有rhoe。
+- 本参考hit/cpu/turbstats.dat的三行kolmoglength实际均为NaN。
+
+这份专用报表未用作本节参考，不应由flowstate通过推断它正确。
+CPU标准flowstate、q/缓存/RHS是独立的已核对数据；旧GPU的
+gpu_write_tgv_statistics和新C++都不调用这段turbstats。保留
+原报表和源码，不修复、不移植，不启动依赖该报表的下游分析。
+若人工批准修订，最小候选是恢复div赋值并在每次累计前清零rhoe，
+随后做同状态报表检查；本节未实施，也不据此伪称HIT全部统计
+已完成GPU迁移。
+
+证据results/multi_backend_mb7_initial_families_reference_20261117/：
+原两后端输入/程序/快照/实际报表及report.json；
+multi_backend_mb7_initial_families_cpp_before_20261117/保留准入拒绝；
+multi_backend_mb7_initial_families_cpp_20261117/包含新程序、六次
+实际推进、六份Memcheck日志、report.json及completed_analysis.json。
+complete_analysis.py仅重读已完成数据，补核缓存正值和原报表的
+NaN位置；没有重复CFD或更改失败证据。没有Git/远端/Slurm操作。
+
+### 10.169 已批准四项修订及本地闭环
+
+用户批准10.165--10.168的四项修订，goal恢复active。原失败
+参考和NaN报表全部保留；无新Git或Slurm授权。本节旧/新普通
+程序经根CMake重建，冻结摘要分别d686cd2a.../c449560c...。
+
+**H1 mixed闭合。** solver_gpu.cuf仅在x/y xyphysical的stored_sp
+核补入原FP64分支：物理端前三行、八个通量点、同一
+boundary_derivative6及方向符号；通量仍FP32存储，差分累加
+沿原real_kind，内部中心行及其它壁面组合不变。不是下调新C++
+以匹配旧错误，也没有更改默认、容差或格式。
+
+既有16³ NP2-x、dt=1e-5四步，旧/新mixed准备态/原始量最大
+缩放差5.75549e-15，完整源项后RHS为6.66676e-16；原先
+4.18430e-7差异消失。新候选相对自身FP64场/标量最大绝对差
+1.23613e-12/1.00002e-15，通过原1e-9/1e-10门槛。
+新C++两模式的15项state/control/标量2+2逐值一致，LP1 bit2
+身份正确，输出/观察开关保持完整q/halo字词。物理状态有限且
+rho/internal-energy最小值约0.81171725/0.36237377。
+修正的原CUDA Fortran SP程序另做同配置Memcheck，两rank均
+0 errors/0 bytes leaked，24份物理更新态与非工具运行逐字相同。
+证据results/multi_backend_mb7_h1_mixed_fixed_np2x_20261117/的
+report.json、sp_memcheck_report.json及实际快照/日志。
+
+**MP3 bc50接线与判据。** 新C++只接回原Shu--Osher、543e/643e、
+recon3特征MP7、无黏无滤波、x两端50且y/z周期、NP1/NP2-x
+的characteristic_flux条件。传感器源、1e-30正则项、shkcrt、
+核及默认不变。测试显式选择--xphysical-sensor-trajectory，
+要求冻结参考明确为xphysical。演化raw报告原值、整数标记
+必须完全相同；FP64场/RHS仍2e-10；混合候选沿原MP3场/统计
+绝对2e-6及RHS报告口径，不与FP64门槛混淆。同输入算子仍
+严格2e-10，复用10.166实际逐字一致的raw/halo/expand和两通信
+证据，未为测试文字重跑不变算子。
+
+16³ NP2-x两步，FP64各阶段最大缩放差4.44090e-16。新MP3
+对旧同模式q/完整RHS最大绝对差3.55272e-15/8.67362e-19；
+候选对自身FP64 q/原始量/统计差分别9.68328e-11、1.95279e-10、
+8.00001e-11。raw轨迹最大差0.0341861保留，六阶段标记一致；
+初始两模式传感器字词、关闭观察后的完整q/halo、统计和时钟
+相同。实际mixed主程序双rank Memcheck零错误/零泄漏。
+证据multi_backend_mb7_mp3_xphysical_cpp_fixed_20261117/report.json。
+本项没有新增MP3检查点合同，LP1仍只覆盖原viscous_flux。
+
+**三个初场的检查点。** output_runtime登记批准的内建网格ninit0
+定义：周期HIT/2dvort的643e/643e，以及bc50/50的无黏无滤波
+物理MP7 Sod 543e/643e。现行五变量RK3格式、同拓扑精确合同
+不变，不扩大跨拓扑、累计均值或渲染。HIT冷启动冻结velocity.h5，
+RESOURCES登记它；hitini和恢复后再发布资源均通过已有资源
+路径读取原冻结来源，不依赖当前datin/velocity.h5。
+
+沿10.168的三组16³、四步及z/y/x双卡分解，CPU/旧GPU/新C++
+各自2+2 state/control/时钟/标量逐值一致。HIT三后端恢复目录
+均没有本地速度文件，恢复后资源与原文件逐字相同。新C++另有
+检查点/观察关闭对照，完整q/halo和时钟字词一致，每族两rank
+Memcheck均零错误、零泄漏；阶段/标量保持10.168结果，最大
+阶段场/RHS差1.68755e-14。证据initial_families_reference_fixed_
+20261117和initial_families_cpp_restart_20261117（均带
+results/multi_backend_mb7_前缀）的报告、实际资源和前段/恢复段。
+
+**CPU turbstats。** 仅恢复div=s11+s22+s33并在每次累计前
+stas%rhoe=0，不截断耗散或开方量。三行Kolmogorov长度现为
+0.08495330--0.08495331，不再NaN；保存q的各rank唯一节点
+(1:im,1:jm,1:km)独立归约平均rhoE=178.5751785714286，
+与文本报表最大缩放差1.60432e-13，含原文本位数误差。CPU
+HIT连续/恢复turbstats行逐值一致；三族CPU/旧GPU各96份
+定义明确的物理阶段与修订前逐字相同，未改变这些推进轨迹。
+corrections_analysis.json及check_corrections.py在上述新参考
+目录记录独立归约及字词检查。确定性速度夹具不是充分发展
+各向同性湍流，不解释其Taylor尺度为生产物理结论，也未将
+这份CPU专用报表作为新增GPU功能移植。
+
+相关源码git diff --check通过；旧混合换行文件只清理本次两条
+新增行末CR，没有整文件改换行。无Git写操作、远端任务或
+长时生产；以上本地FP64代表不替代新DCU或原生FP32验证。
+完整MB6/MB7 goal仍active，新的平台任务须另行明确授权。
+
+### 10.170 新DCU批次：七组数值闭环、任务体准备错误及启动元数据缺口
+
+按10.169的新接线准备10个16³输入族，40次主程序短运行及一个
+双rank同输入传感器组件；不渲染、不计性能、不运行生产长算例。
+独立目录~/weiph/mb67_closeout_20261117，经根CMake、GNU12、
+DTK26.04/GPUfusion、gfx906构建FP64/FP32。五个实际程序的
+动态库均可解析；平台Python3.9.6只用标准库读取任务体，10组
+输入摘要核对通过。源码1914文件，归档摘要73257235...；
+主程序摘要FP64=6d03a50a...、FP32=41a3a0e8...。
+旧任务、旧构建、结果及公共软件没有修改，登录节点未执行GPU。
+
+用户批准本批及仅查询该新任务后，仅提交128272750一次。
+实际e13r3n08，作业FAILED、1:0、Elapsed=00:01:35；extern
+单独显示COMPLETED，不据此改写整作业失败状态。查询仅该ID
+及其子步骤，无取消或自动重提。耗时不是RK性能结果。
+
+**实际完成的数据证据。** 传感器双rank各12项冻结/10项制造量
+及6项阈值检查完成，同输入raw最大绝对差2.64698e-23，标记
+完全一致。前7族均完成连续四步、关闭观察/输出、两步前段及
+恢复至第四步；state实际15个数据集逐值相同，启用的统计/
+入口历史、控制和时钟亦逐值一致，物理rho/内能严格为正。
+
+| 输入族及实际拓扑/通信 | 对参考最大主场缩放差 | 说明 |
+|---|---|---|
+| H1主统计/原随机吹吸，2×1×1 pinned | 7.32740e-15 | 与同GNU程序CPU场比较，非NVHPC随机轨迹 |
+| H1 viscous_flux，2×1×1 device | 7.10259e-15 | 实际FP32通量存储标志及LP1恢复 |
+| Hermite7 bc41壁面，1×2×1 pinned | 1.56385e-15 | 30份CSV对NVIDIA最大5.00515e-15，壁面历史恢复 |
+| HIT，1×1×2 device | 1.22125e-15 | 恢复目录无本地velocity.h5，使用冻结资源 |
+| 涡输运，1×2×1 pinned | 1.51007e-15 | 原初场/检查点闭环 |
+| MP7 Sod，2×1×1 device | 5.55112e-16 | bc50物理端/检查点闭环 |
+| 原生FP32自动时序入口，1×2×1 pinned | 5.87865e-7 | D10原值，无FP64上限；入口载荷FP32、cursor=4 |
+
+同平台CPU44矩与GPU12平面积分不能直接逐数组相比。另从CPU
+44矩选共同12项，按实际静态坐标的z段长梯形积分，再除以
+相同覆盖时长及几何测度；采样身份、起止时刻/时长位模式相同，
+公共时间均值最大缩放差7.07732e-16。不是把空间积分原值与
+局部节点均值混用，也没有从短窗推断统计充分性。
+
+**整批退出原因。** 第8族quad_incoming_mp的4卡四步已完成，
+对NVIDIA主场最大缩放差1.33227e-15。随后quiet准备阶段，
+运行器仅因datin/input.insitu存在便试图改写enabled；该文件是
+未被选择的单行“&insitu_run enabled=f /”，逐行赋值器匹配0处，
+因此在下一次MPI启动前抛错。不是多个enabled，也不是确认的
+CFD崩溃。后续四卡精确恢复、自适应数据、MP3主程序未执行。
+最小修订只对真正启用wall_csv配置的组关闭该文件，未被选择的
+文件原样保留；没有新增单行兼容解析、容差、重试、fallback或
+生产改动。实际单行错误已独立复现，5项针对性离线测试通过。
+原7组与传感器不重复跑；准备补余三族11次短运行，另待新任务
+提交/查询授权，旧授权已用尽。
+
+**启动声明另有缺口，尚不能称全部运行配置收口。** 完整日志
+中H1主统计的production_statistics plane_kernel及Hermite7
+的high_wall_filter_rows报“512线程大于256 launch bounds”。
+实际启动分别(32,16,1)和(512,1,1)，代码没有对应声明，DTK
+按默认256处理。数值/序列化结果通过与启动声明正确是两项
+证据，不能因为任务未在此退出就忽略告警。
+当前源码分别补__launch_bounds__(astr::block_threads)及
+__launch_bounds__(threads)，均为现有512；不改线程形状、
+数值核公式或状态格式。本地NVIDIA两个受影响代表的同程序
+CPU场/壁面CSV、完整q观察隔离及2+2再次通过；新DTK编译及
+节点消警/数值复核仍待。原来3个补余组不调用这两个核，可以
+使用原冻结程序，不把新声明修订混入它们的旧程序身份。
+UCX nil指针诊断及个别PMIx NOT-FOUND日志亦保留，未修改
+公共MPI/驱动或屏蔽消息，不认领DCU内存工具验收。
+
+证据results/dcu_mb67_closeout_20261117/：VALIDATION_PROPOSAL.md、
+approval.json、source_manifest.json、build_receipt.json、预检日志；
+submission_128272750.json、完整evidence_128272750/及
+validated_128272750.json。分析实际重读15数据集/入口类型/
+工作区标志与CPU共同均值；最初分析误将打印的壁面轴当零基
+索引，按实际一基axis=2修正后只重读数据，未重算CFD。
+task_v2.json与followup_inputs.tar.gz保存仅修任务体的补余准备；
+local_launch_bounds/记录两启动声明修订的NVIDIA代表。
+所有Git写操作及其它远端作业均未操作，完整goal仍active。
+
+### 10.171 DCU补余三族完成：四卡恢复、自适应数值输出及MP3物理端
+
+用户批准补余批次及仅查询该新任务后，在独立目录
+~/weiph/mb67_closeout_followup_20261117提交128277354一次；
+e18r2n11，COMPLETED、0:0、Elapsed=00:00:42。资源仍为
+kshdnormal单节点4DCU/4rank、每rank2核、30分钟；实际只做
+原来未完成的三族11次短运行，未重跑前七族和传感器组件。
+登录节点确认原冻结FP64程序6d03a50a...及比较器摘要不变、
+动态依赖可解析、输入与任务体相符；未在登录节点运行GPU。
+任务体仅包含10.170已记录的未启用input.insitu误改修订，
+未将两个launch_bounds源码修订混入本批程序。
+
+| 输入族 | 实际证据 |
+|---|---|
+| quad_incoming_mp，2×2×1 pinned | 四卡incoming_only、743e/643c及MP保正四步主场最大缩放差1.33227e-15；连续4步与2+2的15个状态数据集、控制及输出时钟逐值一致；关闭观察后完整q/halo不变 |
+| adaptive_data，1×2×1 device | 自动步长四步主场最大缩放差7.91767e-16；监测量最大绝对差1.25455e-14；帧身份/活动标志一致；状态与调度2+2精确恢复、监测关闭后完整q/halo不变 |
+| mp3_xphysical，2×1×1 device | 两步实际characteristic_flux FP32工作区，主场最大绝对差8.88179e-16，满足既定2e-6；12份三阶段/双rank标记完全一致；raw传感器轨迹最大绝对差0.0204674单列，不宣称逐值一致或同状态传感器误差 |
+
+另离线重读自适应实际输出而非只数文件：step1/2/3各含
+density、pressure、temperature、velocity及三个速度分量和
+metadata共8个数据集，最大缩放差分别5.93758e-16、
+6.62699e-16、8.83632e-16；前段/恢复段对应帧全部数据集
+逐字相同，几何资源数据差为零。不是渲染/图像证据。
+两组检查点的物理rho/内能有限且正，MP3也检查完整物理节点；
+不将短窗一致性解释为长期稳定或统计物理验收。
+日志仍保留2844条UCX nil指针诊断及1条PMIx NOT-FOUND；
+本批没有两个已知512/256声明诊断，因它未调用相应两核，
+不能据此关闭那两项。未屏蔽消息或把外部栈诊断称为已解决。
+
+证据results/dcu_mb67_closeout_20261117/中的
+followup_approval.json、followup.slurm、preflight_followup.sh、
+submission_128277354.json、evidence_128277354/和
+validated_128277354.json；analyze_128277354.py重读状态、
+q/halo、实际字段载荷及传感器，不重算CFD。旧128272750
+仍记录为任务体失败，不改写其作业状态。
+
+至此10.170三族补余数值范围完成；两处512线程声明的新DTK
+构建与节点消警/受影响数值复核单独跟进，不从本批推断通过。
+下一项H1主统计/Hermite7两族节点复核已提交人工授权问题，
+未获新授权前不执行其Slurm操作。未操作Git或其他作业。
+
+### 10.172 两处512线程启动声明：双卡真实消费者复核通过
+
+在10.170独立源码上仅补production_statistics plane_kernel的
+__launch_bounds__(astr::block_threads)和high_wall_filter_rows的
+__launch_bounds__(threads)，均对应既有512线程；差分归档明确
+生产源只变这两个文件，公式、启动形状、权威精度、ABI不变。
+独立目录~/weiph/mb67_launch_bounds_20261117根CMake/GNU12/
+DTK26.04、gfx906构建FP64主程序及比较器，动态依赖可解析。
+实际主程序359521c5...，不覆盖10.170原冻结程序。
+
+用户另行批准仅这两族复核及查询后，提交128277778一次：
+kshdnormal、1节点2DCU/2rank、每rank2核、10分钟；实际
+e05r4n19，COMPLETED、0:0、Elapsed=00:00:37。仅H1主统计
+及Hermite7壁面，共9次短运行含同GNU CPU参考；无生产/计时
+算例，不重跑其余已通过的族，不操作其他任务。
+
+H1实际启用compact production statistics，Hermite7实际打印
+high_wall_axis=2 kind=41并产生30份壁面CSV；完整9次日志中
+原Launch params/launchbounds诊断为零。H1/壁面主场最大
+缩放差分别7.32740e-15、1.56385e-15；壁面CSV最大
+5.00515e-15。H1沿实际z段长对CPU44矩中的共同12项作
+梯形积分，再以相同覆盖时长/几何测度归一化，与GPU紧凑
+时间均值最大缩放差7.07732e-16；不是直接比较不同统计协议。
+两族4步与2+2启用状态/控制/历史/时钟逐值一致，关闭观察
+完整q/halo不变。未改变2e-10门槛或以短窗认领物理统计充分性。
+
+此两族本批没有UCX nil消息，不能据此声称10.171的device
+通信栈诊断已经修复。FP32独立构建与FP64这两族运行分开记，
+不从FP64节点复核推断新增FP32运行证据。
+最初在SCP尚未完成时尝试解包得到EOF；等待同一次传输
+正常结束后，gzip完整性、解包及分析成功，未重提作业或重算CFD。
+
+证据results/dcu_mb67_launch_bounds_20261117/：source_delta.json、
+approval.json、run.slurm、preflight.sh、submission_128277778.json、
+evidence_128277778/及validated_128277778.json；analyze_runtime.py
+重读统计/状态/实际核接线标志和全部运行日志。独立编译日志
+与FP32构建状态另存，不用本次节点结果替代编译收据。
+随后同一次登录节点构建正常结束、退出码0，FP64/FP32的
+astr及比较器四个目标均已链接，动态库无not found。
+build_receipt.json核对两份CMake缓存、实际ASTR_REAL32标志、
+gfx906及GPUfusion/旧CUDA Fortran关闭；FP32主程序5734d8f0...。
+build_evidence.tar.gz保存完整编译日志/选项/依赖与摘要；仅该
+构建进程未执行GPU或Slurm，不能把构建通过写成新增FP32
+节点数值验证。当前无仍在运行的构建或上述两项验证任务。
+无Git写操作，完整MB6/MB7仍按主计划逐项映射收口。
+
+### 10.173 收口核对：核心源码可复用证据及FMA编译合同冲突
+
+上一轮为实际进展而非仅等待：10.171补余三族、10.172两处启动
+声明均取得新DCU节点证据。本轮不提交/查询其他作业，不重复
+运行已通过矩阵，按主计划4.3.1/5.1和goal核对实现与现存证据。
+
+**紧致、KEEP及ME6。** 当前compact_line_solver.cu、
+compact_operator.cu、keep_operator.cu、me6opti_operator.cu与
+results/dcu_mb67_extended_20261116/source/src_gpu/对应四文件
+的SHA256分别逐字相同（前缀e8601143、e44162ec、220d4741、
+7540af0e）。不是因为目录存在就推断算子仍相同。
+本地native/distributed_device/report.json包含NP1及NP2 x/y/z，
+每配置216/432个全局周期系统、逐解误差3.63122e-15、残差
+不超过8.90477e-16，pinned/device传输结果逐字一致；同一
+evidence根为results/multi_backend_mb6_20261113。DCU首批
+128170436实际含标准紧致四卡device/恢复及KEEP四卡device，
+128172334又含ME6紧致、波纹ME6双/四卡、GRCBC/ME6及H1、
+原生FP32紧致四卡/恢复；报告在上述dcu_mb67_20261116及
+dcu_mb67_extended_20261116的summary.json。其余公共流程和
+最新消费者仍按各自后续证据，不从四文件一致推断整程序相同。
+
+**按现有消费者区分范围。** 下面是已重读的证据落点，不能将
+本表当作所有格式/边界/精度开关组合的笛卡尔积通过声明。
+
+| 主计划能力 | 本轮核对的实际接线/证据 |
+|---|---|
+| 紧致全局耦合、成熟KEEP/ME6 | 上述四份核心源码、全局残差报告及两个DCU批次；保留原周期接口未知量，不用rank独立闭合替代 |
+| 复杂几何/壁面/NSCBC | fluid_runtime的物理端、高阶壁面及staged/top/x特征阶段选择实际调用设备算子；10.126、10.130、10.164及10.169--10.172提供相应主程序/恢复证据，H1/ME6未成熟壁面带不新增准入 |
+| MP保正、传感器及修复历史 | 原生算子与阶段已在10.132--10.138/10.164验证；10.171补MP3 x物理端并严格区分raw轨迹和整数标记；没有把MP3补成LP1续算 |
+| 驱动力/重力/海绵、入口与RNG | fluid_runtime按阶段调用源项和时序入口，非CPU逐核推进；DCU128175780前14项包含入口、非零修复历史、混合黏性、重力与海绵，原作业脚本失败仍保留，余项128215915的离线数值复核见10.147；最新入口/RNG与H1见10.170/10.172 |
+| 初始场、缓存、统计窗口/输出调度 | 10.169--10.172覆盖HIT冻结速度资源、涡/Sod、H1统计及自适应实际三帧载荷；10.147保留74项继承窗口数据；主循环的整场下载位于输出/恢复或BUILD_TESTING观察，不在每个计算核后回CPU推进 |
+| 原生FP32及成熟混合子集 | 10.109--10.143及10.167给本地原生算术、主程序/统计/消费者证据；DCU128172334、128249156和10.170给代表运行；D10报告与FP64阈值分开。共享bc.F90仍将H1/Hermite7限定FP64，keep_sbp63_runtime同样保留FP64，未以根构建可选FP32扩展它们 |
+| 新NVIDIA代表产品及只读预览 | 下述两个实际M12图像报告、两份预览报告；不从DCU数值数据推断DCU渲染 |
+
+重读results/multi_backend_mb7_cpp_m12_images_20261117_v3/report.json
+及multi_backend_mb7_cpp_m12_images_direct_device_20261117_v2/report.json：
+同一新C++程序bc35ccbe...分别实际产生12张standard-device/
+direct-device图片，实际数值截面含Q及坐标；15项观察隔离、
+15项恢复、4张恢复图片逐像素一致。原图对比的最终流线平均
+像素差0.000140278保留，其余所列图片为0，不写成全部像素相同。
+
+重读multi_backend_mb7_cpp_preview_means_np2_32_20261117/report.json
+及multi_backend_mb7_cpp_m12_preview_20261117/report.json：新程序
+d2d8dbfe...的TGV双卡瞬时/Reynolds/Favre与M12双卡64/256种子
+预览均零推进、来源不变、对应图片像素差0；TGV均值预览有
+Memcheck，M12大来源没有，不相互替代。这两个预览均为
+standard-device。direct-device预览的裁剪限制在新旧共用的
+insitu_device_vtk_mapper.h::BuildBufferObjects中，遇非零
+GetNumberOfClippingPlanes会拒绝；不是C++流场提供者漏接，
+本轮不擅加Mapper裁剪功能，也不把它登记为新后端已支持。
+
+**待人工统一的编译合同。** 主计划4.3.2写“不全局禁用普通核
+的FMA优化”，而基线2df6d1d的src_gpu/CMakeLists.txt已经对
+整个astr_device_state目标设置--fmad=false；当前文件仍是
+同一目标设置。最新DTK FP64/FP32实际state.flags亦包含该
+选项，10.170--10.172不是仅在探针里禁用。它控制隐式乘加
+收缩，不禁止代码已有的显式fma；例如MP有限精度预算保留
+10.133已核对的显式运算顺序。原CUDA Fortran编译没有因此
+统一改成nofma，原生FP32次正规/融合差异仍按已批准口径单列。
+
+goal同时要求保留既有默认，近期参考和恢复证据也建立在这一
+设置下，因此不能为对齐计划文字直接删除选项、改变舍入后
+仍沿用原数值身份。本轮已询问是否保留冻结C++策略、明确
+修订4.3.2的迁移阶段例外，将普通核逐项恢复FMA留到MB8后
+CPP-P；人工尚未答复，不先修改参数或宣告整个goal完成。
+上述源码/证据核对不改变算子、门槛、检查点格式或生产默认；
+没有新增保护分支、fallback、资源预算、Git写操作或Slurm操作。
+
+### 10.174 预览端点检查的公共精度头接线修复
+
+延续10.157/10.173的消费者核对，复现test_insitu_preview.py中
+test_trace_endpoint_domain_guard的真实失败：独立c++编译仅给
+src_gpu搜索目录；insitu_rk45_device.h随后包含astr_precision.h，
+编译器报No such file or directory。实际文件是既有
+src/astr_precision.h，不需要CMake生成；10.157原“生成头”
+表述已据实际源文件更正，旧失败运行记录未改写。
+
+仅为该测试编译命令补-I src。先复现1 failed，再得到该项
+1 passed；随后同一文件默认离线测试16 passed、19 skipped。
+这项实际运行原C++探针，核对Cash--Karp阶段点在域内但组合
+端点越界时不提交该步，以及合法端点的MPI所有权移交，不是
+仅断言编译成功。原测试公式/断言、生产RK45与渲染均不修改，
+未以mock结果替代探针执行。19个显式启用的真实设备预览测试
+未在本次头搜索路径修订中启动；已有设备预览数据见10.157，
+不将本次离线检查称为19项GPU重验。无新构建/平台/Git操作。
+本轮FMA编译合同问题仍待人工决定，完整goal保持active。
+
+### 10.175 最新普通构建关闭测试/探针及双rank紧致续算
+
+本轮发现文档入口主要描述原CUDA Fortran交付或早期探针，
+且近期DCU完整构建/验证均开启BUILD_TESTING。MB1时期关闭
+测试的构建不能单独证明后续新增复杂边界/统计模块没有漏出
+测试依赖。因此使用当前根CMake独立新构建，不覆盖旧程序或
+重复旧完整矩阵；数学和FMA选项不变，不做性能优化。
+
+本地NVHPC26.1/nvcc13.1、HPC-X、HDF5 1.14.6，FP64、
+ASTR_GPU_CPP_BACKEND=cuda；ASTR_WITH_CUDA/CATALYST/AIR5、
+ASTR_BUILD_GPU_BACKEND_PROBES和BUILD_TESTING均OFF。
+astr实际编译标志有ASTR_GPU_CPP但没有ASTR_BUILD_TESTING，
+编译/链接日志没有.cuf依赖。正常构建及动态依赖检查完成；
+原CMake版本/空架构策略警告保留，不擅自改其默认。
+
+复用已有run_cpp_restart_gate.py的--no-test-observations，而
+不是再写推进器或依赖测试快照。单个代表为16³ TGV、NP2-z，
+643c/643c、十阶紧致滤波、标准对流/黏性、dt=1e-3、4完整步；
+主链dependency同步，普通halo和独立紧致接口均pinned，
+紧致同步explicit、batch=65535；保留默认scalar选择。
+分别执行精确/非精确连续4步及由step2恢复至4步，共四次
+主程序运行。此处测试关闭的程序仍有原ASTR的test模块，
+不将BUILD_TESTING=OFF夸大成源码中没有任何测试命名模块。
+
+新程序83820aea...实际报告两rank/cuda/device0、1和紧致接口
+配置；对不可变CPU/旧GPU匹配紧致参考的最大缩放场差
+2.58079e-14。精确恢复15个状态数据集逐字一致；两模式续算
+场、时钟和恢复统计均与各自连续结果一致。物理节点rho最小
+0.9999999690760352，内能最小177.63396291633657，均有限正值。
+非精确按原轻量协议不保存六个原始量缓存、rank冗余或几何
+资源，现有运行器实际检查；没有改精确恢复语义或文件格式。
+未生成测试观察快照；本次不依赖该快照再做输出关闭对照，
+不把早先开关隔离结果写成本程序新增证据。
+
+证据results/multi_backend_mb67_no_testing_20261117/：
+configure.log、build.log、独立astr、build/CMakeCache.txt与
+实际标志，compact_np2z/report.json及四运行目录。
+analyze.py另核对源文件与10.170源码归档+10.172两个生产源
+声明修订逐字相符，保存completed_analysis.json的完整源码
+摘要、程序和运行证据，不增加程序启动时或生产I/O校验。
+此为本地原生CUDA代表，不冒称GPUfusion关闭测试的新构建
+或节点运行，也不构成新性能/物理验收。
+
+tests/gpu_backend/README.md新增Current Ordinary Build Entry，
+明确普通程序与探针、三个构建选择、运行时use_gpu、兼容
+工具链/HDF5及NVIDIA原位依赖，按原成熟精度/边界子集描述。
+USER_GUIDE.md只加开发分支入口，不将其原CUDA Fortran的
+AIR5/渲染范围扩写成新C++已支持。无新增依赖安装、数值
+源码改动、平台操作或Git写操作。10.173的FMA合同仍待答复。
+
+### 10.176 已批准FMA方案A与跨专项状态同步
+
+用户明确“确认A，汇报项目完整进展和待完成事项”。本轮按此决定
+修订主计划4.3.2：MB6/MB7保留基线2df6d1d已有的C++设备库
+--fmad=false，原CPU/CUDA Fortran设置及已有显式fma调用不变。
+普通核恢复隐式收缩纳入MB8之后CPP-P2候选，届时分别检查误差、
+敏感例程约束与完整推进成本，不在本次实施优化或切换生产默认。
+此前计划文字与冻结基线的冲突不再是待审批项，未通过修改代码
+或容差掩盖分歧，也不将既有数值/性能证据改标为FMA开启后的结果。
+
+同步ASTR_GPU_PERFORMANCE_OPTIMIZATION_PLAN.md对应条目，并在
+统一状态入口新增本日期说明：旧CUDA Fortran已有AIR5与原位产品
+不等于新C++已完成MB8/MB9；TB1--TB4首轮本地状态以后续专项
+当前表为准；H1长窗、紧致FP32漂移与反应流物理门槛仍保留。
+本轮只按用户决定同步文档并作状态汇报，不执行新计算、构建、
+Slurm或Git写操作。技术决策解除不等于完整MB6/MB7 goal已完成，
+也不擅自将任务状态写成active或complete。
+
+### 10.177 MB8 起始接线：固定数据、物性与设备状态组件
+
+2026-11-17恢复完整MB8目标，维持现有固定AIR5双温、FP64和
+原化学误差预算。主计划5.2落实MB8-A--H依赖：基础物性、局部
+源项/积分、补偿状态、空间输运/滤波、边界、普通主循环、统计/
+恢复、双平台代表集成。此为迁移实施记录，不扩展物理模型。
+
+本轮实现：
+- `generate_air5_mechanism.py --format cpp`从同一正式JSON生成
+  `src_gpu/chemistry_air5_data.h`；零基索引仍按Fortran第一维连续
+  展平，包括后续源项/松弛所需常量。原Fortran生成结果逐字不变。
+- `chemistry_properties_math.cuh`迁入原GPU的T/Tv反演、11分量
+  原始量/守恒量转换、EOS、温度导数、Blottner/Wilke输运与扩散
+  通量。保留原96次二分上限、边界舍入容差、N-1/全组分缓存选项，
+  不新增物理下限、状态截断或重新归一化。
+- `chemistry_properties.cu/.F90/.h`加入共用设备库，以现有C ABI
+  和上下文持有11分量q/RHS/save及rho/u/p/T/Tv/Y。仅显式AIR5
+  prepare分配；非反应路径仍为五分量，不分配Tv/Y。转换在设备
+  同一流内完成，显式box限制刷新范围并跳过双/三方向外部角区；
+  状态检查只回读一个整数，未引入逐核全场主机往返。
+- 初始prepare使旧五分量借用视图失效，需在上传和MPI准备之前
+  调用；此生命周期写入API说明。此时尚不接通普通astr AIR5。
+
+可复现组件驱动：
+`tests/gpu_backend/run_air5_properties_components.py`，原参考程序为
+同目录`air5_properties_reference.F90`；通过宏分别调用当前CPU和
+原CUDA Fortran真实例程，未另写Python CFD/化学推进器。
+根CMake目标为`astr_backend_air5_properties`和`astr_backend_air5_state`。
+使用NVHPC/nvcc 26.1、本地RTX 4000 Ada、FP64；原CPU/旧GPU均
+保留O2算术设置，新组件及设备库沿批准的--fmad=false。
+新物性翻译单元另显式--ftz=false；GPUfusion对此选项及实际算术
+尚未构建核验，不认领DCU语义成立或补偿数学已经移植。
+
+证据与实际结果：
+
+| 检查 | 结果 | 位置 |
+|---|---|---|
+| 固定机理生成及既有CPU物性/导数/输运检查 | 24 passed、9 subtests passed；包含原Fortran逐字不变与新增C++生成文件一致 | `test_air5_mechanism_generator.py`、`test_chemistry_thermo.py`、`test_chemistry_flow.py` |
+| 444输入状态、每种缓存模式各三实现对照 | 431合法输入与13单项非法/无振动容量输入；七类状态码完全相同；两种缓存模式均通过 | `results/multi_backend_mb8_properties_20261117_v3/report.json` |
+| 沿原物性组件绝对＋相对预算 | 每状态每组scale=max(1,maxabs(ref))；容差=1e-13×scale+5e-12×abs(ref)。新C++对CPU最大预算误差比0.00756551，新C++对旧GPU最大0.00213663，均≤1 | 同上；q/原始量/压力/两类温度导数/物性/通量/复用量分别记录 |
+| 组分与扩散闭合 | 正痕量不变成零；Y总和满足原128epsilon检查；组分扩散通量总和最大绝对残差2.11758e-20 | 同上 |
+| 持久上下文状态与face box | 431合法状态、两种缓存模式；q及解码原始量与独立C++组件逐值相同；q不被原始量刷新修改；物理节点与单方向halo有限，外角哨兵不被触及；非法密度返回原状态码2且不修改q | `results/multi_backend_mb8_state_20261117_v3/report.json` |
+| T/Tv往返 | 最大相对差分别4.66152e-15、1.57740e-15，均≤既有1e-12门槛 | 同上 |
+| 新组件及上下文Memcheck | 两项均0 errors、0 bytes leaked | 两个上述目录的`memcheck.log` |
+| 非反应共享状态接口复核 | NP=2，hm=3/5，debug=0/1，原生FP64布局/复制/视图与q隔离逐值一致 | 本轮`astr_backend_mb1`实际运行输出；非AIR5通信证据 |
+
+原参考源码、正式JSON/共享include、两个真实参考二进制、候选二进制
+及构建命令/摘要均保存在v3目录。最初两次准备失败保留在无后缀/
+v2目录：第一次漏冻结pure-VT include，第二次NVHPC多后缀输入
+先处理F90主程序，尚未生成所需GPU模块。驱动改为按依赖逐源
+编译再链接；不修改参考数学或把失败目录写成通过。
+
+当前缺项：冻结声速/CFL消费者、源项/Jacobian/LU6/ROS-2与原
+G1/G2预算、补偿/子步历史、完整11分量空间离散/滤波/边界、
+普通astr耦合、统计/检查点/恢复、新NVIDIA AIR5消费者及DCU
+AIR5代表矩阵。现有局部扩散通量不等于完整空间推进已完成；
+同状态一致也不等于物理真实性验收。本轮没有新增平台操作、
+Slurm或Git写操作，原goal保持active。
+
+### 10.178 MB8 源项、LU6及ROS-2首轮；V-T消减修订
+
+新增`chemistry_kinetics_math.cuh`与`chemistry_ros2_math.cuh`，保留
+原十二反应、解析Jacobian、尺度化选主元/严格大于号/64epsilon、
+LU消元及求解顺序、ROS-2系数、误差范数、接受/拒绝和补偿/历史
+提交规则。包含四种源项模式、joint/source-only和既有活动指标。
+当前只接入真实设备组件目标，尚未接入普通astr反应流主循环。
+
+扩大q源项矩阵时，原CPU/旧GPU先发生参考矛盾：第169状态两边
+T=7999.999999999999 K、Tv=8000 K逐字相同，V-T源项分别为0和
+-4.35355e-5 W/m³；80位同状态评估为-1.91291e-5 W/m³，定位为
+直接相减两个振动能的消减。用户批准用等价expm1重写，同步修订
+CPU、原GPU和新C++。共享Fortran主体为
+`src/chemistry_vibrational_difference_body.inc`；标准exp/sinh实现
+expm1恒等式，无温差切换或截断，原解析导数和温度反演不改。
+第169状态修订后CPU/旧GPU源项只差3.38813e-21 W/m³。
+
+修订后原矩阵仍有q反演T的舍入放大：第1状态CPU T=300 K、
+旧GPU T=300.0000000000003 K，源项差2.56093e-6 W/m³。
+该瞬时原门槛仍未通过，记录保存在
+`results/multi_backend_mb8_kinetics_reference_20261117_stable/`。
+用户随后批准分层口径：固定同T/Tv验证V-T算子与导数，完整积分
+与流动沿原G1/G2，不通过修改温度、编译或容差强行消除上述原值差。
+
+| 本地检查 | 结果 | 证据目录，均在results/ |
+|---|---|---|
+| 独立LU6，445组矩阵 | 442成功、2奇异和1非有限失败；状态/主元一致；最大预算误差比0.040325，行缩放相对残差3.88739e-16，Memcheck零错误/泄漏 | `multi_backend_mb8_lu6_20261117/` |
+| 固定温度V-T，435状态 | CPU/旧GPU/C++算子及导数原预算误差比均≤0.008600；含上下温度端点的相邻浮点数 | `multi_backend_mb8_vt_fixed_temperature_reference_20261117_v2/`、`multi_backend_mb8_vt_fixed_temperature_cpp_20261117/` |
+| 稳定能量差独立80位参考 | CPU/旧GPU/C++最大相对误差分别1.64992e-15、1.84669e-15、1.45314e-15；等温及原子组分严格为零 | 同上 |
+| chemical-only全q源项/Jacobian/活动指标 | 445输入，状态/主元一致；对CPU最大预算误差比0.057255，对旧GPU最大0.125465 | `multi_backend_mb8_chemical_cpp_20261117/` |
+| 原CPU物性/源项检查 | 17 passed；旧GPU正式源项21状态及痕量/活动指标检查3 passed，无跳过 | 本轮相应pytest实际输出，使用新根构建`chemistry_source_gpu_probe` |
+| G1，11状态、4调用、补偿及历史 | 新C++ joint/source-only最大归一化误差均0.002309619；两模式19列端点/余量/计数逐值一致 | `multi_backend_mb8_ros2_g1_joint_20261117/`、`multi_backend_mb8_ros2_g1_source_only_20261117/` |
+| 修订原实现的同一G1 | CPU最大0.002309617，旧GPU最大0.002309615，均通过原q及q-carry误差、参考余量和守恒要求 | `multi_backend_mb8_ros2_g1_original_cpu_20261117/`、`multi_backend_mb8_ros2_g1_original_gpu_20261117/` |
+
+G1驱动为`tests/gpu_backend/run_air5_ros2_components.py`，调用原
+`compare_case/require_g1`与原11状态Radau参考，不重积分Python
+轨迹，不借用旧GPU结果冒充新C++。源码快照、程序及参考摘要、
+每状态输入/输出和命令保存于目录；这是数学与积分实际误差验证，
+不是完整CFD、物理真实性或性能结论。
+
+原未修订源项、修订后瞬时不通过及脚本准备失败均保留；未用选择
+chemical-only或固定温度组件冒称全q源项逐点通过。仍需补齐ROS-2
+失败事务、控制组合、敏感算术及普通设备状态接线，然后推进空间
+输运/边界、完整主循环、G2、统计/恢复、NVIDIA消费者及DCU集成。
+未执行平台或Git操作，完整goal继续active。
+
+### 10.179 化学半步驻留接线、事务与代表控制
+
+`chemistry_coupling.cu/.F90/.h`接入同一设备上下文、C ABI及根构建：
+显式prepare/begin/region/status/report。begin重置一次，interior/top等
+区域可连续提交后统一查询，不让后一区域成功覆盖先前失败。保留原
+逐单元事务：仅成功时提交q的6:11、启用的carry/history及同状态
+rho/u/p/T/Tv/Y；其它守恒分量不改，没有新增全场回滚或CPU推进。
+carry与history按独立开关分配，未启用时字段接口返回未分配。
+status只回读一个整数；完整诊断/失败报告另按需读取，MPI全局放行
+仍待普通主程序接线。配置与报告的本地Fortran/C ABI尺寸为56/240字节。
+
+迁入`chemistry_compensation_math.cuh`，ROS-2现在调用原顺序的
+compensated_add；保留Kahan及TwoSum残差，不改系数或括号。
+RK及滤波投影数学也已提取，但其字段阶段/滤波接线和对应完整验证
+尚未完成，不能据辅助函数存在认领空间推进已完成。
+
+| 检查 | 实际结果 | results/证据 |
+|---|---|---|
+| 两种源项求值模式的24项事务 | 强制拒绝后耗尽、接受前缀后耗尽、冻结/筛选及非法输入；q/carry/history逐字保留，含NaN载荷与负零 | `multi_backend_mb8_coupling_contracts_20261117/transactions.dat` |
+| IEEE敏感操作 | 小于半ULP增量的余量与累加正确，FP64最小次正规余量未冲零，RK残差恒等检查正确；仅认领本地NV工具链 | 同目录`transactions.dat`的AIR5_IEEE记录及实际编译标志 |
+| 非均匀8×6×4物理节点，hm=5，62个活动点 | 8组代表：general/specialized、诊断开关、comp/history独立开关、32/128线程、coupled/chemical/vt/frozen及原活动筛选；q/余量/历史/原始量对逐点设备参考逐值相同，非活动点及halo/外角不变 | 同目录`fields.log`、`source/`及`report.json` |
+| 多区域及组件数组恢复 | 先前失败保留到后一区域成功之后；诊断极值按位一致；下载q/carry/history恢复到新上下文后继续，与原上下文连续结果逐值一致 | 同上；这是数组生命周期测试，不是正式检查点或MPI验收 |
+| 驻留字段Memcheck | 0 errors、0 bytes leaked | 同目录`memcheck.log` |
+| Fortran→C ABI→C++化学上下文G1 | 11状态、4调用、补偿/历史开启；最大归一化误差0.002309619；q与carry和10.178独立ROS-2输出逐值一致，原rho/动量/总能量逐值不变 | `multi_backend_mb8_context_g1_20261117_v2/` |
+| 既有三档容差与活动控制G1 | loose/baseline/tight最大归一化误差0.023075483/0.002309619/0.000231086；source-only、4调用及历史启用。原1e-4活动阈值最大0.002309619；均沿用原守恒/参考余量与q/q-carry门槛 | `multi_backend_mb8_ros2_g1_{loose,tight,activity}_20261117/`及baseline记录 |
+| 受影响CPU基础检查 | 28 passed、11 subtests passed | 本轮thermo/source/ros2原测试实际输出；不计作新的GPU或物理矩阵 |
+
+本轮字段注错初次测试预期状态2，实际状态10。核对原半步先用rho
+构造组分atol、原ROS-2先检查atol再验证状态：负rho先触发invalid
+tolerance=10，与新实现一致。仅改正测试预期，没有改生产检查顺序、
+降低门槛或隐藏失败。保留原失败记录于会话及测试源码说明。
+
+`run_air5_coupling_components.py`保存实际程序、输入、源码及构建标志；
+G1继续复用原Radau终点，不生成额外Python推进器。设备化学内部无
+全场往返；测试的初始注入/终态观察和数组恢复会读写字段，不能将其
+测试传输量冒称生产纯计算成本或零拷贝。普通astr完整时间推进、
+MPI halo/共享节点刷新、空间输运/RK/滤波/边界补偿、G2、统计与
+正式输出恢复、新NVIDIA AIR5消费者及DCU仍待。无平台/Git操作，
+不设新资源预算，不宣称MB8或完整goal完成。
+
+### 10.180 冻结声速/CFL与补偿RK字段组件
+
+`chemistry_transport.cu/.F90/.h`新增AIR5几何接入和11分量SSP-RK3：
+几何仍由原Fortran供给，不重算网格；qsave保留原Jacobian加权，
+仅补偿开启时分配origin_q/origin_carry，并按原Kahan/TwoDiff顺序
+传播。CFL由当前q计算冻结声速和速度，不使用可能陈旧的u/T缓存，
+复用既有全局键值及逐y层最大值归约；非反应分支保持原路径。
+
+此前新物性转换/化学接线误把gradients_ready/rhs_ready/viscous_ready
+当成缓存有效标记清除；这些实际表示工作区已分配。已取消该清除，
+由调用方明确排序物性与梯度刷新，不新增隐式缓存版本或兼容分支。
+
+| 检查 | 实际结果 | 证据 |
+|---|---|---|
+| 60节点、18活动RK节点，补偿关/开 | 对原CPU和旧GPU标量RK参考，最大原组件预算误差比均≤4.26301e-5；补偿开启时对CPU逐值一致，对旧GPU比值3.26019e-7。非活动q/halo及qsave哨兵不变，未启用origin不分配 | `results/multi_backend_mb8_cfl_rk_20261117/report.json` |
+| 二次时间强迫的解析积分 | 终态最大缩放差3.95462e-16/2.18725e-16；参考为解析积分，不是Python CFD推进 | 同上 |
+| 冻结声速/CFL | 四分量最大值对原CPU逐值一致；故意陈旧u/T及无关无量纲参数NaN不影响结果，全局并列最大取最小键，逐y层profile一致；非法密度报原无效谱状态 | 同目录输入/输出及探针 |
+| 数组可用性 | 物性刷新和冻结化学半步后仍能清空已分配RHS，覆盖上述标记缺陷 | `air5_transport_probe.cu`实际运行 |
+| Memcheck | 0 errors、0 bytes leaked | 同目录`memcheck.log` |
+| 本地共享非反应诊断 | FP64与原生FP32均NP=2，debug=0/1、无量纲开/关、全局键/profile/统计/壁面共每rank8项通过 | 本轮`astr_backend_native_diagnostics`输出；real_bytes分别8/4，不是FP32 AIR5准入 |
+
+RK参考提取原GPU补偿标量例程且保留原私有核中的更新公式；没有
+运行完整原CFD内核。测试中的非正交度量和正Jacobian为代数夹具，
+不构成真实CURVE几何验收。当前DP专用字段访问修订后，补偿开启
+的候选输出`cpp1_current.bin`与原本轮`cpp1.bin`逐字一致。
+随后加入扩散字段、总字段数更新为35后，当前构建补偿关/开的
+`cpp{0,1}_current_fields35.bin`与原对应输出仍逐字一致。
+
+这些接口只操作设备字段；CFL回读标量/键及可选profile，组件测试
+注入/下载不计作生产推进传输。Tv/组分梯度与黏性通量正在接入；
+界面限制、MPI、边界、滤波及普通AIR5耦合/G2/正式恢复仍待。
+不改已批准分层验收、G1/G2、默认值或平台任务，不执行Git写操作。
+
+### 10.181 驻留Tv/组分梯度及扩散通量
+
+`chemistry_device_transport`新增prepare/gradients/diffusive_flux接口。
+速度/T复用既有FP64显式梯度核；Tv/五组分沿原六阶中心及物理端
+二/四阶闭合，经完整九度量投影。底壁零组分法向通量由既有明确
+参数选择，不推广为任意曲壁法向条件。保留对称应力6分量、总能量
+热通量3、五组分扩散通量15、振动能通量3；仅layered开启时额外
+分配6个组分携能通道。所有梯度/通量在设备计算，不回读全场。
+物性失败记录状态，失败节点不提交，调用方仍须按原阶段全局放行。
+
+本轮测试驱动为`tests/gpu_backend/run_air5_spatial_components.py`，
+证据保存在`results/multi_backend_mb8_spatial_fields_20261117_v2/`；
+此前未含收敛检查的首轮目录原样保留。复用10.177冻结CPU/旧GPU
+局部输运程序作为通量参考，不将它们称为完整CFD梯度参考。
+
+| 本地检查 | 结果 |
+|---|---|
+| 9×8×7节点、hm=5、4种物理端/接口组合、layered关/开共8组 | 梯度对解析二次制造场最大缩放差9.49067e-13；非对角完整度量、五组分/两温/速度张量布局一致 |
+| 总通量对冻结CPU/旧GPU局部物性程序 | 沿原局部输运绝对+相对预算，最大误差比0.245619；不使用非反应场阈值替代化学预算 |
+| 可选6个携能通道 | 同预算最大误差比0.928624；包含制造梯度的离散舍入，不改误差预算 |
+| 周期正弦Tv、x向16/32/64区间 | 梯度相对最大误差2.54218e-5、4.06252e-7、6.38347e-9；观测阶5.96754/5.99189，与六阶内部模板一致；不宣称物理端六阶 |
+| 活动范围/观察/失败 | 双三外角原始量为NaN且不读；通量halo哨兵不变、q逐字不变、layered关闭不分配额外通道；注入负密度后失败节点不提交，相邻合法节点正常提交 |
+| Memcheck | 0 errors、0 bytes leaked；见`memcheck.log` |
+
+通量halo目前只分配、不在计算核中填充，由后续私有交换显式更新；
+本轮测试验证它们未被计算核误写。尚未接入界面保正预算、组分对称
+一致性约束、能量限制、散度/MPI、物理边界与普通主循环；这些局部
+通量不能单独作为完整反应流时间步。原G1/G2和全q近平衡源项的
+分层口径不变。无平台作业或Git写操作，完整goal仍active。
+当前新增字段后的原生FP32构建及NP=2共享非反应诊断再次通过，
+每rank8项；日志为同一v2目录的`nonreact_fp32_np2.log`。
+
+### 10.182 界面投影迁入及原GPU组件参考的代码生成分歧
+
+历史记录：本节的参考拆分待决定已由10.183的源码模式修正取代，
+不是当前待审批项；以下失败证据保留，不据此修改原GPU生产算法。
+
+新增`src_gpu/chemistry_flux_math.cuh`，迁入原有的五组分有界质量
+投影、质量/气体常数矩双约束投影、零支持保持、舍入预算、可容许
+状态/界面系数二分和对称界面试算。仍以五组分对称构造、11守恒
+分量耦合能量修正，不改为给全部分量统一乘一个痕量限制系数。
+最低温度振动能由调用方提供原CPU计算的五个值，不在设备重算。
+当前只由真实设备组件目标`astr_backend_air5_flux_math`调用，尚未
+接入驻留字段或普通astr推进；不能据此宣称限制器或MB8-D完成。
+
+`run_air5_flux_components.py`冻结原CPU/原GPU私有标量函数并在设备
+执行807条输入，包含置换、尺度/朝向、独立KKT最优解、历史捕获
+痕量界面、能量/组分预算及288个对称界面。首个完整门槛在算子3
+失败：原CPU和新C++将负组分试探限制到约1/6，提取的原GPU O2
+参考在32个输入上返回1。代表输入的试探N2密度为
+-8.36198727e-4；这是明显判定差异，不是接近零的舍入场差。
+
+原始目录`results/multi_backend_mb8_flux_constraints_20261117/`，
+带诊断字段的v2，以及显式局部控制参数的v3均保留。当前失败在
+闭合缓存模式0即停止，未执行模式1后的完整验收，亦未运行其后
+的Memcheck；不得将此目录写成完整通过。
+
+独立于失败算子3的检查已完成，见v3的`independent_report.json`：
+
+| 不受影响的本地检查 | 结果 |
+|---|---|
+| 单/双约束投影对原CPU和原GPU | 新C++最大原组件预算误差比0.000301/0.034924；置换、方向和原捕获痕量输入保留 |
+| 80个独立凸投影KKT最优解 | 最大绝对差1.14631e-14，在原64epsilon检查范围内 |
+| 6个投影失败输入 | 返回状态一致；输入候选逐位保留，包含NaN载荷，不以归零代替失败 |
+| 原舍入预算/内点系数 | 新C++对CPU逐值一致；对原GPU最大预算误差比0.089167 |
+| 288个对称界面，缓存模式0 | 三实现状态一致且成功；96个保留beta=1、192个限制；新C++对CPU/原GPU最大预算误差比0.004666 |
+
+以上是局部标量算子证据，不是空间RHS、MPI、完整流体步、G2或
+生产物理真实性验收；独立最优解检查没有额外Python CFD推进器。
+
+代码生成诊断由`probe_air5_admissibility_codegen.py`生成独立副本，
+未修改原CPU/GPU生产算法、默认值或编译设置。结果如下：
+
+| 诊断，仅用于定位 | 160个预算点对CPU |
+|---|---|
+| 原函数同翻译单元O2 | 32个约束标记不同，系数最大绝对差0.8333333333333334 |
+| 同一原函数O0 | 标记完全一致，系数最大绝对差2.22045e-16；不作为降级后的新验收基线 |
+| 仅物化控制参数、按运算/控制模式单独运行 | 原32个差异仍存在，排除混合选项批处理这一解释 |
+| 几种等价谓词、常量调用及Minline except诊断 | 未消除分歧，未采用，也未放入生产源码 |
+| 原谓词独立编译，保持O2与逐字函数体 | 标记及系数均与CPU逐值一致，状态无差异 |
+
+独立编译证据为
+`results/multi_backend_mb8_admissibility_separate_20261117/report.json`。
+O0、无效改写和其他原始记录见同前缀的codegen、uniform、
+full_species及exclude_face目录。`codegen_20261117_v2/ptx_original/`
+另保存原O2 LLVM/PTX用于核查；当前证据指向提取参考的内联上下文，
+尚未证明原生产二进制存在相同行为，不把它直接认定为物理公式错误。
+
+已提交人工决定：是否只将组件参考的这组原谓词独立编译，保留原
+函数体、O2、误差预算及所有失败证据，旧生产源码不改；获批后重新
+冻结组件参考，继续完整807输入、两缓存模式和内存检查。普通程序
+与G2仍须各自验证，不能用该组件隔离替代。此项确认前，不把算子3
+门槛改记通过，也不接入依赖它的完整通量/主循环。可继续独立工作，
+完整goal保持active；无平台或Git写操作。
+
+### 10.183 修正GPU参考源码模式，完成界面约束组件
+
+本节更正10.182的待审批状态，不删除当时的失败证据。继续独立的
+界面重构时，NVHPC26.1对提取到`.F90`包装中的原波速函数产生
+`llgetsym / Required sptr not found`内部错误。将其缩小到单个原函数后，
+仅把完全相同的源文件复制为`.cuf`，在相同O2、CUDA/RDC/128寄存器
+选项下即可编译。相同办法用于10.182的原谓词同单元参考，160个
+预算点的系数及标记与CPU逐值一致，不需要拆分或改写谓词。
+
+`results/multi_backend_mb8_admissibility_cuf_mode_20261118/`保存相同
+源文件、程序、输出和两种文件名下的dryrun。实际编译轨迹显示，
+`.F90`包装多走了`fort2ex`提取阶段；`.cuf`保持原GPU源码模式。
+这是本地参考包装的编译模式问题，不将它改称原GPU物理公式错误，
+也不证明所有其它NVHPC输入都有此行为。未修改原GPU生产源码、
+物理模型、温度反演、优化级别或容差。前述“独立编译谓词”提议
+已撤回，不再等待人工批准，也未将该诊断方案放入生产构建。
+当前`probe_air5_admissibility_codegen.py`只保留原函数.F90/.cuf的
+直接复现，不再生成失效的谓词改写候选；旧版本脚本已随原诊断
+目录冻结保存，不删除历史证据。
+完整直接复现见`results/multi_backend_mb8_admissibility_source_mode_20261118/`：
+包装文件摘要相同，F90/cuf的fort2ex次数为1/0，标记差异数为32/0，
+cuf系数对CPU逐值一致。
+
+`run_air5_flux_components.py`现在仅把GPU包装逐字复制为`.cuf`后
+编译，CPU仍为`.F90`。在完整811输入、两种组分缓存模式下重验，
+证据为`results/multi_backend_mb8_flux_constraints_20261118_cuf_v2/`。
+此前807输入的首次完整通过目录`...20261118_cuf/`也保留。
+
+| 完整局部组件检查 | 实际结果 |
+|---|---|
+| 单/双约束投影、舍入预算、160个界面预算、对称界面试算 | CPU/原GPU/新C++返回状态一致；新C++对两参考的最大原组件预算误差比0.034924 |
+| 160个预算的约束及组分标记 | CPU/原GPU/新C++完全一致；原32个错误放行在正确源码模式下不再出现 |
+| 独立质量/气体常数矩残差 | 用主机扩展精度评估，沿原32/64epsilon及输出操作数预算，最大预算比0.011389；未改预算 |
+| 80个独立凸投影最优解 | 原64epsilon检查通过，包含置换、方向和尺度；无Python CFD推进器 |
+| 288个成功对称界面、4个失败界面 | 成功包括96个beta=1、192个受限；失败为原状态2/7/200/200，候选通量逐位不变且beta保留-1；两缓存模式均通过 |
+| Memcheck | 新C++组件0 errors、0 bytes leaked，见`memcheck.log` |
+
+它们只关闭10.182的局部组件缺口，不等于限制器已接入全场RHS、
+MPI或完整CFD。已批准的固定T/Tv V-T验收与完整q瞬时源项原值差
+记录不变；本轮没有将这些近平衡原值差重新归类为通过。
+
+### 10.184 驻留方向界面候选与三方向重构
+
+新增`chemistry_faces.cu`和`chemistry_face_math.cuh`，通过
+`chemistry_device_transport`的C ABI/Fortran接口接入根构建和现有
+设备上下文。复用`device_interface_flux`，只分配一份按方向循环
+使用的12分量工作区：1:11写入候选，12保留给后续限定系数，本轮
+核不写它。不为三个方向各分配一套全场通量，也不把候选当作已经
+保正的最终通量。接口不回读流场，只通过显式check观察一个状态整数。
+
+已迁入原中心界面通量、物理端锚点/低阶闭合、局部Lax-Friedrichs
+基准、选择性MP7/近端MP5/三阶/一阶，以及完整扩散和组分携能通道。
+LLF沿原同阶段rho/u/p/Y缓存计算冻结波速，不偷换为CFL的q派生声速。
+传感器界面选择保留原AIR5共享节点端点规则。对称五组分候选与旧
+N2代数通量闭合分别保留；此处未执行后续质量/能量投影。
+
+`run_air5_faces_components.py`冻结原CPU/旧GPU逐字函数体，用真实
+设备字段执行；GPU参考同样按原`.cuf`模式编译。证据为
+`results/multi_backend_mb8_faces_20261118_v5/`：每个输入96个算子配置，
+覆盖x/y/z、四种端点闭合、中心/选择性MP7/LLF、两种组分通量模式
+及两个扩散通道；输入为恒定、仿射制造通量、非均匀物性/非正交
+度量三组，每组再核对debug_sync=0/1，不增加物理步或生产算例。
+
+| 本地检查 | 实际结果 |
+|---|---|
+| 恒定场、仿射通量、非均匀/非正交输入对CPU/旧GPU | 新C++最大原局部组件预算误差比分别2.64246e-5、0.000121679、0.070382 |
+| 恒定物理通量与仿射界面解析值 | 独立计算检查通过，最大原预算比0.000149944；不以CPU/GPU相近替代此项 |
+| 选择性捕捉 | 非均匀组24个配置在开启捕捉后确实改变，非空跑；两组分模式仅N2候选闭合不同，其它10分量逐值一致 |
+| 工作区/流场隔离及同步模式 | 两同步模式候选逐值一致；12个输入字段逐字不变，含NaN外角；盒外工作区及保留的第12分量不变 |
+| 非法缓存密度 | 返回原状态3，失败界面工作区逐字保留，不上传CPU修复或截断 |
+| Memcheck | 新C++非均匀96配置0 errors、0 bytes leaked |
+
+v6在保留上述全部对照的基础上增加48个无黏、关闭捕捉的配置，
+验证不准备梯度或黏性工作区时仍能计算中心/LLF界面：对应字段
+接口确实返回未分配，最大原预算比2.64246e-5，两同步模式逐值
+一致；该独立无黏准备及非均匀输入的Memcheck均零错误/泄漏。
+最新证据为`results/multi_backend_mb8_faces_20261118_v6/`，合计
+336个算子配置、两同步模式，不代表无黏激波传感器的梯度供给已接线。
+
+v1--v4保留参考驱动内部编译失败，v4的compile_isolation保存缩小后的
+单函数.F90失败/.cuf成功；未把它们改成通过。另有CPU/新C++独立
+先验检查目录`...faces_cpu_cpp_20261118/`，不能用它替代本节旧GPU
+完整对照。测试中为冻结字段注入/结果观察而发生的传输不代表生产
+逐核回读；本轮尚未接通普通AIR5时间循环。
+
+下一依赖是把已验证的界面约束数学接入全场RK预算、受限面与RHS，
+并按原共享节点/私有面协议连接MPI；随后仍需物理边界、滤波/补偿、
+普通主循环、G2、统计/检查点和DCU矩阵。完整goal仍active，无平台
+或Git写操作，不新增资源预算或物理模型。
+新增源文件已在原生FP32共享库构建中编译/链接；NP=2的MB1
+hm=3/5、debug=0/1、element_bytes=4布局/复制/借用视图仍逐值一致，
+见v5目录`nonreact_fp32_mb1_np2.log`。这不是FP32 AIR5准入。
+
+### 10.185 驻留RK预算接线与公共界面投影的舍入敏感失败
+
+新增`chemistry_convection.cu`及现有`chemistry_device_transport`的
+C ABI/Fortran接口：按需分配11分量预算场、可选顶面法向候选和
+四个可复用的12分量界面平面槽，沿用原活动范围、LLF低阶基准、
+对称组分试算、逐面预算及最终RK检查。预算下界能量由原主机端
+计算后只上传五个数，不逐核重算；流场留在设备，显式观察只读
+状态整数及失败诊断。接口平面已能打包/解包和单rank周期拷贝，
+但真实多rank私有通量MPI尚未接线，不把本轮local-copy称为通信验收。
+
+`run_air5_convection_components.py`冻结原CUDA Fortran `.cuf`函数体，
+使用hm=5、物理9×8×7节点、dt=1e-7的独立同状态stage，比较原
+预算、受限面、RHS及实际原/新RK更新；不是Python CFD推进器，
+各stage也不是连续CFD轨迹。新库及Fortran ABI已构建；失败诊断
+结构568字节，接口槽借用容量864个double已核对。
+
+证据`results/multi_backend_mb8_convection_fields_20261118_v4/`：
+
+| 本地组件 | 实际状态 |
+|---|---|
+| 恒定周期场、12个stage配置、debug_sync=0/1 | 预算/起始RHS及实际RK结果对原GPU逐值一致；面通量最大原组件预算比0.009174，beta逐值一致 |
+| 恒定场混合中心/MP7的抵消残差 | 保留原RHS最大绝对差3.417953848838806e-7；按实际通量操作数的舍入预算比0.27369，独立散度装配预算比3.98905e-5。不能把近零净RHS作为相对误差分母 |
+| 非均匀周期接触场、RK第一阶段、捕捉开、N2闭合模式 | 新C++第2号配置y向界面i/j/k=6/1/0返回201；停止后续工况和Memcheck，未记为通过 |
+| 捕获界面原输入的独立标量回放 | 原CPU/原GPU成功，beta约0.548900937888846；新C++返回201，beta保留-1、高阶候选不覆盖 |
+
+定位结果不是数组布局或MPI引起：完全相同的80标量输入即可复现。
+逐次记录二分后发现，C++已有合法低端点与中间试算，但末次执行
+`beta_lo*(1-transport_roundoff_gamma)`后，双约束组分投影返回13
+（infeasible_flux），调用方转为201；此时不是温度反演失败，
+也不是原状态负密度/负内能。将CPU和C++各自最终投影的输入分别
+交给双方原投影器，两边均为前者成功、后者13，说明不能仅靠
+把C++末次状态检查改写成另一个谓词来修复。
+
+进一步对原捕获输入的高阶质量/N2/NO通量分别作-16至+16 ULP
+微扰，共99个标量输入。原CPU及原GPU均98成功、1个201；新C++
+68成功、31个201。这只是舍入敏感性诊断，不是新的物理工况矩阵。
+三者共同失败的第42号输入仅把高阶N2通量减小7 ULP；原CPU在
+iteration45、beta=0.5489009378888454已得到合法试算，末次向内退让
+至beta=0.5489009378888376后反而投影13。该反例证实原公共算法
+本身也不能保证末次重新投影成功，不能将问题全部归因于C++移植。
+
+`point_trace/`保留捕获输入、99个邻近输入和索引、三实现输出、
+两种最终投影输入及两实现交叉输出、原CPU逐次日志、C++诊断
+头文件与诊断程序。生产头文件/CMake的临时打印和追踪目标已移除。
+v1启动方式、v2抵消残差测试口径、v3未命名END提取的失败均原样
+保留；当前v4才是上述数值失败，不删除失败历史或改写为通过。
+
+**待人工决定：** 是否允许先设计并验证公共投影的最小数值修订，
+然后同步CPU/原GPU/新C++。必须保留原box边界、质量与气体常数矩、
+组分/双温能量可容许域和现有舍入预算；不能通过容差放宽、痕量
+截零、选用先前通量的失败回退或全局编译设置变更消除报错。
+具体构造需先说明数学依据，再修改原实现。批准前停止依赖该算子
+的非均匀字段验收，不启动普通AIR5、完整G2或性能测量。
+
+已批准V-T分层验收保持不变：同T/Tv算子及导数沿原预算；完整q到
+瞬时源项的近平衡原值差仍明确标为未通过原门槛；实际G1/G2误差和
+守恒合同不变。本次未修改任何原CPU/旧GPU数值函数或精确恢复合同，
+无Git写操作、平台操作或新增人工资源预算，完整goal仍active。
+
+### 10.186 不依赖失败投影的预算halo与私有界面MPI组件
+
+10.185的公共投影修订尚待批准，原CPU/旧GPU/新C++数值公式均未
+改动。本轮仅在独立合成字段上推进通信，不重跑失败的非均匀RK，
+不把它变成完整反应流通过。
+
+`astr_device_air5_symmetric_exchange`接入`chemistry_device_transport`
+C ABI及Fortran模块，由现有Fortran主线程显式调用。复用设备上下文
+的拓扑和pinned/device选择；12分量平面沿原`.cuf`协议打包：face0
+发向minus，face(dim-1)发向plus；从plus收到的面覆盖face(dim)，
+从minus收到的面覆盖face(-1)，含原限制系数，不作共享节点平均。
+单rank周期方向在设备拷贝，物理端不覆盖。现有上下文私有communicator
+的tags6..11专用于这项已串行的协议，与普通halo的0/1隔离；不增加
+通信rank或新运行选项。MPI入口拒绝与该上下文未完成的halo重叠，
+保留既有主线程/MPI槽使用规则，不擅自引入异步重叠。
+
+设备模式直接传入已分配的四个设备槽。pinned模式首次分布式调用时
+分配四个固定页锁定主机槽，后续方向和阶段复用，只传输实际存在
+邻居的平面，随上下文销毁释放。MPI前等待相应stream上的打包/发送
+完成；MPI后仅上传收到的平面并在同stream解包，无全场q回读、无
+每次迭代分配。host计时和真实应用传输字节计入既有可选通信计数。
+
+证据`results/multi_backend_mb8_face_exchange_20261118_v2/`，见
+`report.json`、四份拓扑日志、`memcheck.log`及冻结源码/程序：
+
+| 独立检查 | 实际结果 |
+|---|---|
+| NP=1及NP=2 x/y/z，周期/物理端，pinned/device，debug_sync=0/1 | 共56个rank级配置；每配置两个重复阶段、三个方向，完整12分量面数组逐位一致，包含非通信区/物理端/外角不变 |
+| 原11分量预算的通用halo-only交换 | 同56配置逐方向核对hm=5；11分量halo逐位一致，端点不被平均、非通信区域不变 |
+| 权威q及平面槽生命周期 | q逐字不变；跨方向/重复阶段借用的四槽地址与容量均未替换 |
+| 实际MPI参数 | 测试经PMPI记录Sendrecv：MPI_DOUBLE、专用tag、pinned主机指针/真实设备指针均符合选择；不是把主机指针标成device |
+| 应用传输字节 | 与各rank邻居数及平面大小一致；device新增D2H/H2D字节为0。此项不推断MPI内部一定无暂存或一定使用P2P |
+| pinned Memcheck | 独立ob1、关闭CUDA-aware的NP=2 y方向，两rank均0 errors、0 bytes leaked；未使用抑制或API过滤 |
+| Fortran C ABI | 已实际调用新增exchange接口作MPI_SELF周期通道，再运行原恒定stage；原568字节失败结构/864槽容量及数值检查通过，见fortran_abi.log |
+
+首次目录`...face_exchange_20261118/`保留device Memcheck失败：
+功能值检查均通过，但两rank各报61个错误、1个27648字节泄漏。
+回溯分别为UCX Fabric/VMM探测API与`cuIpcOpenMemHandle_v2`的
+IPC映射记录，未报告ASTR核非法内存访问；与10.88已记录工具限制
+相同。未修改MPI/驱动/SDK，也未屏蔽报告。v2明确把Memcheck限定
+为pinned，不能用其干净结果声称device内存安全工具闭环完成。
+
+共享传输结构的非反应影响另作最小复核：FP64 NP=2 x物理端
+hm=3/5、debug=0/1的halo/shared/begin-end逐位检查通过，实际MPI
+element_bytes=8且badtypes=0；FP32共享库构建及NP=2 MB1的
+element_bytes=4布局/复制/视图逐位检查通过。见本目录
+`nonreact_fp64_halo.log`、`build_fp32.log`、`nonreact_fp32_mb1.log`。
+FP32同一NP=2 x物理端halo/shared/begin-end复核也逐位通过，实际
+MPI element_bytes=4、badtypes=0，见`nonreact_fp32_halo.log`。
+这不开放FP32 AIR5。
+
+本轮仅完成通信组件。尚未由普通AIR5主循环调用；私有黏性27/33通道
+及其packed-overlap、限制器/滤波、边界、完整G2、统计/恢复和DCU
+AIR5仍按原依赖待办。10.185数值修订仍需人工决定，完整goal保持
+active；无Git写操作、子代理或平台任务操作。
+
+### 10.187 27/33通道黏性通量halo及下一方向预打包
+
+在10.185公共投影修订待批准期间，仅继续独立的通信依赖。
+原`chemistry_solver_gpu.cuf`和`chemistry_flux_exchange_gpu.cuf`的
+数值函数、环境选项、CPU/旧GPU参考均未修改；不重跑已失败的
+非均匀RK，也未放宽任何源项、G1/G2或可容许域门槛。
+
+`halo_transport.cu`新增`astr_device_air5_flux_transport_prepare`与
+`astr_device_air5_flux_exchange`，经`chemistry_device_transport`提供
+C ABI/Fortran调用。选择仍对应原`ASTR_AIR5_FLUX_HALO`三模式，
+不是新增三套物理算法，且与pinned/device通信后端正交：
+
+| 模式 | 本轮接线 |
+|---|---|
+| separate | 依原顺序分别交换应力6、热流3、各方向组分5+5+5、振动能3及可选携能6。复用通用halo的四个固定设备/主机槽，不额外分配通量槽 |
+| packed | 依原Fortran通道顺序合并27或33通道，各分布式方向预分配四个固定槽，阶段内复用；无分布式方向则不分配 |
+| packed-overlap | 与packed完全相同的数据；至少两个分布式方向时创建私有非阻塞pack stream及fields-ready event。当前MPI请求发起后预打包下一分布式方向，主线程用MPI_Testall推进，再显式完成pack和MPI；未增加MPI线程或通信rank |
+
+只交换hm层、横向物理节点，不平均共享节点、不触碰双/三方向
+越界角区。单rank周期方向直接设备拷贝，物理端没有邻居则不写。
+原buffer内x/y/z索引顺序均保持Fortran第一索引最快；组分通道
+按species最快、direction其次。私有context communicator使用
+tags20..25，与普通halo0/1、受限对流界面6..11隔离。pack stream
+等待流场所在stream的显式event，不与前一阶段物性/通量写入竞争；
+当前解包只写halo，下一方向预打包只读物理节点。
+
+设备MPI直接使用设备槽；pinned模式仅对实际邻居做D2H/H2D。
+不增加循环内内存分配、全场q传输、fallback或重试。原可选通信计时
+中“MPI完成/进度”区间对overlap包含预打包/推进等待，不应将其
+当作孤立网络延迟或与GPU核耗时简单相加。尚未测量性能收益。
+
+证据`results/multi_backend_mb8_flux_halo_20261118_v2/`；首次目录
+`...flux_halo_20261118/`也保留。v2补查packed不依赖普通六分量
+缓冲容量：separate按6准备普通槽，packed/overlap只按1准备元数据
+通道；完整AIR5预算在普通主链中仍需其11分量halo容量，不能以此
+推断完整主程序只需1分量容量。
+
+| 独立组件检查 | 实际结果 |
+|---|---|
+| NP=1、NP=2 z、NP=4 2×2×1；周期/物理端、两后端、三模式、27/33通道 | 共168个rank级配置，每配置两次不同输入阶段；同步模式按(mode+layered+layout)%2选择代表，不穷举开关笛卡尔积 |
+| 真实PMPI发送包 | 逐包检查MPI_DOUBLE、邻居/tag/计数、指针类型，以及发送缓冲每个double的原Fortran顺序；字段结果对独立rank编码归属逐字一致 |
+| 非通信区与权威状态 | 物理/共享节点、含不同NaN载荷的外角及q逐字不变；关闭layered时六通道携能字段确实未分配 |
+| 字节计数与进度路径 | 三模式总发送量按实际邻居和27/33通道一致，device应用D2H/H2D为0；四rankoverlap的MPI_Testall确有调用记录，非仅名字标作overlap |
+| pinned NP=4二维分解Memcheck | 四rank均0 errors、0 bytes leaked，含三模式及有/无携能通道；使用ob1且关闭CUDA-aware，不将结果扩大为device工具通过 |
+| Fortran C ABI | 实际调用prepare/exchange，对MPI_SELF周期常量通量逐字检查，AIR5_FLUX_EXCHANGE_ABI_PASS；同程序原568字节/864容量检查仍通过 |
+
+NP=4在本地两张GPU上显式使用local-rank modulo2，仅为正确性/内存
+检查，不作为一rank一卡扩展性结果。测试PMPI为逐包检查而回读
+发送缓冲，此诊断回读不在生产实现中，也不能拿这套程序做性能计时。
+
+共享传输修改的最小复核：非反应FP64/FP32的NP=2 x物理端，
+hm=3/5、debug=0/1，halo/shared及begin-end检查逐位通过，实际
+MPI字宽分别8/4字节且badtypes=0；原受限对流面通信NP=2 x的
+16个rank级配置仍逐位通过。见本目录`nonreact_fp64_halo.log`、
+`nonreact_fp32_halo.log`、`build_fp32.log`、`owned_face_np2x.log`。
+该复核不开放FP32 AIR5，也不代表已在完整主程序中交错调用三类通信。
+
+本轮仍是算子组件：普通主程序环境选项读取/调度尚未接入这些
+新API；扩散限制/散度、滤波/补偿、物理边界、完整耦合G2、统计/
+恢复及DCU AIR5仍待。受限对流全场矩阵继续被10.185阻断，不能
+用本轮合成通信检查代替它。完整goal保持active，未进行Git、
+子代理或任何平台任务操作。
+
+### 10.188 保守滤波的IEEE符号、界面闭合与热力学限幅数学层
+
+原保守滤波调用单质量约束`air5_close_species_flux`，不调用10.185
+待修订的双约束投影，因此本轮可独立推进。新增
+`src_gpu/chemistry_filter_math.cuh`：按原`chemistry_filter_math.F90`
+和`chemistry_filter_operator.F90`迁入误差无损乘积/和展开、严格
+振动能/平动能/压力符号、含carry的表示量压力符号、有限表示可行
+质量、双侧界面组分边界、成对提交误差盒与原53次热力学限幅。
+原周期十阶通量和物理端五阶`D5^T D5`闭合分别保持；不改系数、
+能量/压力约束、机理、容差、近边界冻结规则或精确续算合同。
+
+新数学必须以`--fmad=false --ftz=false`编译；不能在后续优化中
+把这些误差展开当作普通核恢复收缩。原CPU/旧GPU模块继续按根
+CMake已规定的`-Kieee -Mnofma`及GPU `nofma,noflushz`编译，未
+改变生产设置；参考包装逐字复制为`.cuf`，数学模块保持原`.F90`
+源码模式。测试只调用冻结编译函数，Python仅组装输入和独立分析，
+没有另写CFD推进器或化学时间积分器。
+
+证据`results/multi_backend_mb8_filter_math_20261118_v2/`：
+
+| 组件及独立依据 | 实际结果 |
+|---|---|
+| 302个基础输入 | 222个能量/压力/补偿表示量输入对有理数精确符号一致，含1 ULP及1/4 ULP扰动；80个质量结果位于有理数精确的组分和区间内。三实现结果逐值一致 |
+| 1830个高阶通量输入 | 周期/物理端，补偿关/开，既有常量/光滑/精确零/痕量台阶/动能/振动/密度/压力边界夹具，及0/4/5/9/10次多项式。CPU/旧GPU/新C++逐值一致 |
+| 独立离散恒等式 | 周期十阶二项式模板、物理端`-D5^T D5/1024`对通量差检查，最大绝对差1.38778e-17；物理端未补偿0/4次多项式增量精确为零 |
+| 1180个组分边界/单质量闭合 | 返回状态一致；对原GPU逐值一致，对CPU最大绝对差4.1359030627651384e-25 |
+| 1180个提交误差盒、1180个热力学限幅 | 谓词、状态、通量和系数对两参考逐值一致；64个冻结、52个受限、1064个保留原候选 |
+| 2360个返回的成对状态 | 密度严格正、组分非负；振动/平动下界及压力锥用有理数精确计算均满足，不以同实现谓词自证 |
+| 两个原失败输入 | 非法密度和非有限基态均返回原3，有限候选通量及ratio=1原样保留，无截断或回退 |
+| Memcheck | 1180个热力学输入及另行运行的302个基础/精确表示量输入，各自0 errors、0 bytes leaked；见memcheck.log与basic_memcheck.log。未覆盖完整设备场或MPI滤波 |
+
+浮点数组沿原T3组件的最大绝对差`2e-10`检查，谓词/状态及有理数
+符号不设模糊容差；此口径来自既有滤波探针，不替代化学G1/G2。
+通量、边界和热力学阶段使用相同冻结CPU候选输入分别比较，尚未
+证明把新候选自行串联后的完整设备场更新/守恒、补偿和MPI闭环。
+
+首次目录`...filter_math_20261118/`保留新增测试的断言失败：64个
+pressure-floor夹具中，原`thermal_limit`按提交误差盒冻结所有相邻
+界面，返回零通量/零系数；原更新核仅在至少一个相邻通量非零时
+才执行加减。故冻结状态不必通过“假定仍发生提交”的误差盒。
+v2只修正这一新增测试的错误前提：非冻结项必须通过成对判据，
+冻结项必须严格零通量，所有基态/返回状态仍做严格精确符号检查。
+没有把旧失败数值改记通过，也没有修改生产算法或已有容差。
+
+当前只完成数学层及独立设备探针。下一依赖为实际q/carry的条带
+读取、冻结界面、scalar/full工作区提交、共享端唯一所有者/别名
+复制及专用MPI，然后才接普通阶段。原保守滤波的均匀可分离
+Cartesian、643e/643e前提仍须由主链保留；不凭这些局部数学结果
+扩大到伸缩/曲线网格或宣称完整AIR5滤波已支持。10.185仍待人工
+批准公共投影数值修订，完整goal保持active；本轮未执行Git写操作、
+子代理或平台任务，未修改CPU/旧GPU生产数值源码。
+
+### 10.189 保守滤波设备场/MPI接线及重复滤波下界问题
+
+新增`chemistry_filter.cu`并接入根CMake和原设备上下文：原hm+1层
+条带、冻结11分量界面、节点提交、共享高端别名复制及逐轴模型
+检查均使用真实设备数组。q/carry不逐核回读。scalar/full分别按需
+分配1/11分量工作区，使用相同公式和原512×1×1、32×16×1、64×1×8
+方向块；补偿关闭时不分配carry，条带的对应11低部分量写零。
+缓冲随上下文复用和释放，无逐次分配或全场物理步回滚。
+
+`halo_transport.cu`提供显式filter exchange与完整三轴apply顺序：
+strips → faces → 全局状态放行 → owned-face交换 → commit → alias
+复制 → model-check → 全局状态放行。MPI仍由原主线程调用，后端
+仍选择pinned/device；页锁定缓冲仅分布式pinned首次使用时分配。
+私有communicator tags30..41与先前三类协议隔离。共享端按原唯一
+所有者复制，不平均。状态整数以外，仅明确选择的通信条带/平面
+在pinned路径上传/下载，不回读q/carry进行CPU滤波。
+
+`chemistry_device_transport`增加prepare/apply的Fortran C ABI。
+接口只改q/carry和RHS临时通量，不自动刷新rho/u/p/T/Tv/Y等缓存；
+普通空间阶段必须随后按新q刷新，不能把allocated标记当作缓存有效。
+原均匀可分离Cartesian、643e/643e前提保留在调用合同中，本轮
+夹具满足该几何，不据此开放曲线/伸缩网格或普通AIR5主循环。
+
+冻结参考为原CPU完整`air5_filter_conservative`及原CUDA Fortran
+完整滤波主函数/核，数学函数体不改；独立声明owner提供数组、
+已知均匀几何和原MPI参数，不另写Python推进器。每次程序运行
+连续执行两次三轴滤波，输入为已有T3夹具在16×12×10区间上采样，
+不是完整CFD时间步。参考的MPI调用/全局放行仍执行；旧GPU参考
+使用其原pinned路径，新C++比较pinned/device。
+
+证据`results/multi_backend_mb8_filter_fields_20261118/`：
+
+| 实际组件检查 | 结果/证据 |
+|---|---|
+| smooth周期场 | 原CPU/旧GPU及新NP=1/2 x/y/z/NP=4 2×2×1，10次新运行；含两后端及scalar/full |
+| trace-step、y物理端 | 原CPU/旧GPU及新NP=1/2 y/NP=4 2×2×1，6次新运行；补偿开启，含精确零/痕量组分 |
+| pressure-floor、y物理端 | 独立补余4次新运行；两次滤波后q/carry逐字不变，未发生假设中的零交换提交 |
+| carry-only周期场 | 独立补余6次新运行，含NP=4两后端；表示量对两参考最大差0，满足原512epsilon×maxabs(carry)=3.15544e-30，而非只套2e-10 |
+| 上述四组，合计26次新运行 | 最大表示量差8.673617379884035e-19；沿原2e-10检查。各组scalar/full结果、共享节点和周期别名逐字相同；原128epsilon组分闭合及1e-14相对守恒检查通过 |
+| MPI前提交失败放行 | 仅一个rank的内部点注入负rho，NP=2均返回物理状态3，所有q/carry字逐位保留在调用前状态；这不是全场回滚。见failure_release/ |
+| Memcheck | trace-step NP=2 y、pinned/scalar/补偿开启，两rank0 errors/0 bytes leaked；另NP=1 full/补偿开启0 errors/0 bytes leaked。见independent_after_vibration/的两份工具日志；不扩大为device工具通过 |
+| 实际Fortran接口调用 | 新上下文由Fortran创建，调用prepare/apply并检查scalar/full常量场不变；filter_abi.log中的AIR5_FILTER_FIELD_ABI_PASS |
+
+**尚未通过的门槛：重复振动能近下界滤波。** 原完整矩阵按首个
+数值失败停止。其第三组vibration在原CPU第二次滤波的y方向、
+界面(8,4,3)发现右基态(8,5,3)不再满足振动能下界，返回3。
+原GPU诊断也MPI_Abort(3)，新C++诊断返回物理3（探针进程退出4）。
+这不是压力或绝对内能为负，而是Ev减去300 K振动能下界的机器级
+负余量，不能据此称宏观物理发散，也不能忽略随后的确定性退出。
+
+已核对输入v_floor与10.177冻结的原CPU floor逐字相同。仅增加
+测试诊断I/O的CPU副本抓取每次方向提交后的真实q/carry，不改
+公式；其失败界面与原运行一致。有理数精确检查给出：
+
+| 提交后 | 最小精确表示量振动能余量，J/m³ | 负余量节点数 |
+|---|---:|---:|
+| 第一次x | 8.55705e-15 | 0 |
+| 第一次y | 2.79885e-15 | 0 |
+| 第一次z | 3.52617e-16 | 0 |
+| 第二次x | -3.13502e-16 | 16 |
+
+第二次x后，直接舍入成一个double的state有12个负节点，精确
+high−carry有16个负节点；因此不只是读取低部分量时的单次舍入。
+单rank、全物理端即可复现，排除MPI、初始场不合法和缓存混用。
+现有成对检查验证舍入后的双倍界面状态，而提交误差盒只保护压力；
+没有对振动/平动下界提供相同写回误差覆盖。当前反例直接证实振动
+能缺口，平动下界须另作同类算术论证，不能称已观测其失败。
+`vibration_diagnosis/`保留原CPU/GPU/C++失败及单点精确余量，
+`vibration_stages/stage_margins.json`和四份快照定位首次越界。
+
+**待人工批准的最小修订方向：** 沿已有实际操作数和提交舍入预算，
+分别构造振动/平动下界的最不利状态，将其纳入原热力学限幅/零
+通量冻结规则；先给出数学构造再同步三实现。不截零、不加经验
+能量下限、不扩大容差或用先前通量作失败回退。本轮未改原CPU/
+旧GPU或新C++的这些数值公式。
+
+pressure-floor/carry-only及内存检查属于独立工作，复用已冻结程序
+补跑，见`independent_after_vibration/report.json`；保留主矩阵的
+非零退出，不把vibration跳过或记为通过。后来只把离线别名比较
+加强为字比较，并为接口补注缓存责任；复用原数据检查，没有重跑
+已通过的场矩阵。此处的主链、legacy滤波、完整G2、正式统计/恢复
+和DCU仍待；本轮候选未准入普通AIR5。10.185公共投影及本节能量
+提交预算为两个独立待批项，完整goal仍active，未执行Git写操作、
+子代理或平台任务。
+
+新增上下文/释放分支的非反应FP32复核：NP=2 MB1布局/复制/视图
+逐字检查通过；x物理端hm=3/5、debug=0/1的halo/shared/begin-end
+逐字检查通过，MPI实际字宽4且badtypes=0。见build_fp32.log、
+nonreact_fp32_mb1.log、nonreact_fp32_halo.log，不开放FP32 AIR5。
+26次已完成场运行的离线字检查与失败记录汇总见
+`analyze_completed.py`、`completed_component_analysis.json`；未覆盖
+失败参考或修改其原始输出。
+
+### 10.190 legacy滤波的CPU正痕量擦除，待人工决定
+
+检查原`ASTR_AIR5_FILTER_MODE=legacy`实际路径时发现参考不一致：
+CPU `chemistry_core.F90`的`air5_limit_filter_species`总是计算
+`candidate=low_species+theta*(filtered_species-low_species)`；GPU
+`chemistry_solver_gpu.cuf`的`air5_limit_filtered_state_kernel`仅在
+真实负组分时进行该混合，否则直接复制非负候选。数学上theta=1
+时两者等价，有限精度下CPU的相减/相加可能消掉远小于low的正痕量。
+
+未先复制该CPU逻辑到C++。`probe_air5_legacy_trace.py`只冻结并
+执行原CPU函数、原GPU核及原GPU `filter10_value`，无生产数值
+改动。证据`results/multi_backend_mb8_legacy_trace_diagnosis_20261118/`。
+使用rho=1/16、五个严格非负且闭合的基态组分、T=3000 K/Tv=2000 K；
+原物性转换和两边修复均状态0。十阶函数的前两项为精确相反的
+二进制有理数，最后一项提供原模板合法的正痕量：
+
+| 原十阶函数生成的NO密度 | CPU修复后 | 原GPU修复后 | CPU theta/limited |
+|---:|---:|---:|---|
+| 9.094947017729282e-13 | 同输入 | 同输入 | 1 / false |
+| 8.470329472543003e-22 | 0 | 同输入 | 1 / false |
+| 7.703719777548943e-34 | 0 | 同输入 | 1 / false |
+
+这些值处于FP64正常数范围，不是下溢或FP32 FTZ。该诊断隔离修复
+函数对同一候选的行为；没有执行完整CPU/GPU legacy滤波或量化
+长期物理影响。绝对总量影响很小，不等于theta=1的正痕量擦除
+符合原GPU的候选保留语义。
+
+**待批最小修订：** 只在CPU未发生真实限幅时令candidate直接取
+已闭合的filtered_species，保留后续闭合/非负检查；真实限幅分支、
+最大基态组分闭合、状态和所有容差不变。GPU已有该行为，不改
+其公式。批准后重新冻结参考再接入legacy，不以全局2e-10预算
+忽略100%痕量损失，也不自行改物理模型或增加截断。
+此项与10.185投影201、10.189保守滤波提交能量余量为三个独立
+待决定问题；本轮未进行任何一项生产数值修订。
+
+### 10.191 等温壁面与定压状态出口的独立接线
+
+在不依赖上述三项失败算子的范围内，新增
+`chemistry_boundary_math.cuh`、`chemistry_boundary.cu/.h/.F90`，
+接入根构建、同一设备上下文及`chemistry_device_boundary` C ABI。
+本轮边界仅为原AIR5 HBL等温底壁和原normal-shock定压状态出口：
+
+- 底面y-：p_wall=(4p_1-p_2)/3，Y_wall取第一个内点，u/v/w=0，
+  T=Tv=Tw，按原EOS重构rho和11分量q，填充-hm:0。
+- 出口x+：沿原冻结gamma/c与传入声学状态校正；超声速或同压力
+  分支直接复制内点，亚声速用原密度/法向速度修正及目标压力
+  重建温度，填充im:im+hm。原倒流/目标超域返回状态保持不变。
+
+该出口不是完整NSCBC RHS；壁面也不扩展新的催化、曲面或温度
+模型。调用方选择真实物理所有者，错误节点不写q；carry不在
+单个核内提前复位，按原完整boundary调度在各面成功后统一处理。
+rho/u/p/T/Tv/Y及空间halo需随后刷新。未把这些独立核注册为普通
+AIR5已支持全部边界，也没有调整角点所有权或自动替换原条件。
+
+证据`results/multi_backend_mb8_boundary_states_20261118/`：
+
+| 检查 | 实际结果 |
+|---|---|
+| 首轮1104输入 | 两种组分缓存模式、原物性库代表输入；壁温含有效范围与超域，出口含亚/超声速、静止/倒流及三种目标压力比。CPU/旧GPU/C++状态码完全一致 |
+| 原组件绝对+相对预算 | 新C++对CPU最大预算比0.0011418822421，对旧GPU0.0002756267481，均≤1；沿原物性组件1e-13×max(1,maxabs(ref))+5e-12×abs(ref)，未用非反应全场门槛代替 |
+| 独立构造性质 | 首轮700个成功构造状态；壁面零速度、平动温度与振动能对应Tw，亚声速目标压力检查通过；288个超声速分支完整q逐字复制 |
+| 不同组成的两个内点 | 另加两个输入，原编译程序复用；两缓存模式的壁面组成确实来自内点1而非内点2，三实现逐值一致。见mixed_composition_report.json；当前完整脚本默认共1106输入 |
+| 实际设备面写入 | 成功/失败两类代表分别覆盖wall/outlet，真实hm=5、9×8×7物理节点；成功时ghost/边界值符合原CPU目标，非目标区及失败时q逐字保留，carry逐字不变。不是全边界事务或完整调度检查 |
+| Memcheck | 上述状态/实际设备写入0 errors、0 bytes leaked，未启动物理流动或MPI边界矩阵 |
+| Fortran C ABI | 真正调用两个新接口，状态0，见fortran_abi_v2.log中的AIR5_BOUNDARY_ABI_PASS；不替代数值对照 |
+| 非反应影响 | FP32共享库构建及NP=2 MB1、hm=3/5的布局/复制/视图逐字检查通过，element_bytes=4。不开放FP32 AIR5 |
+
+旧参考函数/核逐字提取，GPU包装按原`.cuf`模式编译；未改CPU/
+旧GPU生产边界。额外混合组成两点只运行未执行过的输入，不重编
+或重跑首轮矩阵。首次Fortran接口短测失败保留在fortran_abi.log：
+新增测试错误地把带halo压力数组data(1)当作物理点，读到外角；
+仅按lower/stride改为(0,0,0)，模型/公式/容差不变，v2通过。
+
+普通HBL/postshock/normalshock边界总入口、剖面入口、外场/入射
+参考目标、特征RHS/黏性源项、角点顺序和补偿生命周期、真实MPI
+边界消费者均尚待接线。该进展不能代替MB8-E、完整G2、统计/
+检查点/恢复或DCU验收。完整goal仍active；三项数值修订待明确
+授权，未执行Git写操作、子代理或任何平台任务操作。
+
+### 10.192 固定目标、normal-shock分支与剖面入口持久存储
+
+继续10.191的独立MB8-E接线，未实施三个待批准数值修订。
+`chemistry_boundary.cu/.h/.F90`新增fixed/profile prepare及apply接口，
+同一设备上下文按需持有22个固定目标值和11×(jm+1)个本rank
+入口剖面值；由`State`释放。目标初始化或显式更新时上传，prepare
+返回前复制完成，后续apply不依赖主机输入存活；更新复用已有分配。
+没有逐边界调用上传目标或回读整场，也没有新增自动目标切换。
+
+原数学和阶段职责保持：
+
+- 左端固定目标及剖面入口填充x=-hm:0，仅j/k物理范围；剖面沿
+  Fortran的j优先布局，不在GPU重新插值或重建原始入口剖面。
+- 非normal右端填固定目标；normal且无正目标压力时从im-1
+  外推；normal且正目标压力时调用10.191的原定压状态算法。
+- 真实物理所有者由调用者选择，不在MPI内部面覆盖q。定压失败
+  时该右端节点不写，已写左端不回滚，保持原核顺序。
+- 所有核仅改目标q，不清carry。原postshock调用本身不清carry；
+  原HBL总调度则在各面成功后处理carry及缓存/halo。该完整生命
+  周期尚未接入，不能把单个状态核当成完整边界条件。
+
+新测试`air5_boundary_targets_probe.cu`及驱动
+`run_air5_boundary_targets.py`，根目标
+`astr_backend_air5_boundary_targets`。原定压参考复用10.191冻结的
+CPU/旧GPU输入与输出，不重编、覆盖或重新跑原1104状态。固定/
+外推/剖面写入按独立主机索引模型逐字比较，不复制设备核作参考。
+证据：`results/multi_backend_mb8_boundary_targets_20261118/`。
+
+| 检查 | 结果 |
+|---|---|
+| 本地NP=1、NP=2 x/y/z、NP=4 2×2×1 | 共528次边界调用，包含debug=0/1、两缓存模式、两次目标prepare、六类应用；4rank显式共享两卡，不是四卡效率测试 |
+| 固定、外推、剖面和不适用面 | 目标及非目标/外角完整q字比较通过；剖面随全局j变化，准备后主机输入全部改为NaN，设备输出仍匹配准备时目标；第二次显式更新正确生效 |
+| 定压成功/失败 | 成功代表对原CPU/旧GPU误差预算比0，失败码一致；失败右端及其它非目标字不变，仍保持原先写左端的顺序。共64次预期压力拒绝，不是64个计算失败 |
+| 补偿余量 | 所有应用前后carry逐字不变，包括非零哨兵；仅证明状态核不修改carry，不证明完整HBL边界补偿生命周期 |
+| Memcheck | NP=2 x、两张卡，0 errors、0 bytes leaked；MPI只负责测试拓扑/标量，不进行device-buffer halo，不能据此消除10.186的UCX工具问题 |
+| Fortran C ABI | `fortran_abi.log`实际调用fixed/profile四接口，检查j优先数据，`AIR5_BOUNDARY_TARGET_ABI_PASS`；也复用原scalar/full恒定滤波及wall/outlet ABI检查，不运行失败的振动夹具 |
+| 非反应共享状态影响 | 更新后FP32设备库和MB1构建完成，NP=2、hm=3/5、debug=0/1布局/复制/视图逐字一致，element_bytes=4；见build_fp32.log、nonreact_fp32_mb1.log，不开放FP32 AIR5 |
+
+编译使用根CMake、NVHPC/nvcc26.1、本地RTX4000 Ada及FP64。
+保留--fmad=false，AIR5翻译单元--ftz=false，原CPU/旧GPU数值
+设置不改。完整q到瞬时V-T源项的近平衡不通过记录与已批准分层
+验收不变，本轮不重分类、不改温度反演或容差。
+
+尚待：完整postshock/HBL调度与carry/物性/halo生命周期、外场/
+入射目标及特征RHS、普通主循环/G2、启用的统计/输出/精确恢复和
+DCU AIR5矩阵。公共投影201、保守滤波写回能量余量及CPU legacy
+正痕量擦除三个待批项仍保持原状；未执行Git或远端任务操作。
+
+### 10.193 HBL出口、顶面参考状态及边界补偿组件
+
+继续MB8-E，将原HBL状态操作迁入现有
+`chemistry_boundary_math.cuh`及`chemistry_boundary.cu/.h/.F90`：
+
+- 出口候选为(4q_1-q_2)/3，保留原逐组分约束、N2闭合及最多64次
+  二分；不是新加crashfix或失败回退。物理动态顶面与出口交点
+  保留已有q(im,jm,k)，只复制右ghost，不调用出口外推。
+- 相似顶面按sqrt(x_origin/(x_origin+x))缩放法向动量，同时调整
+  总能量的动能差，其他分量不变；入射顶面按x<incident_x选择
+  上游，否则取下游。相似/入射分支填jm:jm+hm。
+- 动态顶面先验证现有物理顶面q，只填jm+1:jm+hm，不替代物理
+  顶面状态或特征RHS；非法点保留原字，其它合法点仍可完成复制。
+- 新top prepare在初始化或显式更新时复制33个参考状态值及本rank
+  的x(i,k)平面，i优先，无每步目标上传或整场主机往返。
+- 单独的HBL carry复位核沿原x/y物理面所有权，只清指定固定节点。
+  动态顶面及出口/顶面交点保持carry，入口拥有的顶角仍由入口复位；
+  z面不另加规则。该核要求已分配carry，由总调度在边界成功后调用。
+
+上述状态核的本地失败槽会逐阶段重置；调用方必须先完成上一阶段
+的MPI全局状态放行，才进入下一阶段。当前尚未把这些核组成普通
+AIR5的完整调度，也没有省略后续q/carry/物性/halo同步。
+
+**首次差异及修正：** 人工强外推q_2=6q_1的第一处差异不来自
+改变二分系数。由冻结输出恢复的beta=0x1.3333333333200p-1下，
+原CPU/旧GPU的全部11字与fma(beta,q_high-q_1,q_1)一致；原新C++
+则与分开乘加逐字一致，能量差-1.921176454797173e-11，原预算比
+192.116918。原CPU汇编含vfmadd，原GPU核含DFMA。只在新出口
+混合表达式中显式使用fma，保持原公式/64轮/谓词和全局--fmad=false，
+不改CPU/旧GPU或恢复普通核的自动融合。强外推可产生近真空状态；
+本组件结果不据此作为完整输运/化学模型的适用性证明。
+
+初次失败保留在`results/multi_backend_mb8_hbl_boundary_math_20261118/`，
+含`diagnose_fma.py`、`fma_diagnosis.json`、原程序/输入/输出、CPU
+汇编和旧GPU SASS；未覆盖原失败。修正后的独立数学检查见同名
+`_v2/`。最终设备场证据为
+`results/multi_backend_mb8_hbl_boundary_fields_20261118/`。
+
+| 检查 | 结果 |
+|---|---|
+| 原CPU/旧GPU/C++ 672输入 | 24代表状态×两缓存模式，含常量/密度/温度/组成外推、非法内点及相似顶面正/非法坐标；全部状态码一致，528成功、144原预期拒绝 |
+| 成功构造状态的原组件预算 | 对CPU及旧GPU最大比均0.000288430332184084，沿原绝对+相对预算，未改门槛；出口222个原始候选、114个原有限幅结果 |
+| 拒绝时临时输出的原始差 | 相似顶面非法坐标/origin时，原CPU初始化输出0，旧GPU目标辅助函数先复制base后返回状态2，96行临时输出不同；原始数组全部保留，不声称临时数组逐值一致。失败结果不写实际q，由下面设备面检查验证 |
+| 68次真实hm=5设备面调用 | debug=0/1、两缓存模式；出口含动态/物理顶面四组合、成功/受限/失败；顶面含相似/非法目标、入射等号位置、动态合法/单点非法。成功构造沿原预算，复制及未写区域逐字一致，carry保持不变 |
+| 128组carry掩码 | 16种x/y所有者掩码×动态开关×两debug×两缓存模式；指定节点精确+0，其余carry逐字保留，q逐字不变，不新增z边界复位 |
+| Memcheck | 数学输入及上述真实面/掩码同一候选执行，0 errors、0 bytes leaked；不是device MPI或完整边界调度验收 |
+| Fortran接口 | `fortran_abi.log`实际调用新增四接口，保留动态顶面/出口交点carry并清入口；`AIR5_HBL_STATE_ABI_PASS`。实际源另存fortran_abi_source.F90 |
+| 既有壁面/定压分支 | 只重跑新候选，复用10.191冻结1104输入及原CPU/旧GPU输出；状态一致，最大预算比仍0.001141882/0.000275627，原面写入/失败字保留检查通过，见wall_outlet_report.json及wall_outlet_fields.log |
+| 共享FP32构建 | 新接口及设备库增量构建成功，见build_fp32.log；不据此开放FP32 AIR5或重跑无关物理算例 |
+
+测试入口扩展现有`air5_boundary_probe.cu`与参考包装，新增驱动
+`run_air5_hbl_boundary_components.py`。后两次检查按输入/原源码逐字
+核对后复用首轮冻结CPU/旧GPU输出及二进制摘要，不重复编译/执行
+未改的原参考。包装仍按原`.cuf`模式编译；96行拒绝临时数组差
+不属于已提交边界状态，也没有隐藏为成功状态。
+
+下一依赖仍是完整边界调度/特征RHS和普通AIR5耦合、G2、统计/
+正式恢复及DCU矩阵。10.185/10.189/10.190三个待批数值问题保持
+不变；本轮未授权也未执行Git、子代理或任何远端任务操作。
+
+### 10.194 特征顶面算子接线与原参考的近声速分歧
+
+新增`chemistry_characteristic_math.cuh`，迁入原共享Fortran模块的
+y通量微分、二阶/一阶法向对流及传入特征修正；状态到p/c/dpdq
+的装配沿原顶面核。`chemistry_boundary.cu/.h/.F90`接入静态物理
+dy平面与实际high/low RHS核，128线程、入口顶角first_i所有权、
+原正Jacobian检查及先high后low写序保持。dy来自原坐标差，不以
+全局常量间距替代。新核不推进q、不改carry、不加入化学/V-T源项。
+
+这里仍只是法向对流基准：原核remaining_transport=0，随后交给
+对称预算并加入切向/黏性阶段。当前没有绕过10.185调用该失败
+限制器，也没有将法向组件当作完整NSCBC RHS或完整时间推进。
+同一State的high-normal平面由特征prepare和对称prepare按需共用，
+两种准备顺序均不重分配该平面；dy只在初始化/显式更新上传。
+
+**已通过的固定输入层：**
+
+| 检查 | 实际结果 |
+|---|---|
+| 461组固定q/p/c/dpdq输入 | 24代表状态，9种法向Mach（含双向近零、亚/超声速和精确声速输入）、两松弛率、均匀场及5种非法参数；原CPU/旧GPU/C++五类有效标志完全一致 |
+| 原组件预算 | 各11分量算子沿1e-13×max(1,maxabs(ref))+5e-12×abs(ref)；对CPU最大比0.005157712，对旧GPU0.005708551；按normal-high/low、transport、通量微分及两类normal-RHS分别计量 |
+| 独立EOS复步微分 | 通量方向导数最大预算比0.001757539；24个均匀状态全部精确零，48个超声速流出直接保留-N+remaining |
+| Memcheck | 纯算子组件0 errors、0 bytes leaked |
+| Fortran实际接口及共享存储 | 独立均匀输入、rate=0、reference_sound=1500，顶面活动列high/low严格零，入口列和非顶面哨兵不变；两种prepare顺序地址不变。此ABI执行的Memcheck也为0 errors/0 bytes leaked，不代替下面失败的q装配矩阵 |
+| FP32共享编译 | 设备库增量构建成功，不开放FP32 AIR5或据此认领数值/物理通过 |
+
+证据：`results/multi_backend_mb8_characteristic_math_20261118/`。
+纯算子驱动`run_air5_characteristic_components.py`冻结原
+`chemistry_characteristic.F90`及两种真实参考二进制；原GPU包装仍按
+`.cuf`编译。Fortran源和v2工具输出分别为`fortran_abi_source.F90`、
+`fortran_abi_v2_memcheck.log`；v1仅接口运行日志保留。没有修改原
+温度反演、编译选项、松弛系数或任何既有容差。
+
+**未通过的完整q装配参考：** `run_air5_characteristic_fields.py`
+已冻结原CPU顶面子程序及原GPU顶面核，覆盖912行（两缓存模式、
+真实q、两松弛率、Jacobian及代表法向速度）。本组件只观察进入
+公共限制器之前的RHS：CPU预算调用由明确的只计数交接替身截住，
+目标供给为冻结常量状态；不执行CFD或伪称完成保正预算。真实目标
+几何选择此前已在10.193单独验证。
+
+所有912行原参考状态均成功，但其中105行CPU/旧GPU差超原组件
+预算：Mach=-1共51行，Mach=-1.2共42行，Mach=+1共12行。
+807行原参考在预算内不等于807个新C++通过。程序停在参考比较；
+没有执行新C++字段矩阵、该矩阵的Memcheck、RK或G2。
+原始参考、输入、命令、冻结源码及逐行差异保存在
+`results/multi_backend_mb8_characteristic_fields_20261118/`，
+汇总为`reference_failure_summary.json`，未放宽阈值或删去失败行。
+
+已区分两个原因，不将其都解释成可忽略的机器噪声：
+
+1. **全传入、零松弛的消减。** 第38行CPU/旧GPU的rho/u/T/Tv/p/
+   beta/c及压力微分均相同，v_n=-396.4130970125687，c=330.34424751047396，
+   两声学模态均传入且rate=remaining=0。原表达式数学上应严格为0，
+   CPU本例为0，旧GPU低阶能量RHS残留9.313225746154785e-9。
+   这是先减去再加回投影项的消减，不是本例的声速反演差。
+2. **近声速的分类跳变。** 第820行CPU/GPU v_n都为
+   -1715.410010942129 m/s；c分别为1715.4100109421288和
+   1715.4100109421292 m/s。于是v_n+c分别为-2.2737367544323206e-13
+   与+2.2737367544323206e-13，原严格<0分支选择不同传入模态；
+   rate=4000时high能量RHS分别为-33074.97577760636与-22549.09125403105，
+   原值差约10525.8845235753。温度仅相差约1.82e-12 K，RHS差却不是
+   同量级扰动；本例温压在当前模型域内，不是痕量负值问题。
+
+两处只加诊断写出的原参考重放，都要求RHS22字与首次未插桩输出
+完全相同，实际通过；未用改变计算的包装解释原结果。证据分别为
+`multi_backend_mb8_characteristic_fields_20261118_inflow_cancellation/`与
+`..._sonic_diagnosis/`的`diagnosis.json`。后者80位同q EOS条件数诊断
+给出v_n+c约+1.11208e-14 m/s，仅用于说明舍入敏感性，不替代现行
+温度反演/分类，也不是新的验收门槛。
+
+**待人工决定的数值修订设计，尚未实施：** 记D=q-target，N为法向
+通量梯度，Pc/P-/P+为原投影，ka=rate，kc=max(-v_n,0)/a_ref×rate。
+原式可等价写为“负的出射法向投影－传入目标松弛投影＋remaining”，
+避免-N与传入N的大数相减。全传入时化为
+`-kc*Pc(D)-ka*(P-(D)+P+(D))+remaining`，零松弛自然精确为remaining。
+这项等价重排本身不解决近声速硬分类的舍入敏感性；统一声学分类
+必须另推导可移植的有限精度判据。未经人工批准不加Mach死区、
+经验阈值、连续权重或新的回退，也不改物理松弛模型。
+
+此项与10.185投影201、10.189滤波提交能量余量、10.190 CPU正
+痕量擦除合计四类待决定问题；固定温度V-T已批准分层口径不自动
+扩展到这里。完整goal仍active，本轮无Git、子代理或远端任务操作。
+
+### 10.195 状态边界的MPI调度、全局失败与物理缓存
+
+在不调用上述四项失败算子的范围内，`chemistry_boundary.F90`新增
+`air5_hbl_boundary_apply`、`air5_postshock_boundary_apply`，仍通过
+同一设备上下文及C ABI调用C++核，不由CPU计算边界状态。
+
+HBL状态序列沿原GPU：出口→全局放行→底壁→全局放行→顶面→
+全局放行→入口→启用时的carry复位。未拥有物理面的rank仍参加
+状态归约；阶段失败即返回，不提交后续面或carry复位。postshock
+沿原固定左右状态、normal外推/定压分支，仅normal且正目标压力
+时进行全局数值状态归约，不额外清carry。
+
+返回的非零物理状态是全局一致的致命错误，普通调用者必须停止
+该流动推进；没有恢复、重试或回滚。CUDA/API或MPI运行错误立即
+MPI_Abort。测试捕获返回值只用于检查停止位置，之后销毁测试
+上下文，不在失败的流场上继续求解。
+
+状态调度自身不上传/下载整场、不处理halo，不自动重建原始量；
+仅各活动面读取一个状态整数，MPI归约也是主机整数。初始化目标
+沿前述prepare上传。普通控制层还需按原阶段接上q/carry协调及
+物性刷新，不能以这个状态序列替代完整输运/化学/RK循环。
+
+根目标`astr_backend_air5_boundary_stage`及驱动
+`run_air5_boundary_stages.py`使用同一份冻结初始数组、坐标、入口
+剖面、目标及非零carry；原GPU参考逐字提取原核及原apply调度。
+原同步包装按这些原调用的force=true执行同步，初始化测试资源
+由文件供给，并未替代/运行完整原算例初始化。每rank物理节点
+9×8×7、hm=5，x/y真实物理端，z周期。固定五组分暖态来自既有
+CPU物性参考的零基索引120；相似/入射选择/动态ghost加两缓存、补偿
+开关和debug代表配置共8项，另3项为postshock固定、normal外推
+与定压，共11配置。入射选择的两目标只用于索引/写序验证，不是
+Rankine–Hugoniot物理激波验证。
+
+实际证据：`results/multi_backend_mb8_boundary_stages_20261118_v2/`。
+
+| 本地拓扑 | rank-case数 | rank级预期故障检查 |
+|---|---:|---:|
+| NP=1，1×1×1 | 11 | 4 |
+| NP=2，2×1×1 | 22 | 8 |
+| NP=2，1×2×1 | 22 | 8 |
+| NP=2，1×1×2 | 22 | 8 |
+| NP=4，2×2×1 | 44 | 16 |
+| 合计 | 121 | 44 |
+
+4rank明确共享本地两GPU，不是四卡性能测试。MPI在此只参与拓扑
+和标量状态，没有halo包，也没有据此验证CUDA-aware数据通信。
+
+- 完整状态序列的q对原GPU最大组件预算比0.0004277118242630672。
+  每个成功序列后显式在设备刷新物理节点rho/u/T/Tv/p/Y，分别沿原
+  组件预算比较，最大比为0.000126851、0.000378295、0.000111458、
+  0.000334373、0.000196031、0.000050465。没有用非反应2e-10替代
+  化学组件预算；观察/缓存重建前后完整q字保持不变。
+- carry启用时完整数组对原GPU逐字一致；关闭时新后端不分配该
+  字段。非目标/外角q逐字保留，入口和固定目标、入射选择与动态
+  ghost复制逐字正确，壁面T/Tv和normal出口压力符合原预算。
+- 共享节点和周期端点的q及物理缓存在本夹具中均应一致，两个
+  后端各187对逐字通过。内点carry故意按本rank索引赋不同余量，
+  未要求它在共享平均前一致，更未将q一致等同于q-carry已协调。
+- 四类预期故障为出口非法内点、壁面非法内点、单rank非法相似
+  顶面origin，以及normal定压出口非法内点。每类每拓扑只注入
+  一个rank；全体rank得到状态2，HBL失败阶段分别1/2/3，随后
+  面/入口不写，carry不清。postshock仅保留其原先已提交左右点
+  行为，不伪称全场事务回滚。
+- NP=2 x分解的同一11配置及四故障场景Memcheck：两rank均
+  0 errors、0 bytes leaked；没有重复执行已受阻特征RHS矩阵。
+- 根`astr`增量构建成功（ordinary_build.log）；FP32共享库/MB1
+  构建及NP=2、hm=3/5、debug=0/1的4字节布局/复制/视图逐字
+  检查通过。它们不是普通AIR5运行或FP32化学准入。
+
+初始测试目标遗漏本项目已有的NVHPC f90main.o接线，首个无后缀
+目录只有准备源码，未执行数值测试；按既有CMake模式补齐后才
+运行v2。库现公开MPI::MPI_Fortran依赖，因为新增的正式Fortran
+调度含MPI调用。原CPU/旧GPU公式、编译设置、机理和容差未改。
+补充的复制/独立壁温压力检查及别名检查只读取保留输出，没有
+重跑GPU或覆盖主证据；相应脚本与结果为copy_check_source.py、
+alias_check_source.py、supplementary_copy_contracts.json及
+supplementary_alias_contracts.json。
+
+**下一通信依赖已核对：** 原通用AIR5补偿路径按轴先交换q/carry
+面并计算compensated_mean，再做q共享平均，随后TwoSum归一化；
+三轴结束后仅刷新halo并重建相应原始量。相关实际实现为
+`chemistry_compensation_gpu.cuf`的`compensation_gpu_axis`、
+`chemistry_compensation.F90`的`compensation_exchange_faces`和
+`halo_exchange_gpu.cuf`的`exchange_solution_halo_gpu`。
+不能对q与carry独立做普通平均。全周期单rank另有快路径，迁入
+前还需核对该分支的实际合同，不把通用分支顺序自动外推。当前
+C++尚未补齐这段补偿交换/归一化及最终halo链，未连接普通AIR5。
+
+四项待批数值修订及G2/统计/正式恢复/DCU缺项不变。完整goal仍
+active；未执行Git写入、子代理、平台查询或任务操作。
+
+### 10.196 原全周期单rank快分支漏掉AIR5补偿，待人工决定
+
+核对原`exchange_solution_halo_gpu`发现：当三方向均单rank且周期，
+它调用三个原周期qswap核并提前返回，不进入后面的
+`compensation_gpu_axis`。原周期核只平均q，不处理carry；后续
+halo-only/原始量刷新不修改物理节点q/carry。原CPU的通用qswap
+则在各方向执行补偿均值与归一化。
+
+未直接把这个分支复制到新控制器，也没有修改旧路径。诊断
+`probe_air5_periodic_compensation.py`冻结控制分支及原三周期核，
+用`air5_periodic_compensation_reference.cuf`执行这三个物理状态
+操作；不运行完整原普通程序或其缓存刷新。合法暖态来自既有CPU
+物性参考零基索引120，所有分量的carry为high×2^-60，左右互为
+相反数且均不超过半ULP，比较用精确有理数保留低部差而不以
+FP64的high-carry相减掩盖它。
+
+结果`results/multi_backend_mb8_periodic_compensation_20261118/`：
+
+- q的两端仍逐字相同，rho carry分别为±5.64162219073082e-20，
+  原快路径保留了这两个不同表示值。
+- 同一输入调用原CPU `compensated_mean/normalize`，平均结果
+  carry应为0，high不变。该诊断不能被解释成已测得长期物理偏差，
+  但明确不满足补偿共享值协调的合同。
+
+待批最小修订：仅在AIR5补偿开启时不使用该早退，沿已有通用
+逐轴补偿序列；未补偿及非反应快路径不变。不新增算法、阈值、
+恢复或失败回退。尚未获批，故未实施，未以此缩小完整MB8目标。
+
+### 10.197 显式逐轴补偿交换、归一化与最终halo组件
+
+在不经过上述快控制分支的独立组件范围内，新增
+`astr_device_air5_compensation_axis`及Fortran同名绑定，axis=1..3，
+normalize=0/1。实现保留原通用序列的三个不同阶段：
+
+1. 交换q11/carry11物理端面，只按原`compensated_mean`更新carry。
+2. q共享平均仍调用现有`device_exchange_axis(q,axis,reconcile=1)`。
+3. 再以TwoSum(high,-carry)归一化共享q/carry。
+
+MPI面包按原Fortran的物理第一横向索引优先排列，先q11再carry11。
+复用已有transport四个设备/固定pinned槽，hm>=1且按q11准备时
+容量足够，无热循环malloc或临时主机面数组。只在本地周期方向
+用设备对端值直接算均值；MPI方向保留真实pinned/device选择，
+使用现有私有通信器的固定42..47标签，与filter最高41区分。
+每次实际MPI前的owning-stream等待也保证上一unpack已退休，
+不会让MPI覆盖仍被GPU读取的复用接收槽。
+
+`chemistry_compensation_math.cuh`增加均值/归一化函数；
+`halo_transport.cu`只增加对应GPU包/算术和CPU线程上的MPI控制。
+该译单元显式设置--ftz=false，仍保持--fmad=false。生产库不调用
+原CPU补偿数学；它仅作为测试oracle编入独立探针。
+
+根目标`astr_backend_air5_compensation_exchange`与驱动
+`run_air5_compensation_exchange.py`采用MPI_Allgather的主机参考
+视图及原CPU均值/归一化源码，对每阶段完整q/carry逐字比较，
+不是复制新GPU包实现作为参考。测试显式执行三轴后halo-only
+刷新，再在设备重建物理节点及有效通信halo的rho/u/T/Tv/p/Y，
+对照原CPU物性源码各组分预算。测试中的整场下载/Allgather是
+观察工具，不是生产通信方式，也不据此计时。
+
+证据：`results/multi_backend_mb8_compensation_exchange_20261118_v2/`。
+该夹具x/y物理、z周期，局部8×7×6区间、hm=5；不把这项检查
+外推为所有周期组合、正式算例或全周期单rank快分支已经通过。
+
+| 本地检查 | 实际结果 |
+|---|---|
+| pinned及真实device MPI | 两后端均NP=1、NP=2 x/y/z、NP=4 2×2×1，4rank显式共享两GPU；补偿开/关和debug两模式共88个rank上下文 |
+| 算术与字段阶段 | 9组IEEE标量输入对原CPU源码逐字一致，含舍入残差及FP64最小次正规carry；每rank每后端40次阶段后观察，合计880次，包含物理端无操作，完整q/carry逐字一致 |
+| 包签名/真实载荷 | 112次send签名检查（含MPI_PROC_NULL），64个真实邻居载荷逐字检查；MPI_DOUBLE、端面顺序、私有标签及pinned/device指针种类匹配。设备后端是应用直接传设备指针，不据此宣称底层网络/RDMA或MPI内部完全不暂存 |
+| 缓存相位 | 最终halo-only刷新不再平均q或改carry，随后物理/有效halo缓存对原CPU组件预算最大比0.00033437305212240026；缓存更新不修改q/carry |
+| Memcheck | pinned NP=2 x、两GPU，上述4上下文/阶段序列0 errors、0 bytes leaked。设备MPI的既有UCX工具报告未被豁免或改记通过 |
+| Fortran接口 | fortran_abi.log实际调用各轴0/1模式，显式与q平均串联，均匀q保持、carry仍为零。它不是原快控制分支的修复证据 |
+| 非反应共享影响 | FP32库/MB1构建完成，NP=2、hm=3/5、debug=0/1四条布局/复制/视图逐字通过，element_bytes=4；不据此宣称完整FP32数值回归或FP32 AIR5准入 |
+
+首次无后缀目录的NP=1已通过；NP=2检查器错误读取
+MPI_PROC_NULL的未暂存主机槽而退出。诊断日志确认只有peer=-2
+的数据断言出错。修订仅让载荷断言限于真实传输，保留所有调用
+签名/指针检查及真实载荷逐字要求，未改生产公式或容差；v2完整
+矩阵通过。初次链接因测试oracle缺少本项目已有PIC属性而失败，
+按同类探针补齐，不涉及数值设置或运行时回退。
+
+尚未把显式组件装成普通AIR5 qswap/完整循环；全周期单rank
+控制选择仍待10.196审批，另外四项数值修订也未实施。后续仍需
+普通初始化/两化学半步/流体RK接线、G2、统计/正式恢复和DCU
+代表矩阵。完整goal保持active，本轮无Git/子代理/远端任务操作。
+
+### 10.198 多区域物性刷新及通信后的缓存相位
+
+新增`astr_device_air5_primitives_regions`和Fortran绑定，区域元数据为
+`first/last(3,nregions)`。同一批次只清零一次状态槽，逐区域使用原
+`convert_kernel`刷新rho/u/T/Tv/p/Y，末尾由调用者查询状态并做全局
+放行。原单区域接口仍保留逐次清零语义；当前调用者逐次检查，不能
+把新增批次接口描述为修复既有调用者的错误。
+
+范围内的成功节点可写缓存，失败节点不写；后续区域成功不会清除
+早先的失败，多种失败沿原atomicMax保留最大状态码。它不是缓存
+事务或失败重算：API/CUDA错误终止该阶段，不回滚已经更新的缓存；
+物理失败时不能继续依赖这批缓存的通量计算。双/三方向越界角区仍
+由原核跳过，不把这些角区变成有效热力学状态。接口不新增设备
+工作数组，不回读流场，原有check只读一个整数；显式同步模式和
+转换数学保持不变。工作区ready标志仍是分配标志，不代表缓存新鲜。
+
+独立证据：`results/multi_backend_mb8_primitives_regions_20261118/`。
+
+- 局部8×7×6、hm=5，debug及preserve各两模式共4上下文。每批含
+  物理区、下x halo、上z halo、应跳过的双越界角区和一个重复节点。
+  有效缓存全部有限，非目标/角区的NaN载荷逐字保留。
+- 批次与逐区域调用并逐次检查的缓存全部逐字相同。16个故障检查
+  覆盖首区域/后区域非法密度、能量与非有限动量，返回原状态2/4/7；
+  后续成功区域仍正确刷新，失败节点保持未写。q/carry/history含负零
+  和角区NaN载荷均逐字不变。另一个独立观察阶段可重新清状态，
+  但不据此修复或继续推进故障q。
+- 同一4上下文Memcheck：0 errors、0 bytes leaked，无MPI。
+- `fortran_abi_source.F90`用两个物理子区实际调用新增接口，并完成
+  原对流/通信ABI检查；源码、程序及日志保留在该目录。
+- 根普通astr构建成功；非反应FP32共享库/MB1构建及双rank hm=3/5、
+  debug=0/1的四条布局/复制/视图检查通过，element_bytes=4。这不是
+  普通AIR5运行、完整FP32数值回归或FP32化学准入。
+
+实际通信后的接线证据：
+`results/multi_backend_mb8_compensation_regions_20261118/`。
+沿用10.197夹具、数学与预算，只把最终物理区/有效通信halo的逐区
+刷新改为同批刷新后一次查询；未修改原CPU/旧GPU源码或快分支。
+pinned/device的NP=1、NP=2 x/y/z和NP=4 2×2×1共88个rank上下文、
+880次阶段观察，q/carry逐字一致。112次send签名及64个真实载荷
+检查通过；物性预算比最大0.00033437305212240026，与原检查相同。
+pinned双rank Memcheck仍为零错误/泄漏；设备MPI工具局限未豁免。
+
+已批准的固定T/Tv与完整q源项分层口径不变，原瞬时源项不通过记录
+保留；G1已有证据不代替G2。五项待批数值修订、普通AIR5完整推进、
+统计/正式恢复及DCU仍待。完整goal保持active；未执行Git写入、
+子代理或平台任务操作。
+
+### 10.199 化学区域批次与MPI全局放行/报告归约
+
+在`chemistry_device_coupling`新增`air5_chemistry_apply_regions`，不改
+已验证的C++ ROS-2、逐单元提交或C ABI。调用者提供原活动区域
+`first/last(3,nregions)`、时长、采集/归约/活动报告开关和通信器：
+
+1. begin一次，依次在已有设备上下文执行内点及可选动态顶面区域。
+2. collect关闭时只读状态整数；开启时读原240字节局部报告。
+3. 沿旧路径用MPI_MAX汇总状态；packed且采集开启时合并四个工作
+   量计数，不改变状态放行的先后。全局失败返回给上层，quiet时
+   补读各rank原局部故障记录，不进入后续边界或halo。
+4. 成功且采集开启才做诊断归约。活动报告保留两个int64求和；
+   separate按原顺序归约三个最小值、两个最大值、四个最大计数；
+   packed使用`[-minimums,maximums]`的MPI_MAX。报告的collected
+   标志仅在这段完成后为真，不把quiet或失败后的占位值当统计量。
+
+接口/API/MPI错误沿现有模块模式MPI_Abort；物理失败返回全局状态，
+普通调用者必须停止依赖阶段。这不是失败继续推进或物理步回滚。
+各rank的失败输入q/carry单独保留，不对故障快照作全局平均。
+没有新增设备数组、整场回读或运行模式；线程块和源项选项仍由
+现有prepare配置，自动线程块学习仍属CPP-P，不在本次推进。
+
+根目标`astr_backend_air5_chemistry_phase`和驱动
+`run_air5_chemistry_phases.py`的参考为独立上下文直接调用既有
+begin/region/report。全局参考以MPI_Allgather收集各rank原局部
+结果后在主机取min/max/sum，不重复新执行器的归约调用。底层数学
+沿用10.178--10.179已冻结的CPU/旧GPU/G1组件证据，本轮没有另改
+参考、积分公式或容差，也不把同组件对照冒充独立物理验证。
+
+证据：`results/multi_backend_mb8_chemistry_phases_20261118/`。
+
+| 实际检查 | 结果 |
+|---|---|
+| 九配置×NP=1、NP=2 x/y/z、NP=4 2×2×1 | 99个rank-case；局部8×7×6、hm5，按测试拓扑选择内区/动态顶面，时长1e-10；四rank显式共享两GPU，不据此计时 |
+| 代表控制 | separate/packed、采集关/开、原活动跳过开关、四种源项模式和source-only代表；归约状态、计数和极值与Allgather主机参考一致 |
+| 设备字段隔离 | 每配置的q/carry/history及rho/u/T/Tv/p/Y与直接组件调用逐字一致；相同初态下切换packed或关闭采集，九个字段组仍逐字相同 |
+| 单rank故障 | collected/quiet各在一个rank的首区域注入非法密度，22次rank级全局观察均接到失败；局部故障身份与q/carry快照保留，后一区域成功不清除先前失败；未运行任何边界、halo或流体RK |
+| Memcheck | NP=2 x、九配置、两rank均0 errors/0 bytes leaked；本例MPI只传主机元数据，不涉及设备MPI工具结论 |
+| 构建 | 根普通astr及原G1 Fortran消费者astr_backend_air5_coupling构建成功，日志integration_build.log；并非普通AIR5已准入或G1被重新执行 |
+
+命令、冻结源码/程序/输入摘要和构建信息随目录保留。先做一个rank
+的九配置首检，再增加诊断隔离的逐字断言并运行完整上述矩阵；
+没有重跑不受影响的昂贵零维独立参考或任何平台任务。
+
+下一依赖仍是普通主程序阶段连接，以及尚待人工决定的公共投影、
+滤波能量预算、CPU legacy痕量、特征顶面稳定性和全周期单rank补偿
+路由五项修订。G2、统计/正式恢复、AIR5消费者及DCU矩阵未完成；
+完整goal保持active，未执行Git写入或子代理。
+
+### 10.200 AIR5主时间统计的按需设备存储与采样组件
+
+新增`chemistry_statistics.cu/.F90/.h`，保留原
+`chemistry_mean_statistics_gpu::accumulate_mean_kernel`的定义：
+每物理节点44个累计矩、14个上次采样端点。根据当前rho/u/p/T/Tv/Y
+调用既有AIR5输运物性，用当前物理速度梯度构造黏性应力、黏性
+应力功和压力膨胀项，再以原`mean_point_moments`顺序生成44矩。
+首样本只存端点，随后累计`(0.5*interval)*(old_values+values)`。
+没有用单组分Sutherland替代混合输运，也不复用不同阶段的梯度。
+
+这些是原主时间统计，不是原位可视化的120通道分组中心矩统计；
+44矩本身没有新增Tv或各组分的时间矩，后者仍按原位消费者单独迁入。
+调用者必须先完成同阶段原始量和速度梯度刷新。已核对旧主程序
+`mainloop.F90::sample_mean_statistics`确实在AIR5采样前交换vel/tmp
+halo并重新compute_gradcal；新主程序的相同调用链尚未接通。
+
+`device_state`只在末尾追加SUM/ENDPOINT两个字段ID37/38，既有
+ID0--36和公开view布局不变。`mean_prepare`显式启用时才分配
+物理域、无halo的两数组及单独失败整数，开销为464字节/物理节点
+加4字节；未启用时没有这些设备数组。现有通用view/upload/download
+用于显式观察/输出/恢复，未另增整场打包副本或格式。采样不回读
+流场，check仅读自己的4字节状态，不覆盖求解器的物性失败状态。
+reset精确清零两数组；ready仍只表示工作区已分配，不替代新鲜性。
+
+失败节点保留原sum/endpoint，别的节点可能已更新；不提供采样
+事务回滚或允许错误后继续完整推进。物性状态码和非有限累计量
+的状态1均沿原核，未增加物理下限或放宽预算。FP64限定不变，
+未开放原生FP32 AIR5。
+
+根测试目标`astr_backend_air5_mean`与驱动
+`run_air5_mean_components.py`的最新证据：
+`results/multi_backend_mb8_mean_components_20261118_v4/`。
+
+| 实际检查 | 结果 |
+|---|---|
+| 冻结参考 | 原CPU输运和mean_point_moments生成端点/矩，原GPU实际accumulate_mean_kernel逐字抽取后执行；先对两参考比较，通过后再运行新C++。物性输入来自10个既有CPU参考状态，梯度为制造输入，不是CFD轨迹 |
+| 样本与状态 | 4×3×2节点、六个不等间隔有效样本、一个负压力及一个NaN速度梯度故障样本；状态逐样本一致，两个故障节点的sum/endpoint分别对前样本逐字不变。它们只是低层失败提交检查，不据此续算正式失败采样 |
+| 原字段预算 | 沿test_meanflow_air5_transport的每字段空间尺度1e-14*max(1,maxabs(reference))；旧GPU/CPU最大预算比0.005551115123125783，新C++对CPU最大同值，对旧GPU最大0.003469446951953614。未借用较松的非反应2e-10门槛 |
+| 数组恢复/同步 | 显式/依赖同步×连续/第三样本后销毁并重建上下文、上传SUM44/ENDPOINT14，共四种输出二进制逐字一致。仅证明58通道数组恢复，不含采样身份/时钟或检查点文件 |
+| 观察隔离与分配 | 每样本q/carry/history、rho/u/p/T/Tv/Y和dvel共十组字段逐字不变，含NaN位模式；两个统计故障不改变求解器失败槽。未启用数组确实未分配，描述符为物理SUM44/ENDPOINT14；reset输出全为正零 |
+| Memcheck | 单rank、全部八样本及数组恢复，0 errors、0 bytes leaked；未检查MPI或正式统计文件 |
+| 共享结构影响 | 根普通astr构建完成；FP64/FP32 MB1双rank hm3/5、debug0/1的布局/复制/借用视图逐字检查通过，各element_bytes为8/4。不是普通AIR5运行或完整非反应数值回归 |
+
+首三个目录保留新参考包装的编译失败，尚未进行GPU数值对照。
+诊断目录`multi_backend_mb8_mean_wrapper_diagnosis_20261118/`确认
+原核模块可单独编译，分配/复制/调用的缩小检查也通过；完整测试
+主程序在GPU条件编译排除全部内部过程后留下空contains，触发
+NVHPC Lowering Error并滞留前端。单独移除该空contains后完整程序
+可编译，最终只保留相应条件编译修订，撤回临时模块拆分和数组
+赋值猜测。未改原GPU/CPU生产源码或参考数学，原失败目录未覆盖。
+
+公共采样时钟、重复步抑制/窗口切换、现行统计HDF5元数据与正式
+精确续算、MPI/重分区、新NVIDIA原位AIR5消费者及DCU仍待。
+普通AIR5/G2及五项数值决定也未解除；完整goal保持active。
+本轮无Git写入、子代理、平台查询或任务操作。
+
+### 10.201 AIR5主统计时钟与现行统计文件接口
+
+新增`chemistry_mean_statistics_cpp`（文件
+`src_gpu/chemistry_statistics_runtime.F90`），编入根CMake的普通CPP
+程序，但当前普通AIR5推进仍未准入/调用它。模块沿原GPU主统计
+生命周期持有context、active/sampling_enabled、样本数、首末步/
+时间和累计覆盖时长，继续使用现有commvar/statistic/parallel状态：
+
+- active、sampling_enabled和lavg共同决定是否采样；nstep不大于
+  last_step时不重复采样，首次只存端点，后续使用time-last_time。
+- 关闭采样时不推进时钟或数组。若调用者没有明确开启新窗口，
+  下一个接受样本仍连接上一个端点；配置轮询触发新窗口的普通
+  主流程接线尚待，不在模块内猜测重启或自动更换统计窗口。
+- reset清零两设备数组及所有采样身份，nsamples同步清零。
+  slice-info报告实际首末采样时间和积分权重，不将其混作
+  input.run配置窗口或样本总数。
+- 显式release只释放SUM44/ENDPOINT14及独立失败槽，保留其它
+  求解器字段；释放前调用者须先结束外部消费者。通用context
+  销毁仍能独立释放这些可选资源，未新增回退/重试。
+
+`complete_air5_mean_statistics_cpp_file`使用原
+`checkpoint_state_transfer`及角色6，保持原58通道、9项int64元数据
+和现行schema；没有新格式、废弃检查点兼容层或额外附属文件。
+写出事件把44矩和14端点下载到同一个既有host packing buffer，
+读入时上传相同两段并恢复样本身份/时间权重。正常采样只回读
+4字节失败码，没有逐样本大场复制。API失败直接MPI_Abort，不为
+本地API成功增加全局归约；物理/时钟/文件判定沿原集体口径。
+
+根目标`astr_backend_air5_mean_runtime`和驱动
+`run_air5_mean_runtime.py`以隔离测试模块提供同类型的全局输入/
+分区状态，调用正式模块和原checkpoint_state_io，不另写统计文件
+读写器。参考冻结整个原chemistry_monitor_gpu.cuf及其依赖并实际
+执行，不仿写旧时钟。输入为既有合法物性缓存和制造梯度，MPI
+共享节点值一致；未执行CFD、边界更新、化学反应或halo通信。
+
+证据：`results/multi_backend_mb8_mean_runtime_20261118/`。
+
+| 实际检查 | 结果 |
+|---|---|
+| 代表拓扑 | NP=1、NP=2 x/y/z、NP=4 2×2×1，局部3×2×2区间，四rank显式共享两GPU；25个功能运行组、55个rank运行，非性能计时 |
+| 连续/恢复与继承 | 每拓扑原GPU连续/恢复、新C++连续/恢复及新C++从当前原GPU第三样本文件继承，共五类；六个有效样本，步序0/2/4/5/8/10、非等时间间隔，另做新窗口两样本 |
+| 观察与时钟 | 每接受步重复调用一次但只累加一次；关闭sampling及lavg分别不推进时钟；空/首/第三/末样本和重置空/首/末的元数据及覆盖时长通过。恢复后相同步不再访问新上下文尚未重建的物性缓存 |
+| 统计文件 | 五拓扑共130对HDF5逐数据集比较；同后端同拓扑连续/文件恢复逐值一致；旧GPU/新C++及跨实现继承最大原字段预算比0.008326672684688674，沿原每数据集1e-14*max(1,maxabs(reference))，整数/元数据逐字一致 |
+| 生命周期 | 统计显存为464*(im+1)*(jm+1)*(km+1)+4字节；release后数组接口为未分配、字节数0，销毁并重建上下文后恢复正常 |
+| Memcheck | NP=2 x，包含真实HDF5写/读、销毁/重建和窗口重置，两rank均0 errors、0 bytes leaked；再对连续结果七份文件逐字比较通过。MPI只传主机元数据/HDF5数据，不涉及设备MPI工具结论 |
+| 构建 | 根CPP FP64普通astr与新目标成功；额外FP32根构建为当前cache的CPU程序（ASTR_GPU_CPP_BACKEND=none），不记作新CPP FP32或AIR5验证 |
+
+本轮未出现数值失败，未改原数学、统计定义、元数据或容差。
+测试中的commvar/statistic只是同名/同类型输入与时钟载体，不
+替代普通主程序或run-control轮询。完整检查点批次、跨拓扑继承、
+原位主均值设备读取/Tv与组分中心矩消费者、AIR5 G2和DCU仍待；
+五项待批数值问题保持独立。完整goal保持active，无Git写入、
+子代理、平台查询或任务操作。
+
+### 10.202 公共投影的精确几何与五项待审设计
+
+为推进完整AIR5的实际阻断项，本轮没有继续叠加其它组件矩阵，
+也没有把自动“继续goal”当作CPU数值修订的批准。新增方案
+`documents/ASTR_MB8_NUMERICAL_REPAIR_PROPOSAL.md`，分别列出公共
+投影、滤波双温下界、CPU legacy痕量、特征顶面和周期补偿路由
+的证据、最小方向、尚未明确的合同与实施次序；五项并非所有
+AIR5算例都会同时经过的同一条链。
+
+新增诊断`tests/gpu_backend/diagnose_air5_projection_geometry.py`
+只读取10.185冻结的两个最终投影输入，以FP64输入的精确有理数
+求固定质量box切面上的气体常数矩极值，并以80个单自由变量
+box顶点独立核对。物理、归一化和中间增量共六个切面，其极值
+全部精确一致，没有浮点LP容差或新的CFD推进器。
+
+证据`results/multi_backend_mb8_projection_geometry_20261118_v4/`：
+
+- 原CPU接受和原C++拒绝的两个输入，在严格等式意义下均不可行，
+  但原例程本来就按有限算术预算接受返回值，不能混用这两个概念。
+- 中间增量问题的最小矩偏离/原tolerance分别为0.9968089792803237
+  和1.0014968676970895，位于中间判定阈值两侧。
+- 对两个物理box分别构造矩极值点并舍入后，得到严格box内的可表示
+  FP64见证。按原迁移非融合的最终求和/归一化顺序，质量预算比为
+  0和0.0010762200127788345，气体常数矩预算比为
+  0.6472324727096576和0.649396922981476；未放宽原返回预算。
+- 这只是最终投影合同的可行见证，不是最小范数投影的实现，更没
+  检查该见证的能量耦合、实际RK状态、完整CFD或G2。生产函数仍
+  返回原来的0/13，不把诊断改记成“201已修复”。
+
+据此将NR1候选具体为按实际返回通量筛选原active-set候选，不再
+以更紧的中间增量条件提前否决符合原最终合同的返回值。NR2复用
+原已批准提交误差盒的加法图推导，分别扩展到振动/平动下界，
+明确温度下界附近更强限幅及零交换的影响，不能只以滤波全零
+通过。NR4分开处理等价出射装配和近声速分类，后者的FP64系数、
+N−1闭合和温度夹限约定仍需冻结，未默认改为新松弛模型。
+NR3/NR5只给出已定位最小修改位置，尚未实施。
+
+无后缀目录保留第一版几何结果；v2是NumPy布尔值未规范化的JSON
+序列化失败；v3有返回预算见证；v4增加独立顶点极值核对。失败
+目录均保留，未运行GPU、重编生产程序、操作Git或平台。完整goal
+保持active，普通AIR5及依赖这些修订的验收继续等待人工决定。
+
+### 10.203 NR3/NR5最小修复与NR1组件试验
+
+用户明确批准NR3、NR5和NR1组件试验，迁移goal恢复active。
+本轮没改NR2/NR4，不改机理、G1/G2预算、外层beta、能量耦合、
+原失败状态或主推进准入。
+
+| 事项 | 实际结果 |
+|---|---|
+| NR3 CPU旧式滤波 | 未限幅分支现在直接复制已闭合候选；真正限幅、末次闭合和非负检查不变。两组原先被擦除的正痕量8.470329472543003e-22及7.703719777548943e-34逐字保留，第三组原正痕量也逐字保留；负候选触发theta=0.49999999999999994，CPU与旧GPU结果逐字相等。`results/multi_backend_mb8_nr3_20261118/`。C++ legacy滤波接入仍待 |
+| NR5 旧GPU周期补偿 | 仅AIR5补偿开启时不进入全周期NP=1提前返回，沿原逐轴补偿、q平均和归一化。实际`exchange_solution_halo_gpu`链接到根构建对象，五变量、未补偿AIR5、补偿AIR5各两种物性刷新模式共6组通过；补偿组沿三轴注入相反低位余量，端点归零、q逐字不变，面halo密度刷新及是否保留内点缓存符合原接口。Memcheck 0错误/泄漏。`results/multi_backend_mb8_nr5_20261118/`。本测试不代表全步物性或AIR5物理验收 |
+| NR1 已试验、未采纳 | 三实现按实际返回FP64通量用原最终预算筛选，未放宽预算。811项常规组件（含80项独立最优解构造）、两缓存模式、两个冻结投影端点和组件Memcheck通过。99组原邻域首次模式仍出现CPU/旧GPU/C++ 6/3/15个201，原为1/1/31；停止相关下游验证，生产三实现投影恢复原函数，不保留失败候选 |
+
+NR1的15个C++失败均为末次beta重新投影返回13，不是能量检查。
+插桩回放输出词与原候选逐字相同，3个最终投影输入仍有符合原
+最终预算的FP64见证，余12个未找到见证，不证明无解。候选完全
+保留于`results/multi_backend_mb8_nr1_components_20261118/`（源码、
+二进制、比较和内存检查）、`multi_backend_mb8_nr1_replay_20261118/`
+（端点与99邻域）及`multi_backend_mb8_nr1_trace_20261118_v2/`
+（实际末次投影输入与精确几何）。未运行原非均匀场或G2，不将
+较少C++失败数抵消CPU/旧GPU退化。后续先求解原返回预算限定的
+有限算术可行问题，区分无解与构造不足，再评估候选；不扩大预算。
+
+NR3/NR5仅修改两处原实现；新C++已验证的设备逐轴补偿无改动。
+普通AIR5、完整检查点、G2和DCU仍待。未写Git或操作远端。
+
+### 10.204 NR1同一末次beta的有限算术可行见证
+
+针对10.203的15个C++失败，从冻结追踪读取22个实际投影输入、
+外层beta及80个原面输入。在精确质量切片的矩极值通量舍入后，
+只做离线单组分相邻FP64检查：3组原位通过、10组调整1 ULP、
+2组调整2 ULP。所有见证保持原物理box，不修改预算或目标。
+用原始尺度的有理输入独立计算，质量/加权矩最大预算比为
+0.00860201381222283/0.9977838048701317。
+
+根CMake目标`astr_backend_air5_nr1_witness`以`--fmad=false`
+`--ftz=false`重算冻结面输入、box和投影目标，使用原最终求值顺序
+检查见证，最大质量/加权矩预算比为0.007892280093713957和
+0.9999760255799613。再按现有能量耦合和同一beta构造邻接状态，
+左右分别15/15可容许。证据在
+`results/multi_backend_mb8_nr1_witnesses_cmake/`。
+
+因此这15个失败都存在合约内的完整面候选，既不是盒和矩约束
+在原预算下必然无解，也不是随后能量检查必然拒绝。离线见证
+不是最优投影，更不是生产求解策略。未改CPU、旧GPU或C++
+生产算子，未运行非均匀场或G2。待决策方向是在候选生成时
+直接使用原最终误差不等式，而非只在最后放行已经按严格
+等式生成的候选，见`ASTR_MB8_NUMERICAL_REPAIR_PROPOSAL.md`。
+
+### 10.205 AIR5旧式滤波的设备组分末次修复
+
+`air5_legacy_filter_save/repair`接入设备状态和Fortran C ABI。
+先把物理节点密度与五组分保存到已有RHS暂存槽；原线性滤波和
+可选主值/低位归并完成后，按旧CUDA Fortran的最大基准组分
+闭合、负组分限幅、补偿投影和能量域检查顺序修复。未限幅时
+保留已闭合候选；不截断正痕量，不增加全场工作区或拷贝。沿用
+原先提交局部修复后检查终态能量的顺序，调用方仍须在继续前
+汇总状态；不把它变成事务回滚。组件不交换halo或更新物性缓存。
+
+`results/multi_backend_mb8_legacy_repair_20261118/reference/`
+冻结原CUDA Fortran核和编译记录。最终夹具及根CMake探针见
+`results/multi_backend_mb8_legacy_repair_20261118_v2/`。32组包含
+补偿开关、三组正痕量、真实限幅、最大组分并列与O2闭合、
+零支撑、非法密度/组分、补偿后的负表示值和能量域拒绝。C++和
+旧GPU输出的q、carry和状态码逐字相同；保存阶段不覆盖RHS的
+其他分量，修复阶段不改RHS和halo。Memcheck零错误和零泄漏。
+
+未显式融合的首个对照在10组真实限幅的近零修正量上有差异。
+旧核使用DFMA，独立逐项复算也确认非补偿的5组限幅结果使用
+`fma(theta,filtered-low,low)`才与旧结果相同；只为该表达式
+显式保留旧融合语义，不改全局`--fmad=false`或补偿运算顺序。
+当前仍未接三轴显式滤波、补偿交换/归并、全局故障释放和
+普通主循环。此组件结果不释放NR1/NR2/NR4或完整G2。
+
+### 10.206 AIR5旧式滤波的设备方向算子
+
+复用C++方向滤波的节点遍历、设备视图和工作区字段。AIR5可分配
+一个带原halo的11分量工作区或一个带原halo的三维单分量工作区。
+x/z从q读入工作区，y从工作区写到q；组件只写目标物理节点。
+内点与普通端部保留原10阶中心、端点直拷和第1--4行的闭合，
+不修改五变量实现。此接口不刷新halo、不提交z向工作区，也不
+调用组分修复或补偿控制。
+
+冻结原NVHPC五个模板（每模板4108条含小量和尺度跨度的采样线），
+及原三轴全分量/单分量方向核。13×12×11节点、11分量，分别
+验证无物理端、下端、上端和两端四种设置；两类高阶壁面仅冻结
+旧参考。普通路径C++共24组逐字匹配旧GPU，非目标分量与目标
+数组halo不变，Memcheck零错误、零泄漏。
+
+普通端部第2行只有按旧机器码融合首尾两处乘加后才能匹配，
+不能只照旧PTX复写。内点及其余行同样用显式`fma`保留已核对
+的运算顺序；全局`--fmad=false`不变。证据见
+`results/multi_backend_mb8_legacy_linear_20261118/`下的
+`reference_v5/`、`compare.log`和`memcheck.log`。方向核对照
+不代表周期调度、高阶壁面、MPI、完整AIR5时间推进或G2已验收。
+
+### 10.207 AIR5旧式滤波的完整设备阶段
+
+`astr_device_air5_legacy_filter_apply`接入已有halo通道，Fortran
+通过C ABI调用。顺序是x方向q halo、x滤波、y方向工作区halo、
+y滤波写回q、z方向q halo、z滤波与物理节点提交。单rank物理
+y面按旧控制器填充工作区ghost；MPI交换只更新halo，不平均
+共享节点。单分量先完成全部分量的y滤波再合并交换z面，仍只需
+一个三维工作数组。高阶壁面覆盖普通端部第1--4行，等温/绝热
+模板沿用原系数和核内乘加次序。扩展后36组独立方向核对照
+逐字匹配旧GPU，Memcheck零错误/泄漏。
+
+补偿开启时归并及暂换主值/低位，在同一工作区先滤低位再滤
+主值；主值滤波后归并并调用10.205的组分修复。修复状态经
+原私有通信器归约，不在本阶段更新物性、重建全部halo或做
+共享节点平均。以上仍由调用方在进入后续RHS前处理，不修改
+补偿、可容许域或失败事务语义。
+
+根CMake C++探针与原CUDA Fortran控制器在16×12×10区间夹具
+比较连续两次滤波。32组有效运行覆盖NP=1/2、周期x/y/z分解、
+物理y以及等温/绝热高阶壁面、两种工作区和MPI后端。每rank
+的q、余量及带halo的q输出逐字一致。代表性双卡壁面Memcheck
+零错误/泄漏。每rank同负载发送329120字节，pinned路径记录
+658240字节主机暂存，设备缓冲MPI记录零暂存。单侧物理x面
+注入非法能量的4组对照中，rank 0/1本地状态分别为3/0，
+全局状态均为3，停止后输出与原控制器逐字一致。
+
+证据见`results/multi_backend_mb8_legacy_controller_20261118/`
+（`controller_report.json`、`wall/metrics_*.log`、
+`rank_local_failure/`）。该结果只关闭旧式滤波设备阶段本地
+门槛；普通主程序接线、G2、DCU及NR1/NR2/NR4未关闭。
+
+### 10.208 连接AIR5 RK空间准备阶段
+
+`chemistry_device_step`提供`air5_prepare_rk_stage`及单独的
+`air5_prepare_spatial_state`入口。沿旧CUDA Fortran的阶段顺序：
+按已选配置执行保守或旧式滤波，滤波全局失败即返回；随后施加
+状态边界，把内部q转为物性并集体检查；逐轴完成补偿平均、q
+共享节点平均和面补偿归并，再统一halo-only刷新，最后按六个
+面区重算物性。包括物理ghost和共享面，双/三越界角区仍不写。
+当且仅当滤波关闭且首个RK阶段已有准备结果时，可沿旧逻辑复用。
+无新数学、数组、整场传输或失败回滚；仅传状态及既有halo载荷。
+
+本地证据在`results/multi_backend_mb8_rk_spatial_stage_20261118/`：
+旧参考由根CMake旧GPU对象和冻结控制器构建，实际执行
+`apply_explicit_filter_gpu`和`air5_prepare_spatial_state_gpu`；
+新探针调用正式Fortran阶段入口。夹具为16×12×10区间，覆盖
+周期、固定x状态边界、补偿开关、两种工作区、NP=1/2 x/y/z及
+pinned/device。周期重复端面有不同初值，使后轴共享节点更新
+能影响前轴横向halo。13组旧控制器对照（含2组滤波失败）按
+rank比较q、carry、q halo输出逐字一致；有效物性沿10.177
+绝对加相对预算，最大比值0.0003343730521224005。
+
+另2组首阶段复用保持q/carry和缓存原值，2组保守滤波阶段代表
+检查两种MPI后端输出一致，不解除NR2。滤波单rank故障的
+全局状态为3，未施加状态边界或刷新物性。双rank固定x边界
+代表用例Memcheck两rank均零错误、零泄漏。根CMake现有
+AIR5/C++构建及探针已编译链接；未从普通`astr`启动AIR5，
+未执行RHS、RK更新、两半步完整耦合、G2或DCU。
+
+### 10.209 AIR5扩散预算、MPI放行及黏性RHS
+
+`chemistry_diffusion.cu`接入原full-state及layered预算，复用已有
+六阶界面模板、物理闭合及T/Tv能量判据。在线性RK组合与已限
+对流RHS上构造原有基准；full-state取组分、振动余量和六面
+可容许系数的最小值。layered先计算/交换组分系数，再按原式
+修正携带能量通量，计算并交换能量系数。有效区域按上层给定
+的内区/可选顶面框，三个方向按原顺序累加，组分使用负散度，
+总密度RHS不写。没有新截断、状态回滚或物理阈值。
+
+`chemistry_device_step`组织已有梯度、黏性物理通量及通量halo，
+再调用`air5_limit_viscous_rhs`。预算系数按需分配带halo的三维
+字段，layered才分配能量系数；设备保留局部诊断槽。基准失败经
+全局归约，不进入系数交换、散度或RK提交；成功时才按原配置
+归约计数和最小系数。默认关闭诊断时不搬运全场。
+
+证据见`results/multi_backend_mb8_diffusion_20261118_v2/`。
+冻结原GPU预算和x/y/z RHS，使用同一组制造的局部q、Jacobian、
+既有对流RHS及粘性通量。首轮参考漏带原CMake的
+`-gpu=maxregcount:128`，导致512线程核启动报CUDA 701；
+已复现即时错误，按根构建参数重编参考并逐次检查启动状态，
+未修改原CUDA Fortran生产代码。
+
+- 12组正常对照覆盖NP=1/2、pinned/device、full-state/
+  layered、周期、物理闭合和强通量下full-state。最大原组件
+  预算比：系数0.00032487，RHS 0.00014655。组分触限夹具
+  确实触限，layered能量系数低至0.83930。总密度RHS保持原值。
+- 两组双卡周期均匀场经过实际梯度、黏性通量及packed-overlap
+  通信，RHS逐字不变；四组单rank非法基准对照本地状态3/0、
+  全局均3，RHS保持不变。代表layered双卡pinned Memcheck
+  两rank均零错误、零泄漏。
+- 强能量通量的layered首个失败为NP=2 x、pinned、rank 0。
+  能量系数最大绝对差约1e-15，RHS预算比5.04736，最大失配点
+  总能量RHS绝对差8.72133e-8。探针复用冻结参考系数直接
+  重算同一散度，预算比降至1.03260，仍超1；不能将全部差异
+  归因于系数。后续需定位预算与面计算的实际融合/舍入次序，
+  不降低夹具通量或放宽误差。完整矩阵在首个失败处停止。
+
+本轮只接入独立黏性阶段，尚未从普通AIR5主循环调用，也未
+执行依赖该失败路径的RK、G2或DCU验证。NR1/NR2/NR4不变。
+
+### 10.210 强扩散能量限幅的融合次序复验
+
+前节首个失败的双rank原始输入逐字相同，覆盖q、原始q、
+对流RHS、Jacobian、度量及全部预置黏性通量。固定旧GPU限幅
+系数后逐轴回放，确认差异不只来自系数，面投影和相邻节点的
+和/差也受旧编译器融合次序影响。读取实际旧GPU PTX/SASS，
+并以同一份原始通量、系数和单轴RHS独立回算：中心左面先
+舍入较低索引侧Jacobian乘积，中心右面先舍入较高索引侧；
+再将另一侧乘积与这项融合。双rank三方向各128个抽样总能量
+RHS在对应中心面规则下逐字匹配。
+
+仅扩散RHS和预算采用这些显式`fma`：同阶中心和物理闭合、
+RK基准、分层携带能量、判定试算及最终面散度。没有修改限幅
+公式、域约束、容差、旧编译参数或全局`--fmad=false`。共享
+数学的默认分支保持原行为，原面重构和界面约束探针共10组
+对照逐字一致。
+
+重用10.209修正过寄存器配置的冻结原GPU可执行文件。最终
+`results/multi_backend_mb8_diffusion_fma_20261118_v6/`中22组
+原GPU预算/RHS对照与2组均匀场完整黏性链全通过。四组强
+layered能量限幅覆盖NP=2 x/z及pinned/device；系数低至
+0.05290283036087661。最大系数预算比0.0002989487879，最大
+RHS预算比0.9581747547。4组单rank故障保留原RHS；强限幅
+双rank代表Memcheck零错误、零泄漏。根CMake的`astr`编译
+通过，未启动普通AIR5整步、G2或DCU。
+
+中间证据在`results/multi_backend_mb8_diffusion_input_20261118/`
+和`results/multi_backend_mb8_diffusion_axis_20261118/`。
+下一步仍是实际对流RHS及`full_state`、`species_budget`、
+`consistent_species`各限制器接线，不能以已有独立
+`symmetric_species`组件替代。NR1/NR2/NR4状态不变。
+
+### 10.211 非symmetric对流预算与MPI阶段
+
+从原CUDA Fortran迁入原始对流RHS和三种非symmetric限制器：
+直接中心导数与选择性MP7面散度保留为不同的原始诊断；
+`full_state`与`species_budget`使用一次邻点系数交换；
+`consistent_species`先限流体量、交换系数，再构造质量闭合的
+组分通量、计算并交换第二组系数。每次预算都先归约原失败
+状态，失败不提交限幅RHS。诊断仍保留总计数、四类约束、
+五个组分最小系数与首个本地坏点。标量系数复用扩散工作区，
+只在双阶段模式分配额外流体系数，不新增全场流体拷贝。
+
+本地对照冻结原CUDA Fortran的节点预算、原始及限幅RHS算子。
+阶段接口为`air5_assemble_raw_convection`及
+`air5_limit_convection_rhs`。首个周期光滑对照的限幅系数
+逐字相同而限幅后总能量RHS预算比1.25867。对照PTX/SASS后
+在新路径局部显式保留面投影、中心面权重、MP推算及RHS组合
+的融合语义，仍使用原公式、容差和全局`--fmad=false`。
+
+- 15组空间中心对照通过：3种限制器的单rank周期光滑，
+  以及NP=2 y/z、pinned/device的痕量跳变。痕量系数确实
+  降至0；最大系数误差预算比0.000160669，最大限幅RHS
+  预算比不超过0.04。代表consistent双rank pinned Memcheck
+  通过同一原GPU对照。
+- 六组单rank失败检查中，本地状态3/0、全局均3；原/新各自
+  的原始和失败后的RHS逐字相同。这证明失败隔离，不认领
+  不同实现的MP7原始RHS已一致。
+- 选MP7的完整矩阵停在首个双rank x、pinned光滑输入。
+  系数与状态记录仍逐字相同；原始/限幅RHS中少量总能量点
+  的最大原预算比为2.20858/1.56861。下一步冻结同点左右
+  分裂通量与MP7多项式，再核对融合和消减，不放宽预算。
+
+参考及首轮失败在`results/multi_backend_mb8_convection_budget_20261118/`
+及同名`_v2`--`_v4`目录，独立测试在
+`results/multi_backend_mb8_convection_budget_independent_20261118/`。
+上述阶段尚未从普通AIR5主循环调用，未进行整个RK步、G2或DCU
+验收。根CMake的`astr`及代表探针编译通过；共享非均匀面
+重构与10.210强layered双rank pinned输出逐字不变。
+NR1/NR2/NR4状态不变。
+
+### 10.212 MP7双卡舍入复验与非单位系数对照
+
+对原CUDA Fortran编译对象逐方向冻结原始RHS，再按实际左右面
+拆分回放总能量分裂。正分裂左面融合耗散乘积，右面融合物理
+乘积；负分裂原始RHS与右面融合物理乘积，限幅高阶左面融合
+耗散乘积，而低阶LLF左面保留分开运算。只在选择性MP7对流
+预算路径保留这些次序，空间中心、默认面组件、离散公式和全局
+`--fmad=false`不变。冻结追踪和独立回放在
+`results/multi_backend_mb8_mp7_rounding_20261118/`。
+
+- `results/multi_backend_mb8_convection_budget_20261118_v14/`
+  中原21组有效对照通过。双rank x光滑MP7覆盖三种限制器和
+  pinned/device，原始/限幅RHS最大预算比0.110524/0.140106，
+  原始总能量RHS逐字相同；该光滑夹具的系数始终为1。
+  12组中心痕量对照的系数降至0，限幅RHS最大预算比0.0390975。
+  代表MP7双rank pinned Memcheck两rank均零错误、零泄漏。
+- 新增含正痕量和精确零值的NO夹具确实触限。首组NP=2 z、
+  pinned、`full_state`的最小系数约2.79e-11，计数与状态相同，
+  系数、原始RHS预算比分别为0.000178361和0.436163。两rank
+  共享同一物理节点的限幅后总能量RHS差1.50648e-8、预算比
+  1.77129，完整追加矩阵在此停止。固定旧GPU系数回放仍差约
+  1.49e-8；继续检查该点的低阶面、MP物理端降阶面及限幅
+  散度运算次序，不能单归因于系数或放宽预算。
+- 独立故障复验6组均为本地3/0、全局3，失败不改写RHS。
+  非均匀默认面重构和强layered扩散的双rank输出与修订前逐字
+  相同。证据见`results/multi_backend_mb8_mp7_final_independent_20261118/`。
+
+根CMake的`astr`已重建。新增触限门槛未通过，不以光滑MP7或
+中心痕量通过替代；普通AIR5整步、G2和DCU未执行。
+NR1/NR2/NR4的决策与证据不变。
+
+### 10.213 真正触限MP7对流复验
+
+原失败在相同输入上逐字复现。冻结旧GPU编译副本仅记录共享点
+`(14,1,5)`的总能量高/低阶左右面，插桩前后两rank的输出文件
+逐字相同。四组面值的回放确认，剩余差异来自y向右低阶LLF面：
+旧值为-11684054.722778529，新值原为-11684054.722778514。
+旧RHS使用旧系数仍不能由原新面值复现；只换该负分裂的融合
+次序后，使用旧系数的同点回放逐字匹配。
+
+生产修订限于MP7预算路径的右低阶LLF总能量负分裂，先舍入
+物理通量乘积，再与耗散乘积融合。原始/高阶路径、中心路径、
+物理公式、容差和全局`--fmad=false`不变。原失败共享点的
+双rank结果相同，绝对差从1.50648e-8降至1.63709e-10。
+
+- `results/multi_backend_mb8_convection_budget_20261118_v15/`
+  完成33组。27组有效对照包括6组双卡z真正触限MP7，覆盖
+  三种模式和pinned/device；该组最小系数2.79056e-11，原始
+  与限幅RHS最大预算比0.436163和0.677199。6组双卡故障隔离
+  仍是本地3/0、全局3，且各自不改写原始RHS。
+- 双卡pinned的光滑`consistent_species`与触限`full_state`
+  Memcheck均为零错误、零泄漏。根CMake重建`astr`及面/扩散
+  探针；非均匀默认面和强layered双卡扩散输出逐字不变。
+  追踪及独立检查在`results/multi_backend_mb8_mp7_active_rounding_20261118/`。
+
+预置掩码验证对流组件，不代表实际传感器、完整RK或物理验证。
+后续接入同阶段物性和真实梯度/传感器，再按旧GPU调用顺序检查
+对流、适用边界、黏性RHS及RK更新。NR1/NR2/NR4状态不变，
+不放行依赖其缺项的算例；G2及DCU尚未执行。
+
+### 10.214 真实梯度、激波传感器与选择性对流
+
+`air5_prepare_shock_mask`复用同阶段速度/温度梯度、Ducros乘压力
+曲率、现有标量halo和设备掩码扩张。保留原物理端闭合、阈值及
+扩张偏移；只交换传感器标量字段，不回读流场或在主机重建掩码。
+此入口连接对流探针，普通AIR5 RK调度和无黏模式的独立工作区
+分配尚待接入。
+
+用局部速度降幅和温升产生同时含中心和MP7区域的冻结11变量
+夹具，阈值1e-3。旧参考运行实际`compute_shock_sensor_gpu`，
+旧对流对象不重编。参考见
+`results/multi_backend_mb8_sensor_reference_20261118/`；追加矩阵
+由原`run_air5_convection_budget.py --sensor`执行。
+
+- 首轮单rank原始RHS在局部旧零值处出现振动能1.86265e-9残差。
+  冻结逐轴回放识别右面正分裂的物理乘积融合；z分解的后续
+  回放识别原始核负分裂的同类次序。只修订MP7振动能相关
+  分裂乘加，不改公式、容差或全局`--fmad=false`。
+- `results/multi_backend_mb8_sensor_20261118_v3/`单rank和双rank
+  x共9组通过，涵盖三种非对称限制器及代表pinned/device。
+  梯度、原传感器和掩码快照逐字相同；原始/限幅RHS最大
+  预算比0.017764/0.053291。双rank pinned Memcheck两rank
+  均零错误、零泄漏。
+- 首组双rank z的梯度、传感器数值相同，仅梯度存在带符号零
+  的字节差异；掩码逐字相同。原始RHS预算比从9313.23降至
+  0.053291。限幅RHS仍有近零振动能差1.86265e-9（预算比
+  18626.45）和x动量差1.81899e-12。未通过原门槛，未执行后续
+  z矩阵或依赖其结果的整步验证。冻结逐轴及限幅核插桩副本
+  见v2目录，原/插桩RHS文件逐字一致；多线程打印交错，需以
+  可归属的面值快照分辨限幅高阶/低阶或装配的剩余差异。
+- 预置掩码33组在同一最终可执行文件复验通过，证据为
+  `results/multi_backend_mb8_convection_budget_20261118_v17/`。
+  根CMake的`astr`及探针已构建。NR1/NR2/NR4、完整RK、
+  G2与DCU的状态不因本轮组件通过而改变。
+
+### 10.215 真实传感器双卡z近零限幅RHS与无黏工作区
+
+旧CUDA Fortran和新C++诊断副本把指定节点的四个面值写入夹具
+的非活动j=0区，避免并行打印交错。两者各自的有效RHS、原始
+RHS、系数及状态与未插桩输出逐字相同，以各自捕获的面值独立
+回放也逐字得到各自限幅RHS。证据见
+`results/multi_backend_mb8_sensor_20261118_v3/{face_values,cpp_face_values}/`。
+差异不在掩码或散度：x向右高阶面的振动能来自负分裂物理
+乘积未融合，z向LLF面横向动量来自耗散乘积的融合次序。
+
+仅在选择性MP7限幅路径对齐局部负分裂：振动能右高阶面融合
+物理乘积；动量左高阶和两侧低阶面融合耗散乘积。未修改
+离散式、传感器、容差、原参考或全局`--fmad=false`。
+
+`air5_velocity_gradients_prepare`单独分配设备速度和温度梯度，
+供无黏模式的传感器使用，不分配应力、组分/Tv梯度或扩散通量。
+黏性准备复用相同的梯度分配函数，仍按原条件分配其余工作区；
+仅有传感器工作区不满足AIR5组分黏性梯度的前置条件。
+
+- 最终真实传感器对照见`results/multi_backend_mb8_sensor_20261118_v5/`，
+  15组全通过：单rank、双rank x/z，三种非对称限制器及
+  pinned/device。掩码逐字匹配，梯度和传感器绝对差0；
+  z向原始/限幅RHS最大预算比0.053291/0.071054。该夹具验证
+  真实混合掩码，不替代非单位系数的触限对照。
+- 33组预置掩码（含6组实际触限、6组故障隔离）在
+  `results/multi_backend_mb8_convection_budget_20261118_v19/`
+  全部复验通过。两个真实双卡pinned代表用例的Memcheck均为
+  零错误、零泄漏；原full-state及layered双rank黏性结果逐字
+  不变。根CMake的`astr`、对流及黏性探针构建通过。
+
+下一步将传感器和对流接入同阶段黏性/边界RHS及RK更新，
+逐阶段对照旧GPU，再接普通主循环的两次化学半步。
+本节不放行NR1、NR2、NR4或完整G2/DCU验证。
+
+### 10.216 AIR5 连续输运 RK3 阶段
+
+`chemistry_device_step::air5_rk_transport_stage`按原控制器次序
+调用阶段准备、真实传感器、原始及非对称限幅对流RHS、边界
+对流RHS、黏性预算与散度、分区RK更新和状态边界。动态顶面
+对流回调位于黏性预算之前，额外活动域由调用者明确提供；
+本轮仅验证周期与正激波状态边界，未验证动态顶面回调。
+第三阶段后重建最新物理节点的原始量供后续化学使用，不额外
+交换halo。生产阶段内没有全场回读，测试快照才显式下载。
+
+参考由冻结旧CUDA Fortran `astr`实际运行，初始化状态、几何和
+三个RK阶段输出保存在`results/multi_backend_mb8_transport_rk3_20261118_v2/`。
+新后端只上传一次初始化q和度量，后续两阶段沿自身设备状态
+推进，未注入旧的中间状态。固定步长2e-10 s，关闭源项/滤波/
+补偿，非对称`full_state`；不把这一输运验证等同于Strang耦合。
+
+| 旧/新连续三阶段 | 实际覆盖和最大原预算比（状态 / 全RHS） |
+|---|---|
+| 无黏波 | 16^3，单卡周期，3.006e-6 / 4.538e-5 |
+| 黏性扩散层 | 16^3，双卡x，pinned/device，3.721e-6 / 3.639e-7 |
+| 捕获型正激波 | 32x16x16，双卡x，固定入口/外推出口，真实Ducros+MP7，pinned/device，2.574e-6 / 2.274e-4 |
+
+`results/multi_backend_mb8_transport_rk3_20261118_candidate_v5/report.json`
+报告5个运行各3阶段。正激波掩码逐字匹配且每阶段同时含中心与
+MP7区；两种MPI模式的阶段文件逐字相同。末阶段的rho/u/p/T
+及Tv对应的振动能由最终q独立重算检查，最大预算比2.714e-5。
+状态与RHS分别用原冻结输运的`1e-10+1e-10|ref|`和
+`1e-8+2e-10|ref|`，不改已有组件预算。两个双卡pinned用例
+Memcheck均零错误、零泄漏；根CMake的`astr`及探针已重建。
+
+后续接普通C++入口和Strang两半步，并按原依赖补齐滤波/补偿、
+对称限制器、动态顶面及物理/统计/输出/恢复对照。NR1/NR2/NR4
+状态不变；未执行完整G2、DCU或平台操作。

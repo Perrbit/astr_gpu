@@ -1,0 +1,153 @@
+module air5_convection_reference_math
+  use iso_fortran_env,only:real64
+  use astr_precision,only:real_kind
+  use cudafor
+  use constdef,only:num1d60,num1d12,num2d3
+  use chemistry_air5_data
+  use chemistry_model
+  use chemistry_model_gpu,only:air5_close_species_flux_moment_gpu
+  use chemistry_state_layout
+  use chemistry_thermo_gpu
+  use chemistry_flow_state_gpu
+  implicit none
+  integer,device :: air5_convection_symmetric_d=1,air5_flow_status_d=0,air5_symmetric_top_d=0
+  integer,device :: air5_face_failure_d(7)=0
+  real(real64),device :: air5_face_failure_values_d(11,6),air5_face_failure_cdt_d
+  real(real64),device :: air5_vibrational_floor_energy_d(5)
+  real(real64),device,allocatable :: symmetric_base_d(:,:,:,:),symmetric_face_d(:,:,:,:),symmetric_buffer_d(:,:)
+  real(real64),device,allocatable :: top_normal_high_rhs_d(:,:,:)
+contains
+#include "frozen_convection_functions.inc"
+end module
+program air5_convection_reference
+  use commarray
+  use commarray_gpu
+  use air5_convection_reference_math
+  implicit none
+  integer,parameter :: h=5
+  integer :: header(4),im,jm,km,ncases,i,j,k,c,u,v,job,axis,stage,option(8),n,capacity,ntypes(3),status
+  integer :: shape_face(3),packet(9),dims(3),first(3),last(3)
+  integer,allocatable :: jobs(:,:),mask(:,:,:)
+  real(real64),allocatable :: table(:,:,:,:),initial(:,:,:,:),top_host(:,:,:),snap(:,:,:,:,:),budget(:,:,:,:), &
+    result(:,:,:,:),starting(:,:,:,:),rk_state(:,:,:,:)
+  real(real64) :: floor(5),dt,cdt,a,b,coefficient,fail_values(11,6),fail_cdt
+  integer :: failure(7)
+  real(real64),parameter :: aa(3)=[1.0_real64,0.75_real64,1.0_real64/3.0_real64], &
+    bb(3)=[0.0_real64,0.25_real64,2.0_real64/3.0_real64],cc(3)=[1.0_real64,0.25_real64,2.0_real64/3.0_real64]
+  type(dim3) :: block,grid,plane_grid
+  character(1024) :: input,output
+  logical :: with_top,top,periodic(3)
+  call get_command_argument(1,input);call get_command_argument(2,output)
+  open(newunit=u,file=trim(input),access='stream',form='unformatted',status='old')
+  read(u)header;im=header(1);jm=header(2);km=header(3);ncases=header(4)
+  dims=[im,jm,km]
+  allocate(jobs(8,ncases),table(31,-h:im+h,-h:jm+h,-h:km+h),initial(22,0:im,0:jm,0:km), &
+    top_host(0:im,0:km,11),mask(0:im,0:jm,0:km))
+  read(u)jobs,floor,dt,table,initial,top_host,mask;close(u)
+  with_top=any(jobs(7,:)/=0);periodic=jobs(1:3,1)==3
+  allocate(q(-h:im+h,-h:jm+h,-h:km+h,11),rho(-h:im+h,-h:jm+h,-h:km+h), &
+    vel(-h:im+h,-h:jm+h,-h:km+h,3),prs(-h:im+h,-h:jm+h,-h:km+h),spc(-h:im+h,-h:jm+h,-h:km+h,5), &
+    dxi(-h:im+h,-h:jm+h,-h:km+h,3,3),jacob(-h:im+h,-h:jm+h,-h:km+h), &
+    qsave(0:im,0:jm,0:km,11),qrhs(0:im,0:jm,0:km,11),result(0:im,0:jm,0:km,11), &
+    starting(0:im,0:jm,0:km,11),rk_state(0:im,0:jm,0:km,11), &
+    budget(-h:im+h,-h:jm+h,-h:km+h,11),snap(-1:im,-1:jm,-1:km,12,3))
+  do k=-h,km+h;do j=-h,jm+h;do i=-h,im+h
+    q(i,j,k,:)=table(1:11,i,j,k);rho(i,j,k)=table(12,i,j,k);vel(i,j,k,:)=table(13:15,i,j,k)
+    prs(i,j,k)=table(16,i,j,k);spc(i,j,k,:)=table(17:21,i,j,k);dxi(i,j,k,:,:)=reshape(table(22:30,i,j,k),[3,3])
+    jacob(i,j,k)=table(31,i,j,k)
+  enddo;enddo;enddo
+  do c=1,11
+    qsave(:,:,:,c)=initial(c,:,:,:);qrhs(:,:,:,c)=initial(11+c,:,:,:)
+  enddo
+  allocate(q_d(-h:im+h,-h:jm+h,-h:km+h,11),rho_d(-h:im+h,-h:jm+h,-h:km+h), &
+    vel_d(-h:im+h,-h:jm+h,-h:km+h,3),prs_d(-h:im+h,-h:jm+h,-h:km+h),spc_d(-h:im+h,-h:jm+h,-h:km+h,5), &
+    dxi_d(-h:im+h,-h:jm+h,-h:km+h,3,3),jacob_d(-h:im+h,-h:jm+h,-h:km+h), &
+    qsave_d(0:im,0:jm,0:km,11),qrhs_d(0:im,0:jm,0:km,11),shock_mask_d(0:im,0:jm,0:km), &
+    symmetric_base_d(-h:im+h,-h:jm+h,-h:km+h,11),symmetric_face_d(-1:im,-1:jm,-1:km,12))
+  capacity=12*max((im+1)*(jm+1),(im+1)*(km+1),(jm+1)*(km+1));allocate(symmetric_buffer_d(capacity,4))
+  if(with_top)then
+    allocate(top_normal_high_rhs_d(0:im,0:km,11));top_normal_high_rhs_d=top_host
+  endif
+  q_d=q;rho_d=rho;vel_d=vel;prs_d=prs;spc_d=spc;dxi_d=dxi;jacob_d=jacob;qsave_d=qsave
+  shock_mask_d=int(mask,1);air5_vibrational_floor_energy_d=floor
+  block=dim3(256,1,1);grid=dim3(((im+1)*(jm+1)*(km+1)+255)/256,1,1)
+  open(newunit=v,file=trim(output),access='stream',form='unformatted',status='new');write(v)ncases
+  do job=1,ncases
+    option=jobs(:,job);ntypes=option(1:3);stage=option(4);a=aa(stage);b=bb(stage);cdt=cc(stage)*dt;top=option(7)/=0
+    air5_symmetric_top_d=option(7);call configure_air5_species_cache_gpu(option(6)/=0)
+    q_d=q;qsave_d=qsave;qrhs_d=qrhs;symmetric_base_d=0.0_real64;air5_flow_status_d=0;air5_face_failure_d=0
+    air5_face_failure_values_d=0.0_real64;air5_face_failure_cdt_d=0.0_real64;snap=0.0_real64
+    call air5_symmetric_base_kernel<<<grid,block>>>(im,jm,km,ntypes(1),ntypes(2),ntypes(3),option(5),a,b,cdt,stage)
+    status=air5_flow_status_d;if(status/=0)error stop 'original symmetric base failed'
+    if(periodic(1))then
+      plane_grid=dim3(((jm+1)*(km+1)*11+255)/256,1,1)
+      call field_qswap_x_kernel<<<plane_grid,block>>>(symmetric_base_d,im,jm,km,h,11)
+    endif
+    if(periodic(2))then
+      plane_grid=dim3(((im+1)*(km+1)*11+255)/256,1,1)
+      call field_qswap_y_kernel<<<plane_grid,block>>>(symmetric_base_d,im,jm,km,h,11)
+    endif
+    if(periodic(3))then
+      plane_grid=dim3(((im+1)*(jm+1)*11+255)/256,1,1)
+      call field_qswap_z_kernel<<<plane_grid,block>>>(symmetric_base_d,im,jm,km,h,11)
+    endif
+    budget=symmetric_base_d
+    if(top)then
+      plane_grid=dim3(((im+1)*(km+1)+255)/256,1,1)
+      call air5_top_normal_limit_kernel<<<plane_grid,block>>>(im,jm,km,ntypes(1),ntypes(2),ntypes(3),cdt)
+      status=air5_flow_status_d;if(status/=0)error stop 'original top normal limit failed'
+    endif
+    starting=qrhs_d
+    do axis=1,3
+      if(top.and.axis==2)cycle
+      symmetric_face_d=0.0_real64
+      call air5_symmetric_face_kernel<<<grid,block>>>(im,jm,km,ntypes(1),ntypes(2),ntypes(3),option(5),axis,cdt)
+      status=air5_flow_status_d;if(status/=0)error stop 'original owned face failed'
+      select case(axis)
+      case(1);shape_face=[jm+1,km+1,12]
+      case(2);shape_face=[im+1,km+1,12]
+      case(3);shape_face=[im+1,jm+1,12]
+      end select
+      n=product(shape_face);plane_grid=dim3((n+255)/256,1,1)
+      call air5_symmetric_plane_kernel<<<plane_grid,block>>>(axis,shape_face(1),shape_face(2),dims(axis), &
+        .false.,periodic(axis),periodic(axis))
+      if(periodic(axis))then
+        symmetric_buffer_d(:n,3)=symmetric_buffer_d(:n,1);symmetric_buffer_d(:n,4)=symmetric_buffer_d(:n,2)
+      endif
+      call air5_symmetric_plane_kernel<<<plane_grid,block>>>(axis,shape_face(1),shape_face(2),dims(axis), &
+        .true.,periodic(axis),periodic(axis))
+      if(option(8)/=0.and.axis==1)symmetric_face_d(0,1,1,1)=-1.0e12_real64
+      snap(:,:,:,:,axis)=symmetric_face_d
+      call air5_symmetric_apply_kernel<<<grid,block>>>(im,jm,km,ntypes(1),ntypes(2),ntypes(3),option(5),axis,cdt)
+      status=air5_flow_status_d
+      if(option(8)/=0)then
+        if(status/=202)error stop 'expected original face failure missing'
+        exit
+      endif
+      if(status/=0)error stop 'original face consumption failed'
+    enddo
+    if(option(8)==0)then
+      call air5_symmetric_final_kernel<<<grid,block>>>(im,jm,km,ntypes(1),ntypes(2),ntypes(3),a,b,cdt,stage)
+      status=air5_flow_status_d;if(status/=0)error stop 'original complete RK budget failed'
+    endif
+    result=qrhs_d;failure=air5_face_failure_d;fail_values=air5_face_failure_values_d;fail_cdt=air5_face_failure_cdt_d
+    if(option(8)==0)then
+      first=0;last=dims
+      do axis=1,3
+        if(ntypes(axis)==1.or.ntypes(axis)==4)first(axis)=1
+        if(ntypes(axis)==2.or.ntypes(axis)==4)last(axis)=last(axis)-1
+      enddo
+      if(top)then
+        first(2)=jm;last(2)=jm;last(1)=im;first(3)=0;last(3)=km
+      endif
+      if(stage==1)then
+        call air5_rk3_first_update_kernel<<<grid,block>>>(dt,im,jm,km,first(1),last(1),first(2),last(2),first(3),last(3))
+      else
+        call air5_rk3_update_kernel<<<grid,block>>>(dt,a,b,cc(stage),im,jm,km,first(1),last(1),first(2),last(2),first(3),last(3))
+      endif
+    endif
+    rk_state=q_d(0:im,0:jm,0:km,:)
+    packet=[option,status];write(v)packet,budget,starting,snap,result,rk_state,failure,fail_values,fail_cdt
+  enddo
+  close(v)
+end program

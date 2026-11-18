@@ -8,6 +8,7 @@ module crashfix_gpu
   private
   public :: repair_crashfix_state_gpu,check_crashfix_state_gpu,release_crashfix_gpu
   public :: repair_reconciled_state_gpu
+  public :: reconcile_crashfix_history_gpu
   public :: crashfix_support_status_gpu
   integer(1),allocatable,device :: fluid_d(:,:,:)
   integer,allocatable,device :: first_d(:,:),last_d(:,:)
@@ -15,11 +16,90 @@ module crashfix_gpu
   real(real_kind),device :: minima_d(5),change_d(5)
   integer,device :: candidates_d=0,repaired_d=0,invalid_d=0
   integer,device :: donor_present_d=0,expanded_round_d=0,expanded_radius_d=0,single_donor_d=0
+  integer(1),allocatable,device :: history_send_d(:,:),history_recv_d(:,:)
+  integer(1),allocatable,pinned :: history_send_h(:,:),history_recv_h(:,:)
   real(real_kind),save :: eps_prs
   integer,save :: step_normal=0
   integer(int64),save :: report_visits=0,report_calls=0
   real(real_kind),save :: report_changes(5)=0.e0_real_kind,report_minima(4)=huge(0.e0_real_kind)
 contains
+  attributes(global) subroutine history_face_kernel(im,jm,km,n,axis,width,shared,unpack,lower,upper)
+    use commarray_gpu, only: crinod_d
+    integer,value :: im,jm,km,n,axis,width,unpack,lower,upper
+    logical,value :: shared
+    integer :: id,transverse,h,p(3),other(3),dims(3)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(id>n) return
+    h=mod(id-1,width)+1;transverse=(id-1)/width;dims=[im,jm,km]
+    select case(axis)
+    case(1);p=[0,mod(transverse,jm+1),transverse/(jm+1)]
+    case(2);p=[mod(transverse,im+1),0,transverse/(im+1)]
+    case(3);p=[mod(transverse,im+1),transverse/(im+1),0]
+    end select
+    other=p
+    if(shared) then
+      other(axis)=dims(axis)
+    elseif(unpack==0) then
+      p(axis)=h;other(axis)=dims(axis)-width+h-1
+    else
+      p(axis)=-width+h-1;other(axis)=dims(axis)+h
+    endif
+    if(unpack==0) then
+      history_send_d(id,1)=merge(1_1,0_1,crinod_d(p(1),p(2),p(3)))
+      history_send_d(id,2)=merge(1_1,0_1,crinod_d(other(1),other(2),other(3)))
+    elseif(shared) then
+      if(lower/=0) crinod_d(p(1),p(2),p(3))=crinod_d(p(1),p(2),p(3)).or.history_recv_d(id,1)/=0_1
+      if(upper/=0) crinod_d(other(1),other(2),other(3))=crinod_d(other(1),other(2),other(3)).or.history_recv_d(id,2)/=0_1
+    else
+      if(lower/=0) crinod_d(p(1),p(2),p(3))=history_recv_d(id,1)/=0_1
+      if(upper/=0) crinod_d(other(1),other(2),other(3))=history_recv_d(id,2)/=0_1
+    endif
+  end subroutine history_face_kernel
+
+  subroutine reconcile_crashfix_history_gpu()
+    use mpi, only: MPI_PROC_NULL
+    use commvar, only: im,jm,km,hm,lihomo,ljhomo,lkhomo
+    use commarray_gpu, only: crinod_d
+    use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,isize,jsize,ksize,exchange_shock_mask_faces
+    use gpu_check, only: sync_after_kernel
+    integer :: counts(3),low(3),high(3),sizes(3),axis,phase,n,width,side,status
+    logical :: periodic(3),pinned_ok
+    counts=[(jm+1)*(km+1),(im+1)*(km+1),(im+1)*(jm+1)]
+    low=[mpileft,mpidown,mpiback];high=[mpiright,mpiup,mpifront]
+    sizes=[isize,jsize,ksize];periodic=[lihomo,ljhomo,lkhomo]
+    if(.not.allocated(history_send_d)) then
+      n=hm*maxval(counts)
+      allocate(history_send_d(n,2),history_recv_d(n,2))
+      allocate(history_send_h(n,2),pinned=pinned_ok)
+      if(.not.pinned_ok) error stop 'critical history send buffer is not pinned'
+      allocate(history_recv_h(n,2),pinned=pinned_ok)
+      if(.not.pinned_ok) error stop 'critical history receive buffer is not pinned'
+    endif
+    ! Finish all shared-node unions before publishing any stencil halo.
+    do phase=1,2
+      width=1;if(phase==2) width=hm
+      do axis=1,3
+        if(sizes(axis)==1.and..not.periodic(axis)) cycle
+        n=counts(axis)*width
+        call history_face_kernel<<<(n+255)/256,256>>>(im,jm,km,n,axis,width,phase==1,0,0,0)
+        call sync_after_kernel('pack_crashfix_history',.true.)
+        do side=1,2
+          status=cudaMemcpy(history_send_h(1,side),history_send_d(1,side),n,cudaMemcpyDeviceToHost)
+          if(status/=cudaSuccess) error stop 'critical history face download failed'
+        enddo
+        call exchange_shock_mask_faces(history_send_h(:n,:),history_recv_h(:n,:),n,axis)
+        do side=1,2
+          status=cudaMemcpy(history_recv_d(1,side),history_recv_h(1,side),n,cudaMemcpyHostToDevice)
+          if(status/=cudaSuccess) error stop 'critical history face upload failed'
+        enddo
+        call history_face_kernel<<<(n+255)/256,256>>>(im,jm,km,n,axis,width,phase==1,1, &
+          merge(1,0,low(axis)/=MPI_PROC_NULL.or.(sizes(axis)==1.and.periodic(axis))), &
+          merge(1,0,high(axis)/=MPI_PROC_NULL.or.(sizes(axis)==1.and.periodic(axis))))
+        call sync_after_kernel('unpack_crashfix_history')
+      enddo
+    enddo
+  end subroutine reconcile_crashfix_history_gpu
+
   integer function crashfix_support_status_gpu() result(status)
     use commvar, only: lcomb,numq,num_species,conschm,recon_schem
     use numerical_forms, only: convection_form
@@ -514,6 +594,7 @@ contains
       print *, 'GPU crashfix left a nonfinite or non-positive physical state'
       call MPI_Abort(MPI_COMM_WORLD,92,ierr)
     endif
+    call reconcile_crashfix_history_gpu()
   end subroutine repair_crashfix_state_gpu
 
   subroutine release_crashfix_gpu()
@@ -525,6 +606,7 @@ contains
         'ASTR_GPU_CRASHFIX_TOTAL',report_visits,report_calls,report_changes,report_minima
     endif
     if(allocated(fluid_d)) deallocate(fluid_d,first_d,last_d,partial_d)
+    if(allocated(history_send_d)) deallocate(history_send_d,history_recv_d,history_send_h,history_recv_h)
     step_normal=0
     report_visits=0;report_calls=0;report_changes=0;report_minima=huge(0.e0_real_kind)
   end subroutine release_crashfix_gpu

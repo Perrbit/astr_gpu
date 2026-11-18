@@ -15,6 +15,7 @@ module chemistry_thermo
   public :: air5_species_cv_tr
   public :: air5_species_vibrational_energy
   public :: air5_species_vibrational_cv
+  public :: air5_species_vibrational_difference
   public :: air5_ev_from_tv
   public :: air5_tv_from_ev
   public :: air5_q5_from_state
@@ -67,6 +68,10 @@ contains
       cv_v = 0.0_real64
     end if
   end function air5_species_vibrational_cv
+
+  pure real(real64) function air5_species_vibrational_difference(species,temperature,tv) result(difference)
+#include "chemistry_vibrational_difference_body.inc"
+  end function air5_species_vibrational_difference
 
   pure subroutine air5_ev_from_tv(rho_species, tv, ev, status)
     real(real64), intent(in) :: rho_species(air5_num_species), tv
@@ -681,7 +686,8 @@ module chemistry_relaxation
     chemistry_status_nonfinite, air5_validate_partial_densities, &
     air5_pressure_is_in_domain
   use chemistry_thermo, only: air5_species_gas_constant, &
-    air5_species_vibrational_energy, air5_species_vibrational_cv, air5_pressure
+    air5_species_vibrational_energy, air5_species_vibrational_cv, air5_pressure, &
+    air5_species_vibrational_difference
   implicit none
   private
 
@@ -711,7 +717,7 @@ contains
     real(real64) :: mw_weight(air5_num_species), density_derivative(air5_num_species)
     real(real64) :: mw_time, sigma, reduced_mass, mean_speed
     real(real64) :: inverse_time, inverse_time_derivative, dx
-    real(real64) :: equilibrium_energy, current_energy, energy_difference
+    real(real64) :: energy_difference
     real(real64) :: energy_derivative, collision_coefficient, collision_rate, product, denominator
     real(real64) :: dlog_mw, dlog_collision, pair_rate_derivative
     integer :: molecule, partner, variable, local_status
@@ -819,9 +825,7 @@ contains
       do partner=1,air5_num_species
         inverse_time=inverse_time+mole_fraction(partner)*pair_rate(partner)
       end do
-      equilibrium_energy = air5_species_vibrational_energy(molecule, temperature)
-      current_energy = air5_species_vibrational_energy(molecule, tv)
-      energy_difference = equilibrium_energy-current_energy
+      energy_difference = air5_species_vibrational_difference(molecule,temperature,tv)
       source = source + rho_species(molecule)*energy_difference*inverse_time
 
       do variable = 1, 6

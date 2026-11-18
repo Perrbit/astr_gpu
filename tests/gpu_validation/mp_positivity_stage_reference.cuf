@@ -1,0 +1,117 @@
+! The normal legacy steploop generates the state. Only observation and a
+! separately labelled anti-diffusive operator stress replay follow it.
+program mp_positivity_stage_reference
+  use cudafor
+  use mpi
+  use astr_precision, only: real_kind,real_bytes
+  use parallel, only: mpiinitial,mpistop,mpisizedis,parapp,parallelini,mpirank, &
+    ig0,jg0,kg0,isize,jsize,ksize,mpileft,mpidown,mpiback,mpiright,mpiup,mpifront
+  use readwrite, only: readinput,fileini
+  use commarray, only: allocommarray
+  use commvar, only: use_gpu,im,jm,km,hm,ia,ja,ka,ndims,flowtype,lihomo,ljhomo,lkhomo, &
+    is,ie,js,je,ks,ke,npdci,npdcj,npdck,gamma,mach,bfacmpld,deltat,nstep
+  use commarray_gpu, only: q_d,qsave_d,qrhs_d,dxi_d,jacob_d,shock_mask_d,expanded_shock_halo_d
+  use solver, only: refcal
+  use initialisation, only: flowinit
+  use gridgeneration, only: gridgen
+  use geom, only: geomcal
+  use comsolver, only: solvrinit
+  use sponge_layer, only: spongelayerini
+  use ibmethod, only: ibprocess
+  use mainloop, only: steploop
+  use bc, only: twall,bctype,configure_high_order_boundary,validate_high_order_wall_geometry
+  use conservative_boundary_runtime, only: conservative_boundary,load_conservative_boundary_environment, &
+    validate_conservative_sbli_mode,initialize_conservative_boundary_state
+  use output_runtime, only: bootstrap_output_resources
+  use benchmark_runtime, only: configure_benchmark_runtime
+  use cmdefne, only: getcmd
+  use gpu_runtime, only: gpu_pre_mpi_bind_device,gpu_bind_device,gpu_after_refcal,gpu_after_alloc, &
+    gpu_after_flowinit,gpu_before_finalize
+  use mp_positivity_gpu, only: high_d,delta_d,ratio_d,limited_d,mp_positivity_enabled,limit_mp_update_gpu
+  implicit none
+  real(real_kind),allocatable :: qpre(:,:,:,:),pv(:,:,:,:),metric(:,:,:,:,:),jac(:,:,:), &
+    high(:,:,:,:,:),delta(:,:,:,:,:),original_delta(:,:,:,:,:),ratio(:,:,:,:),saved(:,:,:,:), &
+    input_rhs(:,:,:,:),rhs(:,:,:,:),expected(:,:,:,:)
+  integer(1),allocatable :: mask(:,:,:)
+  integer :: unit,status,header(39),qh(5),rh(4),kind,i,j,k,axis,local_count,global_count,left(3)
+  real(real_kind) :: factor
+  character(16) :: command
+  character(1024) :: path
+  call gpu_pre_mpi_bind_device();call mpiinitial
+  call getcmd(command);if(command/='run') error stop 'MP stage reference expects run'
+  call readinput
+  if(.not.use_gpu) error stop 'MP stage reference requires old GPU'
+  call mpisizedis;call parapp;call parallelini;call refcal
+  call configure_high_order_boundary()
+  call configure_benchmark_runtime(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo,all(bctype==1))
+  call load_conservative_boundary_environment();call validate_conservative_sbli_mode(twall(3))
+  call gpu_bind_device();call gpu_after_refcal()
+  call fileini;call allocommarray;call gpu_after_alloc()
+  call ibprocess;call bootstrap_output_resources();call gridgen;call solvrinit;call geomcal
+  call validate_high_order_wall_geometry();call spongelayerini;call flowinit
+  if(conservative_boundary%enabled) call initialize_conservative_boundary_state(twall(3))
+  call gpu_after_flowinit();call steploop
+  if(.not.mp_positivity_enabled.or.nstep/=4) error stop 'MP reference needs the four-step flux fixture'
+  allocate(qpre(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),pv(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6))
+  allocate(metric(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3),jac(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+  allocate(high(-1:im,-1:jm,-1:km,5,3),delta(-1:im,-1:jm,-1:km,5,3))
+  allocate(original_delta,mold=delta);allocate(ratio(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1))
+  allocate(saved(0:im,0:jm,0:km,5),input_rhs(0:im,0:jm,0:km,5))
+  allocate(rhs,mold=input_rhs);allocate(expected,mold=input_rhs)
+  allocate(mask(lbound(shock_mask_d,1):ubound(shock_mask_d,1), &
+    lbound(shock_mask_d,2):ubound(shock_mask_d,2),lbound(shock_mask_d,3):ubound(shock_mask_d,3)))
+  write(path,'(a,i8.8,a)') 'outdat/rhs.pre_rhs.step00000003.rk03.rank',mpirank,'.bin'
+  open(newunit=unit,file=trim(path),status='old',access='stream',form='unformatted')
+  read(unit) qh,qpre;close(unit)
+  if(any(qh/=[im,jm,km,hm,5])) error stop 'MP pre-state header'
+  write(path,'(a,i8.8,a)') 'outdat/rhs.pre_rhs_primitives.step00000003.rk03.rank',mpirank,'.bin'
+  open(newunit=unit,file=trim(path),status='old',access='stream',form='unformatted')
+  read(unit) rh,pv;close(unit)
+  if(any(rh/=[im,jm,km,hm])) error stop 'MP primitive header'
+  write(path,'(a,i8.8,a)') 'outdat/rhs.post_source.step00000003.rk03.rank',mpirank,'.bin'
+  open(newunit=unit,file=trim(path),status='old',access='stream',form='unformatted')
+  read(unit) rh,input_rhs;close(unit)
+  if(any(rh/=[im,jm,km,5])) error stop 'MP RHS header'
+  high=high_d;original_delta=delta_d;metric=dxi_d;jac=jacob_d;saved=qsave_d;mask=shock_mask_d
+  header(:36)=[im,jm,km,hm,5,is,ie,js,je,ks,ke,ig0,jg0,kg0,ia,ja,ka,isize,jsize,ksize, &
+    npdci,npdcj,npdck,mpileft,mpidown,mpiback,mpiright,mpiup,mpifront, &
+    merge(1,0,expanded_shock_halo_d),lbound(mask),ubound(mask)]
+  do kind=0,1
+    factor=1.e0_real_kind
+    if(kind==1) factor=2.e0_real_kind**merge(20,40,real_bytes==4)
+    delta=original_delta;rhs=input_rhs
+    do k=ks,ke
+    do j=js,je
+    do i=is,ie
+      do axis=1,3
+        left=[i,j,k];left(axis)=left(axis)-1
+        rhs(i,j,k,:)=rhs(i,j,k,:)-(factor-1.e0_real_kind)* &
+          (original_delta(i,j,k,:,axis)-original_delta(left(1),left(2),left(3),:,axis))
+      enddo
+    enddo
+    enddo
+    enddo
+    do axis=1,3
+      do k=merge(-1,0,axis==3),km
+      do j=merge(-1,0,axis==2),jm
+      do i=merge(-1,0,axis==1),im
+        delta(i,j,k,:,axis)=factor*original_delta(i,j,k,:,axis)
+      enddo
+      enddo
+      enddo
+    enddo
+    q_d=qpre;delta_d=delta;qrhs_d=rhs
+    call limit_mp_update_gpu(deltat,1.e0_real_kind/3.e0_real_kind, &
+      2.e0_real_kind/3.e0_real_kind,2.e0_real_kind/3.e0_real_kind,3)
+    ratio=ratio_d;expected=qrhs_d;local_count=limited_d
+    call MPI_Allreduce(local_count,global_count,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,status)
+    header(37:39)=[kind,local_count,global_count]
+    if(kind==1.and.global_count==0) error stop 'MP stress replay did not activate'
+    write(path,'(a,i1,a,i8.8,a)') 'outdat/mp_stage.case',kind,'.rank',mpirank,'.bin'
+    open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted')
+    write(unit) header,[gamma,mach,bfacmpld,deltat,factor]
+    write(unit) qpre,pv,metric,jac,high,delta,saved,rhs,ratio,expected,mask
+    close(unit)
+  enddo
+  call gpu_before_finalize();call mpistop
+end program

@@ -1089,10 +1089,10 @@ contains
     end select
   end function shock_interface_active
 
-  attributes(device) logical function critical_interface_active(i,j,k,idir,im,jm,km) result(active)
+  attributes(device) logical function critical_interface_active(i,j,k,idir,im,jm,km,npdc) result(active)
     use commarray_gpu, only: crinod_d,crashfix_enabled_d
     implicit none
-    integer,value :: i,j,k,idir,im,jm,km
+    integer,value :: i,j,k,idir,im,jm,km,npdc
     integer :: il,jl,kl,ir,jr,kr
 
     active=.false.
@@ -1101,11 +1101,14 @@ contains
     ir=i; jr=j; kr=k
     select case(idir)
     case(1)
-      il=max(0,i); ir=min(im,i+1)
+      if(npdc==1.or.npdc==4) il=max(0,i)
+      ir=i+1;if(npdc==2.or.npdc==4) ir=min(im,ir)
     case(2)
-      jl=max(0,j); jr=min(jm,j+1)
+      if(npdc==1.or.npdc==4) jl=max(0,j)
+      jr=j+1;if(npdc==2.or.npdc==4) jr=min(jm,jr)
     case default
-      kl=max(0,k); kr=min(km,k+1)
+      if(npdc==1.or.npdc==4) kl=max(0,k)
+      kr=k+1;if(npdc==2.or.npdc==4) kr=min(km,kr)
     end select
     active=crinod_d(il,jl,kl).or.crinod_d(ir,jr,kr)
   end function critical_interface_active
@@ -1387,7 +1390,7 @@ contains
       if(npdc==2.or.npdc==4) upper=dim
     endif
     shock=shock_interface_active(i,j,k,idir,im,jm,km)
-    hdiss=critical_interface_active(i,j,k,idir,im,jm,km)
+    hdiss=critical_interface_active(i,j,k,idir,im,jm,km,npdc)
     call boundary_interface_position(inode,dim,ntype,row,side)
     inlet_compatible=.false.
 #ifdef ASTR_BUILD_TESTING
@@ -1532,7 +1535,7 @@ contains
       if(npdc==2.or.npdc==4) upper=dim
     endif
     shock=shock_interface_active(i,j,k,idir,im,jm,km)
-    hdiss=critical_interface_active(i,j,k,idir,im,jm,km)
+    hdiss=critical_interface_active(i,j,k,idir,im,jm,km,npdc)
     call boundary_interface_position(inode,dim,ntype,row,side)
     if(h1_internal_candidate_d.and.row<0) shock=.true.
     if(h1_near_candidate_d.and.row>=0) shock=.true.
@@ -6730,8 +6733,8 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
-    integer :: i,j,k,m
-    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    integer :: i,j,k,m,s,target(3),row
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5),line(5,0:7),values(0:7),sgn
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -6739,6 +6742,23 @@ contains
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     if(i < is .or. i > ie) return
 
+    if(high_order_boundary_enabled_d.and.((apply_left/=0.and.i<3).or. &
+        (apply_right/=0.and.i>im-3))) then
+      row=i; sgn=1.e0_real_kind
+      if(.not.(apply_left/=0.and.i<3)) then
+        row=im-i; sgn=-1.e0_real_kind
+      endif
+      do s=0,7
+        target=[i,j,k]; target(1)=s
+        if(sgn<0.e0_real_kind) target(1)=im-s
+        call stored_diff_flux_at_xyphysical_sp(target(1),target(2),target(3),1,im,jm,km,line(:,s))
+      enddo
+      do m=2,5
+        values=line(m,:)
+        qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)+sgn*boundary_derivative6(values,row)
+      enddo
+      return
+    endif
     call stored_diff_flux_at_xyphysical_sp(i,j,k,1,im,jm,km,f0)
     if(i < im   .or. apply_right == 0) call stored_diff_flux_at_xyphysical_sp(i+1,j,k,1,im,jm,km,fp1)
     if(i > 0    .or. apply_left  == 0) call stored_diff_flux_at_xyphysical_sp(i-1,j,k,1,im,jm,km,fm1)
@@ -6758,8 +6778,8 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_down,apply_up
-    integer :: i,j,k,m
-    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    integer :: i,j,k,m,s,target(3),row
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5),line(5,0:7),values(0:7),sgn
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -6767,6 +6787,23 @@ contains
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     if(j < js .or. j > je) return
 
+    if(high_order_boundary_enabled_d.and.((apply_down/=0.and.j<3).or. &
+        (apply_up/=0.and.j>jm-3))) then
+      row=j; sgn=1.e0_real_kind
+      if(.not.(apply_down/=0.and.j<3)) then
+        row=jm-j; sgn=-1.e0_real_kind
+      endif
+      do s=0,7
+        target=[i,j,k]; target(2)=s
+        if(sgn<0.e0_real_kind) target(2)=jm-s
+        call stored_diff_flux_at_xyphysical_sp(target(1),target(2),target(3),2,im,jm,km,line(:,s))
+      enddo
+      do m=2,5
+        values=line(m,:)
+        qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)+sgn*boundary_derivative6(values,row)
+      enddo
+      return
+    endif
     call stored_diff_flux_at_xyphysical_sp(i,j,k,2,im,jm,km,f0)
     if(j < jm   .or. apply_up   == 0) call stored_diff_flux_at_xyphysical_sp(i,j+1,k,2,im,jm,km,fp1)
     if(j > 0    .or. apply_down == 0) call stored_diff_flux_at_xyphysical_sp(i,j-1,k,2,im,jm,km,fm1)

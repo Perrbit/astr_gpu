@@ -117,7 +117,9 @@ contains
   end subroutine
 
   subroutine formal_info(active,covered,window,duration)
-#ifdef _CUDA
+#if defined(ASTR_GPU_CPP)
+    use insitu_statistics_cpp, only: slice_statistics_gpu_info=>slice_statistics_cpp_info
+#elif defined(_CUDA)
     use insitu_statistics_gpu, only: slice_statistics_gpu_info
 #endif
     logical,intent(out) :: active,covered
@@ -125,7 +127,7 @@ contains
     logical :: device_active,device_covered
     real(real_kind) :: device_window(2),device_duration
     call slice_velocity_statistics_info(active,covered,window,duration)
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(use_gpu) then
       call slice_statistics_gpu_info(device_active,device_covered,device_window,device_duration)
       if(device_active) then

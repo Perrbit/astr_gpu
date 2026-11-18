@@ -350,8 +350,8 @@ contains
       if(species/=closure_species) other_sum=other_sum+filtered_species(species)
     enddo
     filtered_species(closure_species)=rho_filtered-other_sum
-    low_species=rho_filtered*base_species/base_sum
     if(any(filtered_species<0.0_real64)) then
+      low_species=rho_filtered*base_species/base_sum
       do species=1,air5_num_species
         direction=filtered_species(species)-low_species(species)
         if(direction<0.0_real64) theta=min(theta, &
@@ -359,8 +359,10 @@ contains
       enddo
       theta=air5_interior_ratio(theta)
       limited=.true.
+      candidate=low_species+theta*(filtered_species-low_species)
+    else
+      candidate=filtered_species
     endif
-    candidate=low_species+theta*(filtered_species-low_species)
     other_sum=0.0_real64
     do species=1,air5_num_species
       if(species/=closure_species) other_sum=other_sum+candidate(species)

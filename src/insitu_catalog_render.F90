@@ -17,7 +17,13 @@ module insitu_catalog_render
   use index_slice_provider, only: prepare_index_slice
   use index_slice_archive, only: runtime_product_segment,refresh_runtime_product_status,runtime_catalog_changed
   use checkpoint_state_io, only: checkpoint_state_identity
-#if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
+#if defined(ASTR_GPU_CPP) && defined(ASTR_INSITU_DEVICE_RENDERING)
+  use iso_c_binding, only: c_devptr=>c_ptr
+  use index_slice_cpp, only: index_slice_device_view=>index_slice_device_view_cpp, &
+    release_index_slice_gpu=>release_index_slice_cpp,index_slice_exchange_usage=>index_slice_exchange_usage_cpp, &
+    begin_catalog_streamlines_gpu=>begin_catalog_streamlines_cpp,end_catalog_streamlines_gpu=>end_catalog_streamlines_cpp, &
+    catalog_streamline_pointers_gpu=>catalog_streamline_pointers_cpp
+#elif defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
   use cudafor, only: c_devptr
   use index_slice_gpu, only: index_slice_device_view,release_index_slice_gpu,index_slice_exchange_usage
   use insitu_products_gpu, only: begin_catalog_streamlines_gpu,end_catalog_streamlines_gpu,catalog_streamline_pointers_gpu
@@ -51,7 +57,7 @@ contains
     logical :: available,ready,ok,dirty,input_ok,requested(size(catalog_field_names)),physical,retire_needed,lines,curve,host,glyphs,wall_lines
     real(real_kind) :: local_bounds(6),wall_bounds(6)
     logical,allocatable :: group(:)
-#if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_INSITU_DEVICE_RENDERING)
     character(32) :: labels(11)
     integer(c_int) :: words(7)
     real(real64) :: settings(31)
@@ -177,7 +183,7 @@ contains
     input_transport='host'
     if(len_trim(options%postprocess_transport)>0) input_transport=options%postprocess_transport
     dirty=.false.;retire_needed=.false.
-#if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_INSITU_DEVICE_RENDERING)
     if(available.and.runtime_catalog_changed()) then
       status=cleanup(int(MPI_COMM_WORLD,c_int),int(identity%step,c_int64_t),identity%time)
       if(status/=0) then
@@ -219,7 +225,7 @@ contains
           any(state%definition%fields<2.or.state%definition%fields>4)) then
         message='existing streamlines support velocity components or magnitude only'
       endif
-#if !defined(_CUDA) || !defined(ASTR_INSITU_DEVICE_RENDERING)
+#if (!defined(_CUDA) && !defined(ASTR_GPU_CPP)) || !defined(ASTR_INSITU_DEVICE_RENDERING)
       message='runtime device images require the CUDA/Catalyst strict-device build'
 #endif
       if(len_trim(message)>0) then
@@ -282,7 +288,7 @@ contains
         ' step=',identity%step,' selected_field_d2h_bytes=',download,' private_exchange_bytes=',exchange, &
         ' fields=',size(sample_definition%fields)
       if(input_ok) call begin_catalog_renderer(input_ok,input_message)
-#if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_INSITU_DEVICE_RENDERING)
       if(input_ok) then
         if(host) then
           write(*,'(a,i0,a,i0,a,i0,a,i0)') 'ASTR_RUNTIME_TRANSFER rank=',rank,' step=',identity%step, &
@@ -338,7 +344,7 @@ contains
         if(state%definition%view%kind=='lambda2_surface'.or.state%definition%view%kind=='lambda_ci_surface') &
           display_field=catalog_field_id(state%definition%view%field)
         if(ok) call runtime_product_segment(q,state,directory,ok,message)
-#if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_INSITU_DEVICE_RENDERING)
         if(ok) then
         call pack_catalog_render(state%definition%view,labels,words,settings)
         references=[uinf,pinf,tinf]
@@ -420,7 +426,7 @@ contains
         endif
         dirty=.true.
       enddo
-#if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_INSITU_DEVICE_RENDERING)
       if(input_ok) then
         if(host) then
           call host_group(0_c_int)
@@ -438,7 +444,7 @@ contains
       call release_index_slice_gpu()
 #endif
     enddo
-#if defined(_CUDA) && defined(ASTR_INSITU_DEVICE_RENDERING)
+#if (defined(_CUDA) || defined(ASTR_GPU_CPP)) && defined(ASTR_INSITU_DEVICE_RENDERING)
     if(available.and.retire_needed) then
       status=cleanup(int(MPI_COMM_WORLD,c_int),int(identity%step,c_int64_t),identity%time)
       if(status/=0) call MPI_Abort(MPI_COMM_WORLD,status,err)

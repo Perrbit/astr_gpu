@@ -4,7 +4,7 @@ import re
 
 
 class CflGate:
-    def __init__(self, path, limit, dt, first_step, stop_step, step_stride=1, first_dt=None):
+    def __init__(self, path, limit, dt, first_step, stop_step, step_stride=1, first_dt=None, variable_dt=False):
         if not isfinite(limit) or limit <= 0 or not isfinite(dt) or dt <= 0:
             raise ValueError('CFL gate requires a positive finite limit and timestep')
         self.path, self.limit, self.dt = path, limit, dt
@@ -18,6 +18,9 @@ class CflGate:
         self.next_step, self.stop_step = first_step, stop_step
         self.offset, self.pending, self.header = 0, b'', None
         self.maximum = 0.
+        self.variable_dt=variable_dt
+        self.samples={}
+        self.verified=set()
 
     def check(self, final=False):
         with self.path.open('rb') as stream:
@@ -34,9 +37,11 @@ class CflGate:
                     raise ValueError('Malformed or unpaired CFL identity')
                 step, time, dt = int(match[1]), float(match[2]), float(match[3])
                 expected_dt = self.first_dt if step == self.first_step else self.dt
-                if step != self.next_step or dt != expected_dt or not isfinite(time):
+                if step != self.next_step or not isfinite(time) or not isfinite(dt) or dt<=0 or (
+                        (not self.variable_dt or step==self.first_step) and dt!=expected_dt):
                     raise ValueError('CFL sampling sequence or timestep differs')
                 self.header = step
+                if self.variable_dt:self.samples[step]=(time,dt)
             elif line.startswith('ASTR_CFL directional/local_sum/upper_bound='):
                 values = [float(value) for value in line.split('=', 1)[1].split()]
                 if self.header is None or len(values) != 5 or not all(isfinite(v) and v >= 0 for v in values):
@@ -46,5 +51,20 @@ class CflGate:
                 self.maximum = max(self.maximum, values[-1])
                 self.next_step += self.step_stride
                 self.header = None
+            elif self.variable_dt and line.startswith('ASTR_TIMESTEP complete_step='):
+                match=re.fullmatch(r'ASTR_TIMESTEP complete_step=(\d+)\s+time_start=\s*(\S+)\s+time_end=\s*(\S+)'
+                    r'\s+dt_used=\s*(\S+)\s+dt_next=\s*(\S+)',line)
+                if not match:raise ValueError('Malformed completed RK clock')
+                step=int(match[1])-1
+                if step not in self.samples:continue
+                start,end,used,next_dt=map(float,match.groups()[1:])
+                # Existing CFL diagnostics use the zero-based solver loop index
+                # but observe the state at the end of its completed RK step.
+                if not all(isfinite(v) for v in (start,end,used,next_dt)) or end<=start or used<=0 or next_dt<=0 or (
+                        self.samples[step]!=(end,used)):
+                    raise ValueError('CFL state/time step differs from completed RK clock')
+                self.verified.add(step)
         if final and (self.header is not None or self.next_step != self.stop_step):
             raise ValueError('Missing per-step CFL records')
+        if final and self.variable_dt and self.verified!=self.samples.keys():
+            raise ValueError('Missing completed RK clock for CFL records')

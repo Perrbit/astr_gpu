@@ -51,10 +51,10 @@ def layouts(directory):
     return result
 
 
-def raw_field(path, primitive=False, packet=False):
+def raw_field(path, primitive=False, packet=False, precision='fp64'):
     with path.open('rb') as stream:
         header = tuple(map(int, np.fromfile(stream, np.int32, 9 if packet else (4 if primitive else 5))))
-        values = np.fromfile(stream, np.float64)
+        values = np.fromfile(stream, {'fp64':np.float64,'fp32':np.float32}[precision])
     im, jm, km, hm = header[:4]
     components = 6 if primitive else header[4]
     shape = (im+2*hm+1, jm+2*hm+1, km+2*hm+1, components)

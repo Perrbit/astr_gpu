@@ -1082,6 +1082,9 @@ module readwrite
     use commarray, only : x,rho,vel,prs,tmp,dvel,dtmp
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_monitor, only: write_air5_flow_monitor
+#ifdef ASTR_GPU_CPP
+    use fluid_runtime, only: cpp_device_context
+#endif
 #endif
     real(real_kind),intent(in),optional :: completed_time
     !
@@ -1098,7 +1101,13 @@ module readwrite
 #ifdef ASTR_AIR5_CHEMISTRY
     if(trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli') then
       ! AIR5 probes use the completed coupled state on both backends.
-      if(present(completed_time)) call write_air5_flow_monitor(completed_time)
+      if(present(completed_time))then
+#ifdef ASTR_GPU_CPP
+        call write_air5_flow_monitor(completed_time,cpp_device_context())
+#else
+        call write_air5_flow_monitor(completed_time)
+#endif
+      endif
       return
     endif
 #endif

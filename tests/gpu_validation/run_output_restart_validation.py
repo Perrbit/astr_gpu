@@ -84,7 +84,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              wall_capture_refusal=None,tgv_cartesian_grid=None,run_config_text=None,capture_checkpoint_step=None,
              numerics=None,flatplate_warp=(0.08,0.04),flatplate_bctype=(21,51),boundary_options=None,
              rk_state_check=False,rk_stage_state_check=False,wallbs_resource=None,wall_phase_resource=None,
-             flatplate_extruded=False):
+             flatplate_extruded=False,cfl_variable_dt=False):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -586,7 +586,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                 word = np.array([header[11]], dtype='<i8')
                 restored_dt = word.astype('<i4').view('<f4')[0] if width == 4 else word.view('<f8')[0]
                 restored_dt = float(target(restored_dt))
-        cfl_gate = CflGate(case/'run.log', cfl_limit, native_dt, first, steps, first_dt=restored_dt)
+        cfl_gate = CflGate(case/'run.log', cfl_limit, native_dt, first, steps, first_dt=restored_dt,
+            variable_dt=cfl_variable_dt)
     with (case / "run.log").open("wb") as log:
         if monitor_resources:
             if backend != "gpu" or reject or memcheck:

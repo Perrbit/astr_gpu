@@ -12,6 +12,7 @@ def main():
     parser.add_argument('--mpiexec', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--transport', choices=['pinned', 'device'], default='pinned')
+    parser.add_argument('--layout', choices=['periodic', 'physical'], default='periodic')
     options = parser.parse_args()
     options.output.mkdir(parents=True, exist_ok=False)
     env = os.environ | dict(OMPI_MCA_pml='ob1', OMPI_MCA_btl='self,vader,tcp', OMPI_MCA_osc='pt2pt',
@@ -19,10 +20,10 @@ def main():
     if options.transport == 'device':
         env.update(OMPI_MCA_pml='ucx', OMPI_MCA_opal_cuda_support='1')
     report = {}
-    for ranks, axis in [(1, 0), (2, 0), (2, 1), (2, 2)]:
+    for ranks, axis in [(1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)]:
         name = f'np{ranks}_axis{axis}'
         command = [str(options.mpiexec), '--bind-to', 'none', '-n', str(ranks),
-                   str(options.binary.resolve()), str(axis), options.transport]
+                   str(options.binary.resolve()), str(axis), options.transport, options.layout]
         result = subprocess.run(command, env=env, stdin=subprocess.DEVNULL, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         (options.output/f'{name}.log').write_text(result.stdout)
@@ -30,7 +31,7 @@ def main():
         count = sum(line.startswith('HALO PASS ') for line in result.stdout.splitlines())
         if count != 4*ranks:
             raise AssertionError(f'{name}: expected {4*ranks} complete layout checks, got {count}')
-        report[name] = dict(command=command, transport=options.transport, exact_phase_checks=count)
+        report[name] = dict(command=command, transport=options.transport, layout=options.layout, exact_phase_checks=count)
         print(name, count, 'exact', flush=True)
     (options.output/'report.json').write_text(json.dumps(report, indent=2)+'\n')
 

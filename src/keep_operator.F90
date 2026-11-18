@@ -14,9 +14,13 @@ module keep_operator
   end type
 contains
   subroutine build_keep_split_plan(plan)
-    type(keep_split_plan),intent(out) :: plan
+    type(keep_split_plan),intent(inout) :: plan
     integer :: c,m
-    plan=keep_split_plan()
+    ! NVHPC default-component initialization can write before this record.
+    plan%terms=0;plan%bases=0
+    plan%left=0;plan%right=0
+    plan%component=0;plan%derivative=0
+    plan%weight=0.e0_real_kind
     do c=1,3
       call averaged_product([1,1+c,6+c],1,1.e0_real_kind)
       do m=1,3

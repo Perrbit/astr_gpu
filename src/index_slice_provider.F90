@@ -12,10 +12,14 @@ module index_slice_provider
   use index_slice_stencil, only: slice_stencil_start,slice_stencil_weights,slice_diagnostics
   use insitu_boundary_layer, only: wall_transport,nonreacting_wall_material
   use iso_c_binding, only: c_int
-#ifdef ASTR_GPU_CPP
-  use fluid_runtime, only: cpp_export_host_primitives
-#endif
-#ifdef _CUDA
+#if defined(ASTR_GPU_CPP)
+  use index_slice_cpp, only: allocate_index_slice_gpu=>allocate_index_slice_cpp,release_index_slice_gpu=>release_index_slice_cpp, &
+    fill_index_slice_gpu=>fill_index_slice_cpp,sample_remote_slice_gpu=>sample_remote_slice_cpp, &
+    receive_index_slice_gpu=>receive_index_slice_cpp,evaluate_index_slice_gpu=>evaluate_index_slice_cpp, &
+    download_index_slice_gpu=>download_index_slice_cpp,download_index_neighborhood_gpu=>download_index_neighborhood_cpp, &
+    begin_index_slice_exchange_gpu=>begin_index_slice_exchange_cpp,exchange_index_slice_gpu=>exchange_index_slice_cpp, &
+    end_index_slice_exchange_gpu=>end_index_slice_exchange_cpp
+#elif defined(_CUDA)
   use index_slice_gpu
 #endif
   implicit none
@@ -140,7 +144,10 @@ contains
 #ifdef ASTR_GPU_CPP
     block
       use commvar, only: use_gpu
-      if(use_gpu.and..not.device_output) call cpp_export_host_primitives(download_bytes)
+      if(use_gpu.and.(source<0.or.source==3.or.source==4.or.source>8)) then
+        message='C++ solver-sample slice sources are not implemented'
+        call MPI_Comm_free(comm,err);call mpi_ok(err);return
+      endif
     end block
 #endif
     if(device_output.and..not.gpu_fields) then
@@ -236,13 +243,13 @@ contains
     enddo
     enddo
     neighborhood_bytes=int(nn,int64)*nraw*real_bytes
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(gpu_fields) then
       call allocate_index_slice_gpu(nn,nout,raw_ids(:nraw),definition%fields,weights,valid,device_geometry=geometry_output)
     else
 #endif
       allocate(neighborhood(nn,nraw),stat=status);valid=status==0
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     endif
 #endif
     valid=allocations_agree(valid)
@@ -250,7 +257,7 @@ contains
       message='cannot allocate slice stencil neighborhood';goto 900
     endif
     call slice_source_list(boxes(:,:,rank+1),owners(:,:,rank+1),intervals,periodic,indices,positions,nsend)
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(gpu_fields) then
       call fill_index_slice_gpu(indices(:,:nsend),positions(:nsend),source,count,valid)
     else
@@ -261,14 +268,14 @@ contains
         enddo
       enddo
       valid=.true.
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     endif
 #endif
     valid=allocations_agree(valid)
     if(.not.valid) then
       message='cannot pack local slice stencil';goto 900
     endif
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(private_transport.and.nraw>0.and.ranks>1) then
       call begin_index_slice_exchange_gpu(capacity,trim(transport_mode),valid,message)
       if(.not.valid) print '(a)','ASTR_RUNTIME_TRANSPORT_FAILED '//trim(message)
@@ -283,7 +290,7 @@ contains
       dest=mod(rank+p,ranks);src=mod(rank-p+ranks,ranks)
       call slice_source_list(boxes(:,:,dest+1),owners(:,:,rank+1),intervals,periodic,indices,positions,nsend)
       call slice_source_list(boxes(:,:,rank+1),owners(:,:,src+1),intervals,periodic,recv_indices,recv_positions,nrecv)
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       if(private_transport) then
         call exchange_index_slice_gpu(indices(:,:nsend),recv_positions(:nrecv),source,count,dest,src,comm)
         exchange_bytes=exchange_bytes+int(nsend+nrecv,int64)*nraw*real_bytes
@@ -295,7 +302,7 @@ contains
       if(.not.valid) then
         message='cannot allocate private slice communication strip';goto 900
       endif
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       if(gpu_fields) then
         call sample_remote_slice_gpu(indices(:,:nsend),source,count,send_values,valid)
         if(present(staging_download)) staging_download=staging_download+size(send_values,kind=int64)*real_bytes
@@ -307,7 +314,7 @@ contains
           enddo
         enddo
         valid=.true.
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       endif
 #endif
       valid=allocations_agree(valid)
@@ -318,7 +325,7 @@ contains
         recv_values,size(recv_values),mpi_real_type,src,1,comm,MPI_STATUS_IGNORE,err)
       call mpi_ok(err)
       exchange_bytes=exchange_bytes+int(size(send_values)+size(recv_values),int64)*real_bytes
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       if(gpu_fields) then
         call receive_index_slice_gpu(recv_positions(:nrecv),recv_values,valid)
         if(present(staging_upload)) staging_upload=staging_upload+size(recv_values,kind=int64)*real_bytes
@@ -328,7 +335,7 @@ contains
           neighborhood(recv_positions(:nrecv),m)=recv_values(:,m)
         enddo
         valid=.true.
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
       endif
 #endif
       valid=allocations_agree(valid)
@@ -337,13 +344,13 @@ contains
       endif
       deallocate(send_values,recv_values)
     enddo
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(private_transport) call end_index_slice_exchange_gpu()
 #endif
     call report_insitu_timing('index_slice_neighborhood',phase_started,step)
     started=MPI_Wtime()
     phase_started=insitu_clock()
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     if(gpu_fields.and.host_eval) then
       allocate(neighborhood(nn,nraw),stat=status)
       valid=allocations_agree(status==0)
@@ -454,13 +461,13 @@ contains
       enddo
       compute_seconds=real(MPI_Wtime()-started,real_kind)
       call report_insitu_timing('index_slice_diagnostics',phase_started,step)
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     endif
 #endif
     ok=allocations_agree(valid)
     if(.not.ok) message='invalid selected diagnostic state or slice transfer failure'
 900 continue
-#ifdef _CUDA
+#if defined(_CUDA) || defined(ASTR_GPU_CPP)
     ! A successful retained view is borrowed until the caller finishes rendering.
     if(gpu_fields.and.(.not.device_output.or..not.ok)) call release_index_slice_gpu()
 #endif

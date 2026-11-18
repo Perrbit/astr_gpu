@@ -455,6 +455,7 @@ module solver
     if(low_order_incident_enabled()) call write_rhs_validation_snapshot('incident_pre')
 #endif
     call apply_nscbc_incident_complete_rhs()
+    if(.not.lcomb) call write_rhs_validation_snapshot('post_source')
     if(defer_full_snapshot) call write_rhs_validation_snapshot('full')
 #ifdef ASTR_BUILD_TESTING
     if(high_order_boundary_enabled) call audit_h1_low_order_cpu()
@@ -731,7 +732,7 @@ module solver
                         is_base=>is,ie_base=>ie,js_base=>js,je_base=>je, &
                         ks_base=>ks,ke_base=>ke,gamma,                  &
                         recon_schem,lchardecomp,conschm,bfacmpld,      &
-                        nondimen
+                        nondimen,lcomb
     use commarray,only: q,vel,rho,prs,tmp,spc,dxi,jacob,qrhs,lsolid,   &
                         lshock,crinod
     use flux, only: recons_exp
@@ -761,9 +762,10 @@ module solver
     real(clock_kind) :: time_beg
     real(clock_kind),save :: subtime=0.e0_clock_kind
     !
-    logical :: lsh,lso,sson,hdiss,lvar,ldebug,expanded_mask_halo,consistent_eps
+    logical :: lsh,lso,sson,hdiss,lvar,ldebug,expanded_mask_halo,consistent_eps,coherent_critical
     !
     consistent_eps=h1_metric_eps_candidate
+    coherent_critical=numq==5.and..not.lcomb
     if(present(metric_consistent_eps)) consistent_eps=consistent_eps.or.metric_consistent_eps
     is=is_base; ie=ie_base; js=js_base; je=je_base; ks=ks_base; ke=ke_base
     npdci=npdci_base; npdcj=npdcj_base; npdck=npdck_base
@@ -864,9 +866,9 @@ module solver
           !
         endif
         !
-        if(i<0) then
+        if(i<0.and.(.not.coherent_critical.or.npdci_base==1.or.npdci_base==4)) then
           hdiss=crinod(i+1,j,k)
-        elseif(i+1>im) then
+        elseif(i+1>im.and.(.not.coherent_critical.or.npdci_base==2.or.npdci_base==4)) then
           hdiss=crinod(i,j,k)
         else
           hdiss=crinod(i,j,k) .or. crinod(i+1,j,k)
@@ -1096,9 +1098,9 @@ module solver
           lsh=.true.
         endif
         !
-        if(j<0) then
+        if(j<0.and.(.not.coherent_critical.or.npdcj_base==1.or.npdcj_base==4)) then
           hdiss=crinod(i,j+1,k)
-        elseif(j+1>jm) then
+        elseif(j+1>jm.and.(.not.coherent_critical.or.npdcj_base==2.or.npdcj_base==4)) then
           hdiss=crinod(i,j,k)
         else
           hdiss=crinod(i,j,k) .or. crinod(i,j+1,k)
@@ -1328,9 +1330,9 @@ module solver
           lsh=.true.
         endif
         !
-        if(k<0) then
+        if(k<0.and.(.not.coherent_critical.or.npdck_base==1.or.npdck_base==4)) then
           hdiss=crinod(i,j,k+1)
-        elseif(k+1>km) then
+        elseif(k+1>km.and.(.not.coherent_critical.or.npdck_base==2.or.npdck_base==4)) then
           hdiss=crinod(i,j,k)
         else
           hdiss=crinod(i,j,k) .or. crinod(i,j,k+1)
@@ -1586,9 +1588,11 @@ module solver
     else
       shock=lshock(point(1),point(2),point(3)).or.lshock(neighbor(1),neighbor(2),neighbor(3))
     endif
-    target=point; target(axis)=max(0,min(dim,node))
+    target=point
+    if(ntype==1.or.ntype==4) target(axis)=max(0,node)
     critical=crinod(target(1),target(2),target(3))
-    target=neighbor; target(axis)=max(0,min(dim,node+1))
+    target=neighbor
+    if(ntype==2.or.ntype==4) target(axis)=min(dim,node+1)
     critical=critical.or.crinod(target(1),target(2),target(3))
     call boundary_interface_position(node,dim,ntype,row,side)
     inlet_compatible=.false.
@@ -1861,7 +1865,7 @@ module solver
     !
     use commvar,  only: im,jm,km,hm,numq,                              &
                         npdci,npdcj,npdck,is,ie,js,je,ks,ke,gamma,     &
-                        recon_schem,lchardecomp,conschm
+                        recon_schem,lchardecomp,conschm,lcomb
     use commarray,only: q,vel,rho,prs,tmp,spc,dxi,jacob,qrhs,lshock,crinod
     use flux,     only: flux_compact,mplimiter,recons, &
                         flux_uw_i,flux_dw_i,flux_uw_j,flux_dw_j,flux_uw_k,flux_dw_k
@@ -1885,8 +1889,9 @@ module solver
     real(clock_kind) :: time_beg
     real(clock_kind),save :: subtime=0.e0_clock_kind
     !
-    logical :: lsh,sson,hdiss
+    logical :: lsh,sson,hdiss,coherent_critical
     !
+    coherent_critical=numq==5.and..not.lcomb
     if(present(timerept)) then
 
       if(timerept) time_beg=ptime()
@@ -2046,9 +2051,9 @@ module solver
           !
         endif
         !
-        if(i<0) then
+        if(i<0.and.(.not.coherent_critical.or.npdci==1.or.npdci==4)) then
           hdiss=crinod(i+1,j,k)
-        elseif(i+1>im) then
+        elseif(i+1>im.and.(.not.coherent_critical.or.npdci==2.or.npdci==4)) then
           hdiss=crinod(i,j,k)
         else
           hdiss=crinod(i,j,k) .or. crinod(i+1,j,k)
@@ -2251,9 +2256,9 @@ module solver
           lsh=.true.
         endif
         !
-        if(j<0) then
+        if(j<0.and.(.not.coherent_critical.or.npdcj==1.or.npdcj==4)) then
           hdiss=crinod(i,j+1,k)
-        elseif(j+1>jm) then
+        elseif(j+1>jm.and.(.not.coherent_critical.or.npdcj==2.or.npdcj==4)) then
           hdiss=crinod(i,j,k)
         else
           hdiss=crinod(i,j,k) .or. crinod(i,j+1,k)
@@ -2457,9 +2462,9 @@ module solver
           lsh=.true.
         endif
         !
-        if(k<0) then
+        if(k<0.and.(.not.coherent_critical.or.npdck==1.or.npdck==4)) then
           hdiss=crinod(i,j,k+1)
-        elseif(k+1>km) then
+        elseif(k+1>km.and.(.not.coherent_critical.or.npdck==2.or.npdck==4)) then
           hdiss=crinod(i,j,k)
         else
           hdiss=crinod(i,j,k) .or. crinod(i,j,k+1)

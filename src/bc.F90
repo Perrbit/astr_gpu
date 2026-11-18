@@ -1023,7 +1023,8 @@ module bc
       bctype(2)==22.and.bctype(4)==52.and..not.high_order_boundary_enabled.and. &
       (nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_COMPATIBILITY.or. &
        (nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_TARGET_RELAXATION.and. &
-        .not.nscbc_farfield_sbli_shock).or.profile_nonreflecting_corner_enabled())
+        .not.nscbc_farfield_sbli_shock).or.profile_nonreflecting_corner_enabled().or. &
+       nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_GRCBC)
   end function nscbc_outlet_top_spanwise_enabled
 
   logical function nscbc_farfield_viscous_source_enabled()
@@ -5678,6 +5679,15 @@ module bc
         deallocate(qfilt)
       endif
 
+    endif
+    ! The boundary RHS must consume halos from both transverse filters.
+    ! Every rank participates, including ranks not touching the upper face.
+    if(ndir==4.and.ndims==3.and..not.lcomb.and.numq==5.and..not.lfilter.and. &
+       nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_NONREFLECTING.and. &
+       nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_GRCBC) call qswap()
+
+    if(ndir==4.and.jrk==jrkm) then
+      j=jm
       allocate(Ecs(0:2,1:numq),dEcs(1:numq))
       ! do k=ks,ke
       ! do i=is,ie
@@ -6390,7 +6400,7 @@ module bc
     logical,intent(in),optional :: filter_only,rhs_only
     !
     ! local data
-    integer :: i,j,k,l,jspc,jq,ii,n,m,spanwise_jlast
+    integer :: i,j,k,l,jspc,jq,ii,n,m,spanwise_jfirst,spanwise_jlast
     real(real_kind) :: pinv(5,5),pnor(5,5),Pmult(5,5),E(5),F(5),G(5),Rest(5),  &
                jcbi(3),LODi1(5),LODi(5)
     real(real_kind),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
@@ -6856,10 +6866,13 @@ module bc
         if(ndims==3) then
           !
           allocate(fcs(-hm:km+hm,1:numq),dfcs(0:km,1:numq))
+          spanwise_jfirst=js
           spanwise_jlast=je
+          ! GRCBC retains the outlet's spanwise transport at the bottom intersection.
+          if(jrk==0.and.bctype(3)==41.and.low_order_incident_enabled()) spanwise_jfirst=0
           ! The top face excludes physical x endpoints: the outlet owns this z term.
           if(jrk==jrkm.and.nscbc_outlet_top_spanwise_enabled()) spanwise_jlast=jm
-          do j=js,spanwise_jlast
+          do j=spanwise_jfirst,spanwise_jlast
             !
             do k=-hm,km+hm
               !

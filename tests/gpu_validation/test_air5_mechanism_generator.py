@@ -126,6 +126,16 @@ class Air5MechanismGeneratorTests(unittest.TestCase):
         data["reactions"][0]["reactants"]["AR"] = 1
         self.assert_rejected(data, "unknown species")
 
+    def test_cpp_tables_are_current_without_changing_fortran_output(self):
+        header = ROOT / "src_gpu/chemistry_air5_data.h"
+        self.assertEqual(self.generator.render_cpp(self.data), header.read_bytes())
+        check = subprocess.run(
+            [sys.executable, str(GENERATOR), "--input", str(MECHANISM),
+             "--output", str(header), "--format", "cpp", "--check"],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(check.returncode, 0, check.stderr)
+
     def test_duplicate_reaction_is_rejected(self):
         data = copy.deepcopy(self.data)
         duplicate = copy.deepcopy(data["reactions"][0])

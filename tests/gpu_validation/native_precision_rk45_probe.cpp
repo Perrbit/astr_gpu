@@ -56,6 +56,14 @@ PROBE_EXEC int check_core(R* result) {
   const int status=rk45_step(Field{1},point,next,R(0),step,actual,R(.001),R(.1),R(1.e-8),error);
   if(status!=StepOk || !std::isfinite(actual) || !std::isfinite(error)) return 8;
   result[0]=next[0];result[1]=next[1];result[2]=actual;result[3]=error;
+  point[0]=0;point[1]=0;step=R(.01);
+  if(rk45_step(Field{0},point,next,R(0),step,actual,R(.01),R(.5),R(1.e-8),error)!=StepOk ||
+      std::abs(step)<=R(.01) || error>R(1.e-8)) return 9;
+  largest=0;trace=TraceState{{0,0,0},R(.001),0,0,0,TraceActive};
+  while(trace.status==TraceActive)
+    trace_segment(Field{0},Owner{},Writer{&largest},trace,32,R(.001),R(.1),R(1.e-8),R(1),100);
+  if((trace.status!=TraceLength && !trace_subminimum_stop(trace,R(1),R(.001))) ||
+      trace.steps>=100 || largest>R(1)) return 13;
   return 0;
 }
 

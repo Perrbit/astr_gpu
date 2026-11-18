@@ -1,0 +1,158 @@
+program legacy_filter_controller
+  use iso_fortran_env, only: real64
+  use mpi
+  use cudafor
+  use astr_precision_mpi, only: mpi_real_type
+  use commvar, only: im,jm,km,hm,numq,lihomo,ljhomo,lkhomo,npdci,npdcj,npdck,flowtype
+  use parallel, only: mpirank,isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,lio
+  use commarray_gpu, only: q_d,qrhs_d,qwork_d,filter_work_d,configure_gpu_filter_workspace,gpu_scalar_filter_workspace_enabled
+  use commarray_gpu, only: rho_d,vel_d,tmp_d,tve_d,prs_d,spc_d
+  use boundary_high_order_gpu, only: high_order_wall_enabled_d,high_order_wall_axis_d,high_order_adiabatic_wall_enabled_d
+  use solver_gpu, only: apply_explicit_filter_gpu
+  use chemistry_compensation, only: configure_air5_compensation,air5_carry
+  use chemistry_compensation_gpu, only: init_air5_compensation_gpu,compensation_filter_state_gpu, &
+    sync_air5_compensation_gpu,release_air5_compensation_gpu
+  use chemistry_flow_solver_gpu, only: air5_flow_status_d, configure_air5_vibrational_floor_gpu, reset_air5_status, &
+    air5_save_filter_species_base_kernel, air5_limit_filtered_state_kernel,air5_prepare_spatial_state_gpu
+  use chemistry_postshock_boundary, only: configure_air5_postshock_boundary
+  use chemistry_postshock_boundary_gpu, only: initialize_air5_postshock_boundary_gpu
+  implicit none
+  integer :: ierr,comm,periodic(3),global(3),sizes(3),coords(3),left(3),right(3),end(3),part(3),npdc(3)
+  integer :: unit,a,i,j,k,devices,local,comp,wall,family,count,step,local_status,global_status
+  logical :: compensated,spatial,filtering
+  real(real64) :: floor(10)
+  real(real64),allocatable :: state(:,:,:,:),high(:,:,:,:),low(:,:,:,:),padded(:,:,:,:)
+  real(real64),allocatable :: cache(:,:,:,:)
+  character(2048) :: file,prefix
+  character(24) :: text
+  character(2) :: index
+  type(dim3) :: grid
+
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,mpirank,ierr)
+  lio=mpirank==0
+  call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',text)
+  read(text,*) local
+  call get_command_argument(8,text);read(text,*) devices
+  ierr=cudaSetDevice(mod(local,devices));call check_cuda(ierr)
+  call get_command_argument(1,file)
+  call get_command_argument(2,prefix)
+  do a=1,3
+    call get_command_argument(a+2,text);read(text,*) sizes(a)
+  enddo
+  call get_command_argument(6,text);read(text,*) comp
+  call get_command_argument(7,text);read(text,*) wall
+  call get_command_argument(9,text);read(text,*) family
+  spatial=command_argument_count()==10
+  filtering=.true.
+  if(spatial)then
+    call get_command_argument(10,text)
+    filtering=trim(text)/='unfiltered'
+  endif
+  compensated=comp==1
+  open(newunit=unit,file=trim(file),access='stream',form='unformatted',status='old')
+  read(unit) global,periodic,floor
+  allocate(state(22,0:global(1),0:global(2),0:global(3)))
+  read(unit) state
+  close(unit)
+  call MPI_Cart_create(MPI_COMM_WORLD,3,sizes,periodic==1,.false.,comm,ierr)
+  call MPI_Cart_coords(comm,mpirank,3,coords,ierr)
+  do a=1,3
+    call MPI_Cart_shift(comm,a-1,1,left(a),right(a),ierr)
+  enddo
+  end=global/sizes;part=coords*end
+  npdc=3
+  where(left==MPI_PROC_NULL) npdc=1
+  where(right==MPI_PROC_NULL) npdc=2
+  where(left==MPI_PROC_NULL.and.right==MPI_PROC_NULL) npdc=4
+  im=end(1);jm=end(2);km=end(3);numq=11
+  isize=sizes(1);jsize=sizes(2);ksize=sizes(3)
+  lihomo=periodic(1)==1;ljhomo=periodic(2)==1;lkhomo=periodic(3)==1
+  npdci=npdc(1);npdcj=npdc(2);npdck=npdc(3)
+  mpileft=left(1);mpiright=right(1);mpidown=left(2);mpiup=right(2);mpiback=left(3);mpifront=right(3)
+  high_order_wall_enabled_d=wall>=0
+  high_order_wall_axis_d=wall+1
+  high_order_adiabatic_wall_enabled_d=family==1
+  call configure_gpu_filter_workspace()
+  call configure_air5_vibrational_floor_gpu()
+  allocate(padded(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11))
+  allocate(high(0:im,0:jm,0:km,11),low(0:im,0:jm,0:km,11))
+  allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11),qrhs_d(0:im,0:jm,0:km,11))
+  if(spatial)then
+    allocate(rho_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm),vel_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3), &
+      tmp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm),tve_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+      prs_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm),spc_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5))
+    rho_d=-999.0_real64;vel_d=-999.0_real64;tmp_d=-999.0_real64
+    tve_d=-999.0_real64;prs_d=-999.0_real64;spc_d=-999.0_real64
+    if(periodic(1)==0)then
+      flowtype='air5postshock'
+      call configure_air5_postshock_boundary(state(1:11,0,0,0),state(1:11,global(1),0,0),0.0_real64)
+      call initialize_air5_postshock_boundary_gpu()
+    endif
+  endif
+  if(gpu_scalar_filter_workspace_enabled())then
+    allocate(filter_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+  else
+    allocate(qwork_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11))
+  endif
+  do k=0,km;do j=0,jm;do i=0,im
+    high(i,j,k,:)=state(1:11,part(1)+i,part(2)+j,part(3)+k)
+    low(i,j,k,:)=state(12:22,part(1)+i,part(2)+j,part(3)+k)
+  enddo;enddo;enddo
+  padded=-777.0_real64;padded(0:im,0:jm,0:km,:)=high;q_d=padded
+  call configure_air5_compensation(compensated,im,jm,km)
+  if(compensated) air5_carry=low
+  call init_air5_compensation_gpu()
+  count=(im+1)*(jm+1)*(km+1)
+  grid=dim3((count+255)/256,1,1)
+  global_status=0
+  do step=1,merge(2,1,filtering)
+    if(filtering)then
+    if(compensated)then
+      call compensation_filter_state_gpu(.false.)
+      call compensation_filter_state_gpu(.true.)
+      call apply_explicit_filter_gpu(all(periodic==1),'reference_low_')
+      call compensation_filter_state_gpu(.true.)
+    endif
+    call air5_save_filter_species_base_kernel<<<grid,256>>>(im,jm,km)
+    ierr=cudaDeviceSynchronize();call check_cuda(ierr)
+    call apply_explicit_filter_gpu(all(periodic==1),'reference_high_')
+    call compensation_filter_state_gpu(.false.)
+    call reset_air5_status()
+    call air5_limit_filtered_state_kernel<<<grid,256>>>(im,jm,km)
+    ierr=cudaDeviceSynchronize();call check_cuda(ierr)
+    local_status=air5_flow_status_d
+    call MPI_Allreduce(local_status,global_status,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(global_status/=0) exit
+    endif
+    if(spatial)call air5_prepare_spatial_state_gpu()
+  enddo
+  padded=q_d;high=padded(0:im,0:jm,0:km,:)
+  low=0.0_real64
+  if(compensated)then
+    call sync_air5_compensation_gpu(.true.);low=air5_carry
+  endif
+  write(index,'(i0)')mpirank
+  file=trim(prefix)//'.rank'//trim(index)//'.bin'
+  open(newunit=unit,file=trim(file),access='stream',form='unformatted',status='new')
+  write(unit) end,global_status,high,low,padded
+  if(spatial)then
+    allocate(cache(-hm:im+hm,-hm:jm+hm,-hm:km+hm,12))
+    cache(:,:,:,1)=rho_d;cache(:,:,:,2:4)=vel_d;cache(:,:,:,5)=tmp_d
+    cache(:,:,:,6)=tve_d;cache(:,:,:,7)=prs_d;cache(:,:,:,8:12)=spc_d
+    write(unit) cache
+  endif
+  close(unit)
+  call release_air5_compensation_gpu()
+  call MPI_Comm_free(comm,ierr)
+  call MPI_Finalize(ierr)
+contains
+  subroutine check_cuda(status)
+    integer,intent(in) :: status
+    integer :: mpi_status
+    if(status/=cudaSuccess)then
+      write(*,*)'legacy reference CUDA status',status
+      call MPI_Abort(MPI_COMM_WORLD,1,mpi_status)
+    endif
+  end subroutine
+end program

@@ -135,11 +135,12 @@ end module high_order_boundary_probe_launch
 
 program high_order_boundary_probe
   use astr_precision, only: real_kind
+  use iso_fortran_env, only: int32
   use boundary_high_order, only: boundary_derivative6,boundary_neumann7, &
     boundary_derivative6_weights,boundary_neumann7_weights,boundary_mp_flux6,boundary_mp_flux6_limited,boundary_inlet_flux6, &
     boundary_filter6,boundary_incoming_rate7,boundary_hermite_pressure7,boundary_pressure_gradient7, &
     boundary_temperature5,boundary_temperature_rhs5,boundary_pressure_neumann6,boundary_sensor_blend_weight, &
-    boundary_compression_sensor
+    boundary_compression_sensor,boundary_normal_terms6,boundary_interface_position
 #ifdef ASTR_BUILD_TESTING
   use boundary_high_order, only: boundary_positive_filter5,boundary_budget_margin5,boundary_budget_admissible5
 #endif
@@ -169,6 +170,8 @@ program high_order_boundary_probe
     lodi(5,10),candidate_flux(0:2,0:1,10),filtered(0:2,10),rates(5,10),expected_rates(5,10), &
     pinv(5,5),linear(5),quadratic(5),gradient(5),dq(5),source(5),un(10),css
   integer :: icase,wind,m
+  real(real_kind) :: frozen_composite(0:128,6,3)=0.e0_real_kind
+  character(1024) :: packet_path
   real(real_kind) :: limited_flux(0:2,0:1,10),limited_errors(3),fl,fr
   real(real_kind) :: inlet_flux(0:3,10)
   real(real_kind) :: blend_sensors(0:1004),blend_weights(0:1004),blend_actual(0:1004)
@@ -556,6 +559,9 @@ program high_order_boundary_probe
     flux=mu*df/metric
     call host_differentiate(flux,result,n,h)
     result=result/metric
+    frozen_composite(0:n,1,k)=f;frozen_composite(0:n,2,k)=df
+    frozen_composite(0:n,3,k)=metric;frozen_composite(0:n,4,k)=mu
+    frozen_composite(0:n,5,k)=result;frozen_composite(0:n,6,k)=reference
     errors(k)=max(maxval(abs(result(0:5)-reference(0:5))), &
                   maxval(abs(result(n-5:n)-reference(n-5:n))))
 #ifdef TEST_CUDA
@@ -583,8 +589,47 @@ program high_order_boundary_probe
   write(*,'(a,es25.17)') 'HB_BACKEND_MAX_SCALED ',backend_error
   if(any(orders<5.5e0_real_kind)) error stop 'HB composite order below 5.5'
   if(backend_error>2.e-10_real_kind) error stop 'HB CPU GPU mismatch'
+  if(command_argument_count()==1) then
+    call get_command_argument(1,packet_path)
+    call write_cpp_packet(trim(packet_path))
+  endif
   print *, 'HB_COMPONENT_ACCURACY_PASS_NOT_SOLVER_STABILITY'
 contains
+  subroutine write_cpp_packet(path)
+    character(*),intent(in) :: path
+    real(real_kind) :: derivatives(0:2,10),states(5,0:7,10),vels(3,0:7,10),pressures(0:7,10), &
+      jacobians(0:7,10),metrics(3,0:7,10),normal_d(5,10),normal_r(5,10)
+    integer(int32) :: positions(2,-1:16,4)
+    integer :: unit,c,s,r,code,location,side
+    do c=1,10
+      do r=0,2
+        derivatives(r,c)=boundary_derivative6(samples(:,c),r)
+      enddo
+      do s=0,7
+        vels(:,s,c)=primitive(2:4,s,c);pressures(s,c)=primitive(5,s,c)
+        states(1,s,c)=primitive(1,s,c);states(2:4,s,c)=primitive(1,s,c)*vels(:,s,c)
+        states(5,s,c)=pressures(s,c)/.4e0_real_kind+.5e0_real_kind*primitive(1,s,c)*sum(vels(:,s,c)**2)
+        jacobians(s,c)=1.e0_real_kind+.02e0_real_kind*s
+        metrics(:,s,c)=[.2e0_real_kind+.01e0_real_kind*s,1.e0_real_kind+.03e0_real_kind*s, &
+          .1e0_real_kind-.01e0_real_kind*s]
+      enddo
+      call boundary_normal_terms6(states(:,:,c),vels(:,:,c),pressures(:,c),jacobians(:,c),metrics(:,:,c), &
+        normal_d(:,c),normal_r(:,c))
+    enddo
+    if(maxval(abs(normal_d(:,1)-normal_r(:,1)))>2.e-10_real_kind) error stop 'HB normal metric-rest free stream'
+    do code=1,4
+    do s=-1,16
+      call boundary_interface_position(s,16,code,location,side)
+      positions(:,s,code)=int([location,side],int32)
+    enddo
+    enddo
+    open(newunit=unit,file=path,access='stream',form='unformatted',status='new')
+    write(unit) [1_int32,int(storage_size(1.e0_real_kind)/8,int32),10_int32],int(sizes,int32)
+    write(unit) samples,primitive,test_lambda,rhs,lodi,pinv
+    write(unit) states,vels,pressures,jacobians,metrics
+    write(unit) derivatives,candidate_flux,filtered,rates,normal_d,normal_r,positions,frozen_composite
+    close(unit)
+  end subroutine
   subroutine host_differentiate(v,dv,n,h)
     integer,intent(in) :: n
     real(real_kind),intent(in) :: v(0:n),h

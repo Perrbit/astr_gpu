@@ -90,7 +90,7 @@ def complete_step_budget(case,n,steady_mms=False):
         interpretation='weak wall with separately measured manufactured source when selected; numerical heat and nonlinear RK remainder retained')
 
 
-def frozen_reference(case,n,stage=1,steady_mms=False):
+def frozen_reference(case,n,stage=1,steady_mms=False,sutherland_k=110.3):
     """Independent tensor matrices; never advances a CFD time step."""
     norms,left,centered,theta=derive();chosen,_=error_minimizer(norms,left,theta)
     h,dy,*_=matrices(n,norms,left,centered)
@@ -116,7 +116,7 @@ def frozen_reference(case,n,stage=1,steady_mms=False):
     for row,s in ((0,-1),(n,1)):
         gu[:,row,:,:,1]-=s*v[:,row,:,:]/hy[row]
         gt[:,row,:,1]+=s*(1-t[:,row,:])/hy[row]
-    mu=t*np.sqrt(t)*(1+110.4/273.15)/(t+110.4/273.15)/3000
+    mu=t*np.sqrt(t)*(1+sutherland_k/273.15)/(t+sutherland_k/273.15)/3000
     kappa=(mu/.72)/(.4*.3**2)
     stress=mu[...,None,None]*(gu+np.swapaxes(gu,-1,-2)-(2/3)*np.trace(gu,axis1=-2,axis2=-1)[...,None,None]*np.eye(3))
     heat=kappa[...,None]*gt+np.einsum('...c,...cd->...d',v,stress)

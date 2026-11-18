@@ -11,9 +11,7 @@ module mainloop_gpu
 contains
   subroutine snapshot_wall_filter_gpu(label,stage)
 #ifdef ASTR_BUILD_TESTING
-    use boundary_high_order, only: high_order_wall_enabled
-    use numerical_forms, only: convection_form
-    use commvar, only: nstep
+    use commvar, only: nstep,lcomb
     use commarray_gpu, only: copy_flow_from_gpu
     use validation_io, only: rhs_validation_requested,write_q_validation_snapshot
 #endif
@@ -21,7 +19,7 @@ contains
     character(*),intent(in) :: label
     integer,intent(in) :: stage
 #ifdef ASTR_BUILD_TESTING
-    if(.not.high_order_wall_enabled.and.convection_form/='keep') return
+    if(lcomb) return
     if(.not.rhs_validation_requested()) return
     call copy_flow_from_gpu()
     call write_q_validation_snapshot(label,nstep,stage)
@@ -30,6 +28,7 @@ contains
 
   subroutine prepare_profile_nscbc_gpu(stage)
     use commvar, only: im,jm,km,hm,const2,const6,lfilter,nstep
+    use bc, only: nscbc_farfield_nonreflecting_enabled,nscbc_farfield_grcbc_enabled
     use parallel, only: lio
     use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d
@@ -49,8 +48,10 @@ contains
     type(dim3) :: block,grid
     real(real_kind) :: mach2
     integer :: ntot
-    logical :: repaired,rebuild_rhs
+    logical :: repaired,rebuild_rhs,refresh_top_before_rhs
     rebuild_rhs=.false.
+    refresh_top_before_rhs=.not.lfilter.and..not.nscbc_farfield_nonreflecting_enabled().and. &
+      .not.nscbc_farfield_grcbc_enabled()
     block=dim3(32,4,4)
     grid=dim3((im+32)/32,(jm+4)/4,(km+4)/4)
     if(lfilter) then
@@ -104,8 +105,9 @@ contains
     rebuild_rhs=rebuild_rhs.or.repaired
     call q_to_primitive_kernel<<<grid,block>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
     call sync_after_kernel('compact_nscbc_farfield_primitives')
+    if(refresh_top_before_rhs) call exchange_solution_halo_gpu()
     call apply_nscbc_farfield_y_upper_rhs_gpu(mach2)
-    call exchange_solution_halo_gpu()
+    if(.not.refresh_top_before_rhs) call exchange_solution_halo_gpu()
     call repair_mp_stage_inputs_gpu(stage,'profile final halo',repaired)
     rebuild_rhs=rebuild_rhs.or.repaired
     if(rebuild_rhs) then
@@ -153,7 +155,8 @@ contains
     use compact_operator_gpu, only: compact_global_enabled,compact_filter_state_gpu
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb,nstep, &
       numq,num_species,conschm,difschm
-    use bc, only: bctype,explicit_profile_nscbc_corrections_enabled,low_order_incident_enabled
+    use bc, only: bctype,explicit_profile_nscbc_corrections_enabled,low_order_incident_enabled, &
+      profile_nonreflecting_corner_enabled
     use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported,gpu_s2_sbli_nscbc_supported
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_solver_gpu, only: air5_prepare_spatial_state_gpu
@@ -167,7 +170,7 @@ contains
          gpu_ldc_boundary_case_pending,gpu_s1_flatplate_boundary_case_pending, &
          gpu_s1_flatplate_nscbc_farfield_filter_case, &
          apply_nscbc_farfield_y_upper_filter_x_gpu, &
-         apply_nscbc_farfield_y_upper_filter_z_gpu
+         apply_nscbc_farfield_y_upper_filter_z_gpu,apply_nscbc_outflow_physical_filter_gpu
     use solver_gpu, only: q_to_primitive_kernel,apply_explicit_filter_gpu
     use conservative_boundary_runtime, only: conservative_boundary
     implicit none
@@ -272,6 +275,12 @@ contains
       call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
            q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
       call sync_after_kernel('prepare_nscbc_farfield_q_to_primitive_kernel_postfilter')
+      call exchange_solution_halo_gpu()
+    endif
+    ! Statistics and RK stage1 consume the same outlet-filtered state.
+    if(profile_nonreflecting_corner_enabled()) then
+      call apply_nscbc_outflow_physical_filter_gpu()
+      call repair_mp_stage_inputs_gpu(1,'prepare profile outflow filter')
       call exchange_solution_halo_gpu()
     endif
     if((convection_form=='keep'.or.viscous_form=='me6_opti').and.gpu_uses_x_nscbc()) &
@@ -858,7 +867,7 @@ contains
       endif
 
       if(conservative_case) call repair_mp_stage_inputs_gpu(rkstep,'physical boundary')
-      if(rhs_validation_requested().and..not.(keep_open_case.or.new_x_nscbc_case)) then
+      if(rhs_validation_requested().and..not.(keep_open_case.or.new_x_nscbc_case.or.flatplate_nscbc_farfield_case)) then
         call copy_flow_from_gpu()
         call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
 #ifdef ASTR_BUILD_TESTING
@@ -867,10 +876,7 @@ contains
           call write_h1_outlet_filter_validation_gpu(rkstep)
         end block
 #endif
-        if(conservative_case.or.compact_global_enabled().or.flowtype=='tgv'.or.flowtype=='bl'.or. &
-          convection_form=='keep'.or.viscous_form=='me6_opti') then
-          call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
-        endif
+        call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
         if(gradient_validation_requested()) call write_gradient_validation_gpu(nstep,rkstep)
       endif
 
@@ -889,7 +895,8 @@ contains
         call repair_mp_stage_inputs_gpu(rkstep,'NSCBC inlet/lower wall')
         call exchange_solution_halo_gpu()
       endif
-      if(profile_nscbc_case.and..not.staged_profile_nscbc_case) then
+      if(profile_nscbc_case.and..not.staged_profile_nscbc_case.and. &
+         .not.(prepared.and.rkstep==1.and.keep_open_case.and.flatplate_nscbc_nonreflecting_case)) then
         call apply_nscbc_outflow_physical_filter_gpu()
         call repair_mp_stage_inputs_gpu(rkstep,'outflow filter')
         call exchange_solution_halo_gpu()
@@ -909,11 +916,9 @@ contains
         call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('nscbc_farfield_q_to_primitive_kernel_postfilter')
+        call exchange_solution_halo_gpu()
         if(repaired_boundary.or.repaired_filter) call gpu_nscbc_farfield_y_upper_mach2(gmachmax2_out)
         call apply_nscbc_farfield_y_upper_rhs_gpu(gmachmax2_out)
-        ! Match CPU farfield_nscbc: the second transverse filter contributes
-        ! to the boundary RHS before qswap refreshes its halo values.
-        call exchange_solution_halo_gpu()
       endif
       if(rhs_validation_requested().and.flatplate_nscbc_farfield_case.and..not.keep_open_case) then
         call copy_rhs_from_gpu()
@@ -946,12 +951,14 @@ contains
         endif
         call apply_nscbc_x_rhs_gpu(gmachmax2_in,gmachmax2_out)
       endif
-      if(rhs_validation_requested().and.(keep_open_case.or.new_x_nscbc_case)) then
+      if(rhs_validation_requested().and.(keep_open_case.or.new_x_nscbc_case.or.flatplate_nscbc_farfield_case)) then
         call copy_flow_from_gpu()
         call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
         call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
-        call copy_rhs_from_gpu()
-        call write_rhs_validation_snapshot('boundary',nstep,rkstep)
+        if(.not.flatplate_nscbc_farfield_case) then
+          call copy_rhs_from_gpu()
+          call write_rhs_validation_snapshot('boundary',nstep,rkstep)
+        endif
         if(gradient_validation_requested()) call write_gradient_validation_gpu(nstep,rkstep)
       endif
 #ifdef ASTR_BUILD_TESTING
@@ -1578,6 +1585,10 @@ contains
       endif
 #endif
       call apply_nscbc_incident_complete_rhs_gpu()
+      if(rhs_validation_requested().and..not.lcomb) then
+        call copy_rhs_from_gpu()
+        call write_rhs_validation_snapshot('post_source',nstep,rkstep)
+      endif
       if(mp_positivity_enabled) &
         call limit_mp_update_gpu(deltat,rk_a(rkstep),rk_b(rkstep),rk_c(rkstep),rkstep)
       if(rhs_validation_requested()) then

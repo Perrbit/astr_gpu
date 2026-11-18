@@ -1,0 +1,49 @@
+! Call the existing CUDA Fortran device functions without changing their arithmetic.
+module mp_positivity_reference_kernels
+  use cudafor
+  use astr_precision, only: real_kind
+contains
+  attributes(global) subroutine evaluate(n,base,correction,valid,theta,limited_valid)
+    use mp_positivity_gpu, only: admissible_mp_state,mp_face_budget
+    integer,value :: n
+    real(real_kind),device :: base(5,n),correction(5,n),theta(n)
+    integer,device :: valid(n),limited_valid(n)
+    real(real_kind) :: trial(5)
+    integer :: i
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(i>n) return
+    valid(i)=merge(1,0,admissible_mp_state(base(:,i)))
+    theta(i)=mp_face_budget(base(:,i),correction(:,i))
+    trial=base(:,i)+theta(i)*correction(:,i)
+    limited_valid(i)=merge(1,0,admissible_mp_state(trial))
+  end subroutine
+end module
+
+program mp_positivity_reference_probe
+  use cudafor
+  use astr_precision, only: real_kind,real_bytes
+  use mp_positivity_reference_kernels, only: evaluate
+  implicit none
+  integer :: unit,n,width,status
+  real(real_kind),allocatable :: base(:,:),correction(:,:),theta(:)
+  integer,allocatable :: valid(:),limited_valid(:)
+  real(real_kind),allocatable,device :: base_d(:,:),correction_d(:,:),theta_d(:)
+  integer,allocatable,device :: valid_d(:),limited_valid_d(:)
+  character(1024) :: input,output
+  call get_command_argument(1,input);call get_command_argument(2,output)
+  open(newunit=unit,file=trim(input),status='old',access='stream',form='unformatted')
+  read(unit) n,width
+  if(width/=real_bytes.or.n<1) error stop 'MP original precision/input'
+  allocate(base(5,n),correction(5,n),theta(n),valid(n),limited_valid(n))
+  read(unit) base,correction;close(unit)
+  allocate(base_d,mold=base);allocate(correction_d,mold=correction)
+  allocate(theta_d(n),valid_d(n),limited_valid_d(n))
+  status=cudaSetDevice(0);if(status/=cudaSuccess) error stop 'MP original device'
+  base_d=base;correction_d=correction
+  call evaluate<<<(n+127)/128,128>>>(n,base_d,correction_d,valid_d,theta_d,limited_valid_d)
+  status=cudaDeviceSynchronize();if(status/=cudaSuccess) error stop 'MP original kernel'
+  valid=valid_d;theta=theta_d;limited_valid=limited_valid_d
+  open(newunit=unit,file=trim(output),status='new',access='stream',form='unformatted')
+  write(unit) n,width,valid,theta,limited_valid;close(unit)
+  print *, 'ORIGINAL_MP_BUDGET_VALUES ',n,minval(theta),maxval(theta)
+end program

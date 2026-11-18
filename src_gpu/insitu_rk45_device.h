@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 // Native-kind device adaptation of VTK 9.6.2 Common/Math/vtkRungeKutta45.cxx.
 // The evaluator supplies the normalized tangent for length-unit integration.
+// ASTR allows growth after an accepted minimum step; zero error suggests the upper bound.
 #ifndef ASTR_INSITU_RK45_DEVICE_H
 #define ASTR_INSITU_RK45_DEVICE_H
 
@@ -121,10 +122,10 @@ ASTR_RK45_EXEC int rk45_step(const Evaluator& evaluate, const IntegrationReal* p
   while (error > tolerance) {
     int status = cash_karp_step(evaluate, previous, next, parameter, step, actual, error);
     if (status != StepOk) return status;
-    if (std::abs(step) == minimum) break;
+    if (std::abs(step) == minimum && error > tolerance) break;
     const IntegrationReal ratio = error / tolerance;
     IntegrationReal candidate;
-    if (ratio == 0) candidate = step < 0 ? -minimum : minimum;
+    if (ratio == 0) candidate = std::copysign(maximum,step);
     else candidate = IntegrationReal(.9) * step * std::pow(ratio,
       ratio > 1 ? IntegrationReal(-.25) : IntegrationReal(-.2));
     if (!std::isfinite(candidate)) return Nonfinite;

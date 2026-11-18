@@ -76,6 +76,7 @@ end module nscbc_incident_probe_launch
 
 program nscbc_incident_probe
   use astr_precision, only: real_kind
+  use iso_fortran_env, only: int32
   use nscbc_incident
 #ifdef TEST_CUDA
   use nscbc_incident_probe_launch, only: evaluate_incident,evaluate_normal
@@ -93,6 +94,10 @@ program nscbc_incident_probe
   logical :: masks(5,9)
   integer,parameter :: incoming_counts(9)=[1,4,0,5,1,0,4,1,1]
   integer :: statuses(10),icase,m,status,l
+  real(real_kind) :: frozen_states(5,3,9),frozen_velocity(3,3,9),frozen_pressure(3,9), &
+    frozen_jacobian(3,9),frozen_metric(3,3,9),rest_jacobian(3,9),rest_metric(3,3,9)
+  character(1024) :: packet_path
+  integer :: packet_unit
 #ifdef TEST_CUDA
   real(real_kind),device :: face_d(5,9),external_d(5,9),pnor_d(5,5,9),pinv_d(5,5,9),metric_d(3), &
                            base_d(5),ref_rate_d(5),post_d(5),selected_d(5,3), &
@@ -197,6 +202,8 @@ program nscbc_incident_probe
       metric_line(:,l)=metric
     enddo
     j_line=2.e0_real_kind
+    frozen_states(:,:,icase)=states; frozen_velocity(:,:,icase)=vel_line
+    frozen_pressure(:,icase)=p_line; frozen_jacobian(:,icase)=j_line; frozen_metric(:,:,icase)=metric_line
     call incident_normal_characteristics(states,vel_line,p_line,j_line,metric_line,pinv(:,:,icase), &
                                          normals(:,icase),status)
     expected=0.e0_real_kind
@@ -227,6 +234,7 @@ program nscbc_incident_probe
     enddo
     call incident_normal_characteristics(states,vel_line,p_line,j_line,metric_line,pinv(:,:,icase), &
                                          free_result(:,icase),status)
+    rest_jacobian(:,icase)=j_line; rest_metric(:,:,icase)=metric_line
     if(status/=0.or.maxval(abs(free_result(:,icase)))>tol) error stop 'normal metric-rest did not preserve free stream'
   enddo
   call grcbc_incoming_rate(face(:,2),face(:,2),gamma,metric,0.125e0_real_kind,pinv(:,:,2), &
@@ -275,6 +283,18 @@ program nscbc_incident_probe
   if(error>tol) error stop 'normal/source CPU/GPU component mismatch'
   print '(a,es24.16)','NSCBC_INCIDENT_SOURCE_CPU_GPU_MAX_ABS ',error
 #endif
+  if(command_argument_count()==1) then
+    call get_command_argument(1,packet_path)
+    open(newunit=packet_unit,file=trim(packet_path),access='stream',form='unformatted',status='new')
+    write(packet_unit) [1_int32,int(storage_size(gamma)/8,int32),9_int32]
+    write(packet_unit) gamma,0.125e0_real_kind,2.e0_real_kind
+    write(packet_unit) face,external,pnor,pinv,metric,base,ref_rate
+    write(packet_unit) frozen_states,frozen_velocity,frozen_pressure,frozen_jacobian,frozen_metric
+    write(packet_unit) rest_jacobian,rest_metric
+    write(packet_unit) rates,lambdas,rhs,normals,compatible,free_result
+    write(packet_unit) int(merge(1,0,masks),int32)
+    close(packet_unit)
+  endif
   print '(a)','NSCBC_INCIDENT_PROBE_PASS'
 contains
   subroutine y_euler_basis(vel,right,left)

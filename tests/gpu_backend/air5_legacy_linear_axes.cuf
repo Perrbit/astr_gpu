@@ -1,0 +1,99 @@
+module commarray_gpu
+  use astr_precision, only: real_kind
+  implicit none
+  real(real_kind), allocatable, device :: q_d(:,:,:,:), qwork_d(:,:,:,:), filter_work_d(:,:,:)
+end module
+
+module frozen_axes
+  use cudafor
+  use astr_precision, only: real_kind
+  use constdef
+  use boundary_high_order_gpu, only: high_order_wall_enabled_d,high_order_adiabatic_wall_enabled_d, &
+    high_order_wall_axis_d,boundary_wall_filter6
+  implicit none
+contains
+#include "frozen_linear.inc"
+#include "frozen_axes.inc"
+end module
+
+program probe
+  use frozen_axes
+  use commarray_gpu, only: q_d,qwork_d,filter_work_d
+  implicit none
+  integer, parameter :: im=12,jm=11,km=10,hm=5,nc=11
+  integer :: src,out,axis,mode,sides,c,ierr
+  character(4096) :: path
+  real(real_kind) :: a(-hm:im+hm,-hm:jm+hm,-hm:km+hm,nc), b(0:im,0:jm,0:km,nc)
+  type(dim3) :: gx,gy,gz,bx,by,bz
+
+  call get_command_argument(1,path)
+  open(newunit=src,file=trim(path),access='stream',form='unformatted',status='old')
+  read(src) a
+  close(src)
+  call get_command_argument(2,path)
+  open(newunit=out,file=trim(path),access='stream',form='unformatted',status='new')
+  allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,nc))
+  allocate(qwork_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,nc))
+  allocate(filter_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+  bx=dim3(512,1,1); gx=dim3(((im+1)*(jm+1)*(km+1)+511)/512,1,1)
+  by=dim3(32,16,1); gy=dim3(1,1,km+1)
+  bz=dim3(64,1,8); gz=dim3(1,jm+1,1)
+  do mode=0,1
+    do axis=1,3
+      do sides=0,5
+        high_order_wall_enabled_d=sides>=4
+        high_order_adiabatic_wall_enabled_d=sides==5
+        high_order_wall_axis_d=axis
+        if(mode==0) then
+          q_d=a; qwork_d=a
+          select case(axis)
+          case(1)
+            call filter_x_global_kernel<<<gx,bx>>>(im,jm,km,npdc(sides),nc,.true.)
+          case(2)
+            call filter_y_pong_to_q_halo_global_kernel<<<gy,by>>>(im,jm,km,npdc(sides),nc,.true.)
+          case(3)
+            call filter_z_halo_global_kernel<<<gz,bz>>>(im,jm,km,npdc(sides),nc,.true.)
+          end select
+          call check()
+          if(axis==2) then
+            b=q_d(0:im,0:jm,0:km,:)
+          else
+            b=qwork_d(0:im,0:jm,0:km,:)
+          endif
+        else
+          q_d=a
+          do c=1,nc
+            filter_work_d=a(:,:,:,c)
+            select case(axis)
+            case(1)
+              call filter_x_scalar_global_kernel<<<gx,bx>>>(im,jm,km,npdc(sides),c,.true.)
+            case(2)
+              call filter_y_scalar_to_q_halo_global_kernel<<<gy,by>>>(im,jm,km,npdc(sides),c,.true.)
+            case(3)
+              call filter_z_scalar_global_kernel<<<gz,bz>>>(im,jm,km,npdc(sides),c,.true.)
+            end select
+            call check()
+            if(axis==2) then
+              b(:,:,:,c)=q_d(0:im,0:jm,0:km,c)
+            else
+              b(:,:,:,c)=filter_work_d(0:im,0:jm,0:km)
+            endif
+          enddo
+        endif
+        write(out) b
+      enddo
+    enddo
+  enddo
+  close(out)
+  deallocate(q_d,qwork_d,filter_work_d)
+contains
+  integer function npdc(sides)
+    integer, intent(in) :: sides
+    integer, parameter :: codes(0:5)=[0,1,2,4,4,4]
+    npdc=codes(sides)
+  end function
+  subroutine check()
+    ierr=cudadevicesynchronize()
+    if(ierr/=cudaSuccess) error stop 'legacy axis launch failed'
+  end subroutine
+end program

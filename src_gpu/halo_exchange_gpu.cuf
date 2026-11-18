@@ -1575,7 +1575,11 @@ contains
     endif
 
     if(isize==1 .and. jsize==1 .and. ksize==1 .and. &
-       lihomo .and. ljhomo .and. lkhomo) then
+       lihomo .and. ljhomo .and. lkhomo &
+#ifdef ASTR_AIR5_CHEMISTRY
+       .and. .not.air5_compensated &
+#endif
+       ) then
       call qswap_local_x_gpu()
       call qswap_local_y_gpu()
       call qswap_local_z_gpu()

@@ -1140,7 +1140,8 @@ contains
       error='lambda2/lambda_ci use the instantaneous complete physical velocity gradient';return
     endif
     if(any(entry%fields>=31.and.entry%fields<=34).and.entry%source/='instantaneous'.and.entry%view%kind/='wall_profile'.and. &
-      .not.catalog_wall_mean(entry)) then
+      .not.catalog_wall_mean(entry).and..not.(entry%view%kind=='wall_curve'.and. &
+      entry%source=='reynolds'.and.entry%statistics_source=='wall-time')) then
       error='wall transport means require accumulating instantaneous wall quantities, not gradients of primitive means';return
     endif
     if(.not.read_visual_extraction(root,entry,error)) return

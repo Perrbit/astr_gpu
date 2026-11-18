@@ -26,11 +26,24 @@ export LD_LIBRARY_PATH="$gcc/lib64:$mpi/lib:$hdf5/lib:$LD_LIBRARY_PATH"
   -DCMAKE_Fortran_COMPILER="$mpi/bin/mpifort" \
   -DCMAKE_C_COMPILER="$gcc/bin/gcc" -DCMAKE_CXX_COMPILER="$gcc/bin/g++" \
   -DMPI_C_COMPILER="$mpi/bin/mpicc" \
+  -DMPIEXEC_EXECUTABLE="$mpi/bin/mpiexec" \
   -DCMAKE_CUDA_FLAGS="--offload-arch=$target" \
   -DHDF5_Fortran_COMPILER_EXECUTABLE="$hdf5_compiler" \
   -DASTR_BUILD_GPU_BACKEND_PROBES=ON -DASTR_WITH_CUDA=OFF \
   -DASTR_GPU_CPP_BACKEND=gpufusion \
   -DASTR_WITH_CATALYST=OFF -DASTR_WITH_AIR5_CHEMISTRY=OFF -DBUILD_TESTING=ON
 "$cmake" --build "$work/build" --target astr astr_backend_mb0 astr_backend_mb1 astr_backend_fluid astr_backend_rhs \
-  astr_backend_halo astr_backend_compare --parallel 4 --verbose
+  astr_backend_halo astr_backend_compare astr_backend_compact_line astr_backend_compact_distributed \
+  astr_backend_exterior_initialization astr_backend_shock_sensor astr_backend_shock_mask_halo \
+  astr_backend_upwind astr_backend_profile_boundary astr_backend_nscbc_outlet astr_backend_nscbc_inlet \
+  astr_backend_nscbc_filter astr_backend_nscbc_top_filter astr_backend_nscbc_top astr_backend_nscbc_top_viscous \
+  astr_backend_flat_statistics astr_backend_slip_wall astr_backend_rti astr_backend_adaptive_energy \
+  astr_backend_native_curve_gradient \
+  astr_backend_crashfix astr_backend_mp_positivity_math astr_backend_mp_positivity_stage \
+  astr_backend_critical_flux astr_backend_critical_history astr_backend_critical_shared_flux \
+  astr_backend_mixed_viscous astr_backend_mixed_derivative astr_backend_production_statistics \
+  astr_backend_keep_host_guard astr_backend_keep astr_backend_me6 astr_backend_wall41 \
+  astr_backend_boundary_gradient astr_backend_wall41_step astr_backend_channel astr_backend_boundary_filter \
+  astr_backend_boundary_flux astr_backend_insitu_sampling astr_backend_insitu_index \
+  astr_backend_insitu_vectors astr_backend_insitu_moments astr_backend_insitu_selected --parallel 4 --verbose
 ldd "$work/build/bin/astr_backend_mb0"

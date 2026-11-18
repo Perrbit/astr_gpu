@@ -420,6 +420,7 @@ module geom
     call dataswap(jacob,timerept=ltimrpt)
     !
     call datasync(jacob(0:im,0:jm,0:km),timerept=ltimrpt)
+    call dataswap(jacob,timerept=ltimrpt)
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! End of Calculating 
@@ -717,6 +718,7 @@ module geom
       call datasync(dxi(0:im,0:jm,0:km,i,j))
     enddo
     enddo
+    call dataswap(dxi,timerept=ltimrpt)
     !
     call geombc
     !
