@@ -721,6 +721,9 @@ contains
         call check(.false.,'invalid AIR5 conservation diagnostic option')
       end select
       call check(.not.conservation_statistics.or.use_gpu,'AIR5 conservation diagnostic is GPU-only')
+#ifdef ASTR_GPU_CPP
+      if(use_gpu)call check(.not.conservation_statistics,'AIR5 C++ conservation diagnostic is not yet connected')
+#endif
     endif
     call configure_adaptive(options%adaptive,0_int64,0.e0_real_kind,ok)
     call check(ok,'invalid adaptive monitor configuration')
@@ -768,6 +771,12 @@ contains
 #endif
     endif
     if(.not.candidate%statistics%enabled) return
+#if defined(ASTR_GPU_CPP) && defined(ASTR_AIR5_CHEMISTRY)
+    if(use_gpu.and.lcomb)then
+      ok=.false.;message='C++ AIR5 main-loop mean statistics are not yet connected'
+      return
+    endif
+#endif
     requested_mean=.not.use_gpu.or.air5_output_case()
     if(statistics_active.and.requested_mean) then
       ok=.false.;message='formal and CPU legacy statistics need separate transactions'
@@ -852,6 +861,10 @@ contains
     contract=0
     ! Separate revisions for post-shared geometry/top halos and critical history.
     if(.not.lcomb.and.numq==5) contract(7)=ibset(ibset(contract(7),3),4)
+#if defined(ASTR_GPU_CPP) && defined(ASTR_AIR5_CHEMISTRY)
+    ! The complete AIR5 file layout is shared, but exact trajectories are backend-local.
+    if(use_gpu.and.air5_output_case()) contract(7)=ibset(contract(7),6)
+#endif
     contract(1:6)=[int(feqchkpt,int64),int(feqwsequ,int64),int(feqslice,int64), &
       int(feqlist,int64),int(feqavg,int64),int(merge(1,0,use_gpu),int64)]
     contract(8)=merge(1_int64,0_int64,statistics_active)+merge(2_int64,0_int64,compact_statistics)+ &

@@ -28,6 +28,9 @@ module fluid_runtime
   use crashfix_runtime_cpp, only: repair_crashfix_cpp,repair_reconciled_cpp
   use keep_sbp63_runtime, only: keep_sbp63_enabled,keep_sbp63_wall_temperature
   use me6_flow_cpp, only: prepare_me6_cpp,me6_diffusion_cpp,report_me6_cpp
+#ifdef ASTR_AIR5_CHEMISTRY
+  use chemistry_runtime_cpp, only: initialize_air5_cpp,advance_air5_cpp,check_air5_cpp_state,transfer_air5_aux_cpp
+#endif
   implicit none
   private
   public :: cpp_after_flowinit,cpp_before_finalize,cpp_time_integration,cpp_check_state
@@ -153,12 +156,19 @@ contains
     use case_model_options, only: get_case_option
     use conservative_boundary_runtime, only: conservative_boundary
     use benchmark_runtime, only: benchmark_gpu_rk_timing_enabled
-    integer :: node,local_rank,local_size,ierr,choice,low,high,env_status,filter_components,workspace_choice
+    integer :: local_rank,ierr,choice,low,high,env_status,filter_components,workspace_choice
     integer(c_size_t) :: sigma_bytes,heat_bytes
-    integer(c_int) :: visible,transport_mode
+    integer(c_int) :: transport_mode
     logical :: nodal_fluxes,characteristic_periodic,characteristic_plate,characteristic_xphysical,derivative_periodic,derivative_plate
     type(device_view) :: filter_view
     character(32) :: sync,value,precision,candidate
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb)then
+      call create_solver_context(transport_mode,local_rank,sync)
+      call initialize_air5_cpp(context,transport_mode)
+      return
+    endif
+#endif
     call require((trim(flowtype)=='tgv'.or.trim(flowtype)=='hit'.or.trim(flowtype)=='2dvort'.or. &
       trim(flowtype)=='sod'.or.trim(flowtype)=='channel'.or.trim(flowtype)=='bl'.or. &
       trim(flowtype)=='openshock'.or.trim(flowtype)=='shuosher'.or.trim(flowtype)=='rti'.or.trim(flowtype)=='ldcavity').and.ndims==3.and.nondimen.and. &
@@ -312,44 +322,7 @@ contains
       call require(low==high,'filter storage differs across ranks')
       if(lio) write(*,'(2a)') 'ASTR_GPU_CPP filter_workspace=',trim(value)
     endif
-    value=''
-    call get_environment_variable('ASTR_GPU_HALO_TRANSPORT',value,status=env_status)
-    if(env_status==1) value='pinned'
-    call require((env_status==0.or.env_status==1).and.(value=='pinned'.or.value=='device'), &
-      'ASTR_GPU_HALO_TRANSPORT must be pinned or device; device requires GPU-aware MPI')
-    transport_mode=merge(halo_device,halo_pinned,value=='device')
-    call MPI_Allreduce(transport_mode,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
-    call check(ierr,'transport minimum')
-    call MPI_Allreduce(transport_mode,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
-    call check(ierr,'transport maximum')
-    call require(low==high,'transport mode differs across ranks')
-    if(lio) write(*,'(3a)') 'ASTR_GPU_CPP transport=',trim(value), &
-      '; shared reconciliation then halo-only refresh'
-    call MPI_Comm_split_type(MPI_COMM_WORLD,MPI_COMM_TYPE_SHARED,0,MPI_INFO_NULL,node,ierr)
-    call check(ierr,'node communicator')
-    call MPI_Comm_rank(node,local_rank,ierr)
-    call check(ierr,'local rank')
-    call MPI_Comm_size(node,local_size,ierr)
-    call check(ierr,'local size')
-    call check(device_count(visible),'visible devices')
-    call require(local_size<=visible,'one visible device per local rank is required')
-    call check(device_bind(int(local_rank,c_int)),'bind device')
-    call MPI_Comm_free(node,ierr)
-    call check(ierr,'release node communicator')
-    sync=''
-    call get_environment_variable('ASTR_GPU_SYNC_MODE',sync,status=env_status)
-    if(env_status==1) sync='dependency'
-    choice=-1
-    if(sync=='dependency') choice=0
-    if(sync=='explicit') choice=1
-    call require((env_status==0.or.env_status==1).and.choice>=0,'ASTR_GPU_SYNC_MODE must be dependency or explicit')
-    call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
-    call check(ierr,'sync configuration minimum')
-    call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
-    call check(ierr,'sync configuration maximum')
-    call require(low==high,'sync mode differs across ranks')
-    call check(device_state_create(int(local_rank,c_int),int(im,c_int),int(jm,c_int),int(km,c_int), &
-      int(hm,c_int),int(choice,c_int),context),'create state')
+    call create_solver_context(transport_mode,local_rank,sync)
     ! TGV scalar enstrophy/dissipation consume gradients even for inviscid runs.
     call check(fluid_prepare(context,1_c_int),'prepare primitive and gradient fields')
     if(mixed_derivative) then
@@ -447,6 +420,52 @@ contains
     write(*,'(a,i0,3(a,3(i0,1x)),a,i0,3(a,3(i0,1x)))') 'ASTR_GPU_CPP_LAYOUT rank=',mpirank, &
       ' global=',ia,ja,ka,' origin=',ig0,jg0,kg0,' upper=',im,jm,km,' halo=',hm, &
       ' topology=',isize,jsize,ksize,' lower=',mpileft,mpidown,mpiback,' higher=',mpiright,mpiup,mpifront
+  end subroutine
+  subroutine create_solver_context(transport_mode,local_rank,sync)
+    integer(c_int),intent(out) :: transport_mode
+    integer,intent(out) :: local_rank
+    character(*),intent(out) :: sync
+    integer :: node,local_size,ierr,choice,low,high,env_status
+    integer(c_int) :: visible
+    character(32) :: value
+    value=''
+    call get_environment_variable('ASTR_GPU_HALO_TRANSPORT',value,status=env_status)
+    if(env_status==1) value='pinned'
+    call require((env_status==0.or.env_status==1).and.(value=='pinned'.or.value=='device'), &
+      'ASTR_GPU_HALO_TRANSPORT must be pinned or device; device requires GPU-aware MPI')
+    transport_mode=merge(halo_device,halo_pinned,value=='device')
+    call MPI_Allreduce(transport_mode,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call check(ierr,'transport minimum')
+    call MPI_Allreduce(transport_mode,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call check(ierr,'transport maximum')
+    call require(low==high,'transport mode differs across ranks')
+    if(lio) write(*,'(3a)') 'ASTR_GPU_CPP transport=',trim(value), &
+      '; shared reconciliation then halo-only refresh'
+    call MPI_Comm_split_type(MPI_COMM_WORLD,MPI_COMM_TYPE_SHARED,0,MPI_INFO_NULL,node,ierr)
+    call check(ierr,'node communicator')
+    call MPI_Comm_rank(node,local_rank,ierr)
+    call check(ierr,'local rank')
+    call MPI_Comm_size(node,local_size,ierr)
+    call check(ierr,'local size')
+    call check(device_count(visible),'visible devices')
+    call require(local_size<=visible,'one visible device per local rank is required')
+    call check(device_bind(int(local_rank,c_int)),'bind device')
+    call MPI_Comm_free(node,ierr)
+    call check(ierr,'release node communicator')
+    sync=''
+    call get_environment_variable('ASTR_GPU_SYNC_MODE',sync,status=env_status)
+    if(env_status==1) sync='dependency'
+    choice=-1
+    if(sync=='dependency') choice=0
+    if(sync=='explicit') choice=1
+    call require((env_status==0.or.env_status==1).and.choice>=0,'ASTR_GPU_SYNC_MODE must be dependency or explicit')
+    call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call check(ierr,'sync configuration minimum')
+    call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call check(ierr,'sync configuration maximum')
+    call require(low==high,'sync mode differs across ranks')
+    call check(device_state_create(int(local_rank,c_int),int(im,c_int),int(jm,c_int),int(km,c_int), &
+      int(hm,c_int),int(choice,c_int),context),'create state')
   end subroutine
   subroutine prepare_top_boundary_cpp()
     use bc, only: bctype,configure_nscbc_farfield,nscbc_farfield_policy,nscbc_farfield_target_state, &
@@ -624,6 +643,12 @@ contains
     write(*,'(a,1x,a,3(1x,i0))') 'ASTR_CPP_DEVICE_MEMORY',trim(phase),mpirank,free_bytes,total_bytes
   end subroutine
   subroutine cpp_check_state()
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb)then
+      call check_air5_cpp_state(context)
+      return
+    endif
+#endif
     if(lcracon) then
       call prepare_crashfix_state()
       call check(repair_input_selected(context),'initial crashfix input')
@@ -718,10 +743,21 @@ contains
     call require(c_associated(context),'missing device state for checkpoint publication')
     ! Preserve stored primitive caches, including their complete-step halo phase.
     call check(device_state_download(context,device_q,q,bytes(size(q,kind=c_size_t))),'checkpoint q download')
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb)then
+      ! Both AIR5 restart modes retain the full thermochemical state.
+      call cpp_export_host_primitives(downloaded)
+      call transfer_air5_aux_cpp(context,.true.)
+      return
+    endif
+#endif
     if(include_caches) call cpp_export_host_primitives(downloaded)
     if(crashfix_ready) call transfer_crashfix_history(.true.)
   end subroutine
   subroutine cpp_export_host_primitives(downloaded)
+#ifdef ASTR_AIR5_CHEMISTRY
+    use commarray, only: tve,spc
+#endif
     integer(int64),intent(out) :: downloaded
     downloaded=0
     call require(c_associated(context),'missing device state for field publication')
@@ -732,9 +768,19 @@ contains
     call check(device_state_download(context,device_temperature,tmp,bytes(size(tmp,kind=c_size_t))),'checkpoint temperature download')
     downloaded=int(bytes(size(rho,kind=c_size_t))+bytes(size(vel,kind=c_size_t))+ &
       bytes(size(prs,kind=c_size_t))+bytes(size(tmp,kind=c_size_t)),int64)
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb)then
+      call check(device_state_download(context,device_air5_tv,tve,bytes(size(tve,kind=c_size_t))),'AIR5 Tv download')
+      call check(device_state_download(context,device_air5_species,spc,bytes(size(spc,kind=c_size_t))),'AIR5 species download')
+      downloaded=downloaded+int(bytes(size(tve,kind=c_size_t))+bytes(size(spc,kind=c_size_t)),int64)
+    endif
+#endif
     host_primitives_current=.true.
   end subroutine
   subroutine cpp_import_host_state()
+#ifdef ASTR_AIR5_CHEMISTRY
+    use commarray, only: tve,spc
+#endif
     integer :: local_history,global_history,ierr
     call require(c_associated(context),'missing device state for checkpoint restoration')
     call require(all(ieee_is_finite(q(0:im,0:jm,0:km,:))).and. &
@@ -750,6 +796,18 @@ contains
     call check(device_state_upload(context,device_temperature,tmp,bytes(size(tmp,kind=c_size_t))),'checkpoint temperature upload')
     call check(device_state_upload(context,device_metric,dxi,bytes(size(dxi,kind=c_size_t))),'checkpoint metric upload')
     call check(device_state_upload(context,device_jacobian,jacob,bytes(size(jacob,kind=c_size_t))),'checkpoint Jacobian upload')
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb)then
+      call require(all(ieee_is_finite(tve(0:im,0:jm,0:km))).and.all(tve(0:im,0:jm,0:km)>0).and. &
+        all(ieee_is_finite(spc(0:im,0:jm,0:km,:))).and.all(spc(0:im,0:jm,0:km,:)>=0), &
+        'AIR5 checkpoint physical Tv/composition')
+      call check(device_state_upload(context,device_air5_tv,tve,bytes(size(tve,kind=c_size_t))),'checkpoint Tv upload')
+      call check(device_state_upload(context,device_air5_species,spc,bytes(size(spc,kind=c_size_t))),'checkpoint species upload')
+      call transfer_air5_aux_cpp(context,.false.)
+      host_primitives_current=.true.
+      return
+    endif
+#endif
     call upload_slip_mask_cpp()
     call upload_profile_target_cpp()
     if(trim(flowtype)=='bl') call upload_flat_geometry_cpp()
@@ -792,6 +850,13 @@ contains
     logical :: timing
     real(clock_kind) :: started,prepared,statistics_begin,statistics_seconds,elapsed
     real(c_double) :: halo_times(6)
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb)then
+      host_primitives_current=.false.
+      call advance_air5_cpp(context)
+      return
+    endif
+#endif
     timing=benchmark_gpu_rk_timing_enabled()
     statistics_seconds=0.e0_real_kind
     prepared=0.e0_real_kind

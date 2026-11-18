@@ -85,7 +85,7 @@ Selection selection(const IndexPlan &p)
     return s;
 }
 struct Sources {
-    AstrDeviceView density,velocity,pressure,temperature,moments,selected_indices,q;
+    AstrDeviceView density,velocity,pressure,temperature,tv,species,moments,selected_indices,q;
     int source,owned[3],selected_fields[5],selected_count;
     Real const2,const6;
 };
@@ -95,6 +95,7 @@ Sources sources(const IndexPlan &p)
     Sources out{};
     out.density=s.fields[ASTR_DEVICE_RHO].view;out.velocity=s.fields[ASTR_DEVICE_VELOCITY].view;
     out.pressure=s.fields[ASTR_DEVICE_PRESSURE].view;out.temperature=s.fields[ASTR_DEVICE_TEMPERATURE].view;
+    out.tv=s.fields[ASTR_DEVICE_AIR5_TV].view;out.species=s.fields[ASTR_DEVICE_AIR5_SPECIES].view;
     out.moments=p.moments;out.selected_indices=p.selected_indices;out.q=s.fields[ASTR_DEVICE_Q].view;out.source=p.source;
     for(int a=0;a<3;++a) out.owned[a]=p.owned[a];
     for(int a=0;a<5;++a) out.selected_fields[a]=p.selected_fields[a];
@@ -140,6 +141,8 @@ __device__ Real source_value(const Sources &s,int i,int j,int k,int field)
     if(field==1) return at(s.density,i,j,k);
     if(field>=2 && field<=4) return at(s.velocity,i,j,k,field-1);
     if(field==5) return at(s.pressure,i,j,k);
+    if(field==7) return at(s.tv,i,j,k);
+    if(field>=8 && field<=12) return at(s.species,i,j,k,field-7);
     return at(s.temperature,i,j,k);
 }
 __global__ void gather(Sources src,Selection s,const int *indices,const int *positions,int count,Real *result)
@@ -245,7 +248,7 @@ __global__ void evaluate(Sources src,AstrDeviceView metric,AstrDeviceView geomet
         if(wall_mean) {
             for(int c=0;c<s.raw_count;++c) if(s.raw[c]==f) value=neighborhood[center+static_cast<size_t>(s.nodes)*c];
         }
-        else if(f<=6) {
+        else if(f<=12) {
             if(src.source==0) value=source_value(src,local[0],local[1],local[2],f);
             else for(int c=0;c<s.raw_count;++c) if(s.raw[c]==f)
                 value=neighborhood[center+static_cast<size_t>(s.nodes)*c];
@@ -289,8 +292,11 @@ extern "C" int astr_insitu_index_begin(void *parent,int nodes,int output_nodes,i
         return ASTR_DEVICE_INVALID_ARGUMENT;
     State &s=*static_cast<State *>(parent);
     if(!s.fluid_ready || astr::transport_in_flight(s.transport)) return ASTR_DEVICE_INVALID_ARGUMENT;
-    for(int i=0;i<raw_count;++i) if(raw[i]<1 || (raw[i]>6 && (raw[i]<31 || raw[i]>34))) return ASTR_DEVICE_INVALID_ARGUMENT;
-    for(int i=0;i<field_count;++i) if(fields[i]<1 || fields[i]>36 || (fields[i]>=7 && fields[i]<=12)) return ASTR_DEVICE_INVALID_ARGUMENT;
+    const int primitives=s.air5_ready ? 12 : 6;
+    for(int i=0;i<raw_count;++i) if(raw[i]<1 || (raw[i]>primitives && (raw[i]<31 || raw[i]>34)))
+        return ASTR_DEVICE_INVALID_ARGUMENT;
+    for(int i=0;i<field_count;++i) if(fields[i]<1 || fields[i]>36 || (fields[i]>primitives && fields[i]<=12))
+        return ASTR_DEVICE_INVALID_ARGUMENT;
     if(!s.index) {s.index=new(std::nothrow) IndexPlan{};if(!s.index) return static_cast<int>(cudaErrorMemoryAllocation);s.index->parent=&s;}
     IndexPlan &p=*s.index;int status=end_group(p);if(status!=0) return status;
     p.d2h=0;p.h2d=0;p.sent=0;p.nodes=nodes>0 ? nodes : 1;p.outputs=output_nodes>0 ? output_nodes : 1;
