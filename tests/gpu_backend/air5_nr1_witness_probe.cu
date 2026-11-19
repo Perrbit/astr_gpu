@@ -1,18 +1,20 @@
 #include <cuda_runtime.h>
 #include "chemistry_flux_math.cuh"
+#include "air5_nr1_budget_math.cuh"
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 // Fixture order: frozen face input (80), beta, projection input (22), witness (5).
-__global__ void verify(const double *data,double *results,int count)
+__global__ void verify(const double *data,double *results,int count,bool construct)
 {
     const int id=blockIdx.x*blockDim.x+threadIdx.x;
     if(id>=count)return;
     using namespace astr::air5;
     const double *h=data+108*id,*l=h+11,*base_l=h+22,*base_r=h+33,*ql=h+44,*qr=h+55;
     const double cdt=h[66],beta=h[80],*x=h+81,*flux=h+103;
-    double *out=results+5*id;
+    double *out=results+10*id;
     out[4]=0.;
     double trial[11],gas[5],lower[5],upper[5],c[5],f[5],g[5],ev[5],energy[5],delta[5],left[11],right[11];
     double sf=fabs(x[15]),sw=0.;
@@ -30,11 +32,16 @@ __global__ void verify(const double *data,double *results,int count)
         if(h[5+s]==0. && l[5+s]==0. && base_l[5+s]==0. && base_r[5+s]==0. && ql[5+s]==0. && qr[5+s]==0.)
             lower[s]=upper[s]=0.;
         if(trial[5+s]!=x[s] || lower[s]!=x[5+s] || upper[s]!=x[10+s] || gas[s]!=x[16+s])return;
-        if(!astr::air5::finite(flux[s]) || flux[s]<lower[s] || flux[s]>upper[s])return;
         sf=fmax(sf,fmax(fabs(x[s]),fmax(fabs(lower[s]),fabs(upper[s]))));
         sw=fmax(sw,fabs(gas[s]));
     }
     if(trial[0]!=x[15] || dot5(gas,trial+5)!=x[21])return;
+    if(construct) {
+        const int status=nr1_budget::project(x,lower,upper,x[15],gas,x[21],out+5);
+        if(status!=ok) {out[4]=-status;return;}
+        flux=out+5;
+    }
+    for(int s=0;s<5;++s)if(!astr::air5::finite(flux[s]) || flux[s]<lower[s] || flux[s]>upper[s])return;
     const double mass=x[15]/sf,moment=(x[21]/sw)/sf,k=64.*DBL_EPSILON;
     double mass_abs=0.,moment_abs=0.;
     for(int s=0;s<5;++s) {
@@ -69,7 +76,8 @@ void check(cudaError_t error)
 
 int main(int argc,char **argv)
 {
-    if(argc!=2)return 2;
+    const bool construct=argc==3 && std::strcmp(argv[2],"--construct")==0;
+    if(argc!=2 && !construct)return 2;
     FILE *file=std::fopen(argv[1],"rb");if(!file)return 2;
     std::vector<double> input;
     double row[108];
@@ -77,17 +85,24 @@ int main(int argc,char **argv)
     while((n=std::fread(row,sizeof(double),108,file))==108)input.insert(input.end(),row,row+108);
     if(n!=0 || std::ferror(file) || std::fclose(file)!=0 || input.empty())return 2;
     const int count=input.size()/108;
-    std::vector<double> results(5*count);
+    std::vector<double> results(10*count);
     double *di,*dr;
     check(cudaMalloc(&di,input.size()*8));check(cudaMalloc(&dr,results.size()*8));
     check(cudaMemcpy(di,input.data(),input.size()*8,cudaMemcpyHostToDevice));
-    verify<<<(count+31)/32,32>>>(di,dr,count);
+    verify<<<(count+31)/32,32>>>(di,dr,count,construct);
     check(cudaGetLastError());check(cudaDeviceSynchronize());
     check(cudaMemcpy(results.data(),dr,results.size()*8,cudaMemcpyDeviceToHost));
     check(cudaFree(dr));check(cudaFree(di));
+    int status=0;
     for(int j=0;j<count;++j) {
-        const double *r=results.data()+5*j;
-        if(r[4]!=1. || !(r[0]<=1. && r[1]<=1.)) {std::fprintf(stderr,"witness rejected: row %d\n",j);return 1;}
+        const double *r=results.data()+10*j;
+        if(r[4]<0.) {std::fprintf(stderr,"candidate construction failed: row %d status=%d\n",j,int(-r[4]));return 1;}
+        if(r[4]!=1.) {std::fprintf(stderr,"invalid fixture/candidate: row %d\n",j);return 1;}
         std::printf("AIR5_WITNESS %.17g %.17g %d %d\n",r[0],r[1],int(r[2]),int(r[3]));
+        if(construct)std::printf("AIR5_CONSTRUCTED %.17g %.17g %.17g %.17g %.17g\n",r[5],r[6],r[7],r[8],r[9]);
+        if(!(r[0]<=1. && r[1]<=1.)) {
+            std::fprintf(stderr,"witness rejected: row %d\n",j);status=1;
+        }
     }
+    return status;
 }

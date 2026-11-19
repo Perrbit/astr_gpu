@@ -49,6 +49,7 @@ module chemistry_flow_solver
   public :: air5_chemistry_half_step
   public :: air5_characteristic_top_rhs
   public :: air5_filter_conservative,configure_air5_filter_exchange,exchange_air5_filter_strips
+  public :: air5_filter_configuration
   public :: exchange_air5_filter_faces,check_air5_filter_status
   public :: filter_send,filter_receive,filter_comm,filter_local,filter_global,filter_offset,filter_periodic
   public :: filter_lower,filter_upper,filter_area,filter_width,filter_plane
@@ -120,32 +121,26 @@ contains
     call MPI_Abort(MPI_COMM_WORLD,global_status,abort_error)
   end subroutine
 
-  subroutine configure_air5_filter_exchange()
+  subroutine air5_filter_configuration(global_cells,offset,tr,v)
     use mpi
     use ieee_arithmetic, only: ieee_is_finite
-    use commvar, only: im,jm,km,ia,ja,ka,hm,ndims,lihomo,ljhomo,lkhomo,conschm,difschm
+    use commvar, only: im,jm,km,ia,ja,ka,hm,ndims,conschm,difschm
     use commarray, only: x
-    use parallel, only: ig0,jg0,kg0,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpirank
+    use parallel, only: ig0,jg0,kg0
+    integer,intent(out) :: global_cells(3),offset(3)
+    real(real64),intent(out) :: tr(5),v(5)
     integer :: ierr,status,i,j,k,d,a(3),n
+    integer :: local(3)
     real(real64) :: step(3),lowest(3),highest(3),expected,scale
-    if(filter_comm/=-1) return
-    filter_local=[im,jm,km]; filter_global=[ia,ja,ka]; filter_offset=[ig0,jg0,kg0]
-    filter_periodic=[lihomo,ljhomo,lkhomo]
-    filter_lower=[mpileft,mpidown,mpiback]; filter_upper=[mpiright,mpiup,mpifront]
-    do d=1,3
-      if(.not.filter_periodic(d)) cycle
-      if(filter_lower(d)==MPI_PROC_NULL) filter_lower(d)=mpirank
-      if(filter_upper(d)==MPI_PROC_NULL) filter_upper(d)=mpirank
-    enddo
-    filter_plane(:,1)=[jm,km]; filter_plane(:,2)=[im,km]; filter_plane(:,3)=[im,jm]
+    local=[im,jm,km]; global_cells=[ia,ja,ka]; offset=[ig0,jg0,kg0]
     status=0
-    if(ndims/=3.or.hm<5.or.minval(filter_local)<hm.or.minval(filter_global)<7.or. &
+    if(ndims/=3.or.hm<5.or.minval(local)<hm.or.minval(global_cells)<7.or. &
       trim(conschm)/='643e'.or.trim(difschm)/='643e') status=1
     call check_air5_filter_status(status,'grid/stencil contract')
     ! The face proof currently covers separable uniform Cartesian geometry only.
     do d=1,3
-      a=0; a(d)=filter_local(d)
-      step(d)=(x(a(1),a(2),a(3),d)-x(0,0,0,d))/filter_local(d)
+      a=0; a(d)=local(d)
+      step(d)=(x(a(1),a(2),a(3),d)-x(0,0,0,d))/local(d)
       if(.not.ieee_is_finite(step(d)).or.step(d)<=0.0_real64) status=1
       do k=0,km
         do j=0,jm
@@ -165,16 +160,34 @@ contains
     if(ierr/=MPI_SUCCESS) status=1
     if(any(highest-lowest>128.0_real64*epsilon(1.0_real64)*highest)) status=1
     call check_air5_filter_status(status,'uniform Cartesian geometry')
+    do d=1,5
+      tr(d)=air5_formation_energy(d)+air5_temperature_min_k*air5_species_cv_tr(d)
+      v(d)=air5_species_vibrational_energy(d,air5_temperature_min_k)
+    enddo
+  end subroutine air5_filter_configuration
+
+  subroutine configure_air5_filter_exchange()
+    use mpi
+    use commvar, only: im,jm,km,hm,lihomo,ljhomo,lkhomo
+    use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpirank
+    integer :: ierr,d
+    if(filter_comm/=-1) return
+    call air5_filter_configuration(filter_global,filter_offset,filter_tr_floor,filter_v_floor)
+    filter_local=[im,jm,km]
+    filter_periodic=[lihomo,ljhomo,lkhomo]
+    filter_lower=[mpileft,mpidown,mpiback]; filter_upper=[mpiright,mpiup,mpifront]
+    do d=1,3
+      if(.not.filter_periodic(d)) cycle
+      if(filter_lower(d)==MPI_PROC_NULL) filter_lower(d)=mpirank
+      if(filter_upper(d)==MPI_PROC_NULL) filter_upper(d)=mpirank
+    enddo
+    filter_plane(:,1)=[jm,km]; filter_plane(:,2)=[im,km]; filter_plane(:,3)=[im,jm]
     call MPI_Comm_dup(MPI_COMM_WORLD,filter_comm,ierr)
     call check_air5_filter_status(merge(0,1,ierr==MPI_SUCCESS),'communicator')
     filter_width=hm+1
     filter_area=maxval((filter_plane(1,:)+1)*(filter_plane(2,:)+1))
     allocate(filter_send(22,0:hm,0:filter_area-1,2),filter_receive(22,0:hm,0:filter_area-1,2))
     filter_send=0.0_real64; filter_receive=0.0_real64
-    do d=1,5
-      filter_tr_floor(d)=air5_formation_energy(d)+air5_temperature_min_k*air5_species_cv_tr(d)
-      filter_v_floor(d)=air5_species_vibrational_energy(d,air5_temperature_min_k)
-    enddo
   end subroutine
 
   subroutine exchange_air5_filter_strips(axis)

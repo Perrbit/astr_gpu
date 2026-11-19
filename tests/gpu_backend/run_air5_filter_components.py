@@ -219,7 +219,8 @@ def main():
         if compensated:
             x[43:54][(abs(left)+abs(lc))==0]=0.;x[54:65][(abs(right)+abs(rc))==0]=0.
         x[65]=compensated;x[255]=6;thermal.append(x);thermal_labels.append(labels[index])
-        y=np.zeros(256);y[:11]=x[:11];y[11:22]=x[43:54];y[22:33]=x[22:33];y[33]=compensated;y[255]=2;pairs.append(y)
+        y=np.zeros(256);y[:11]=x[:11];y[11:22]=x[43:54];y[22:33]=x[22:33]
+        y[33]=compensated;y[34:44]=x[33:43];y[255]=2;pairs.append(y)
     stage("pairs",np.array(pairs),thermal_labels)
     limited=stage("thermal",np.array(thermal),thermal_labels)
     assert np.all(limited["cpu"][0]==0),"original thermal endpoint failed"

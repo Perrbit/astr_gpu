@@ -16,6 +16,7 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/"tests/gpu_validation"))
 from test_air5_filter_multidim_probe import fixture3
 from test_air5_filter_flux_probe import fixture as fixture1
+from test_air5_filter_predicate_probe import exact_margins
 
 BASE=["src/chemistry_air5_data.F90","src/chemistry_core.F90","src/chemistry_properties.F90"]
 MATH=["src/chemistry_filter_math.F90","src/chemistry_filter_operator.F90"]
@@ -93,6 +94,15 @@ def gather(prefix,topology,global_,periodic):
         if p:assert np.array_equal(np.take(out,0,axis=3-axis).view('u8'),np.take(out,-1,axis=3-axis).view('u8')),"periodic alias words differ"
     return out
 
+def energy_margins(value,tr,v):
+    high,carry=value.reshape(2,-1,11)
+    minimum=[math.inf,math.inf]
+    for h,c in zip(high,carry):
+        margins=exact_margins(np.r_[h,tr,v],c)
+        assert min(margins)>=0.,margins
+        minimum=[min(old,float(margin)) for old,margin in zip(minimum,margins)]
+    return dict(vibration=minimum[0],translation=minimum[1])
+
 def conservation(before,after,periodic):
     shape=before.shape[1:4];weight=np.ones(shape)
     for a,p in enumerate(periodic):
@@ -148,6 +158,7 @@ def main():
             if name=="carry-only":
                 tiny=512*np.finfo(float).eps*np.max(abs(carry));assert max(difference.values())<=tiny,(label,difference,tiny)
             entry["runs"][label]=dict(difference=difference,conservation=conservation(initial,value,periodic),command=list(map(str,cmd)))
+            if name=="vibration":entry["runs"][label]["represented_energy_margins"]=energy_margins(value,tr,v)
         report["cases"][name]=entry;(out/"report.json").write_text(json.dumps(report,indent=2)+"\n");print(name,len(entry["runs"]),"field runs passed",flush=True)
     if args.memcheck:
         work=out/"trace-step";prefix=work/"memcheck"

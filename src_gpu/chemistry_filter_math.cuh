@@ -85,34 +85,46 @@ __device__ inline bool lower_energy_admissible(const double state[11],const doub
     if(!vibration_ok)return false;
     return fabs(margin)>up(sign_gamma*tr_scale)?margin>0:thermal_sign(state,tr_floor,0.);
 }
-__device__ inline bool pressure_admissible(const double state[11])
+__device__ inline bool thermal_margin_admissible(const double state[11],const double floor[5],double offset)
 {
-    const double floor=pressure_floor();double residual=(state[4]-state[10])-floor,scale=fabs(state[4])+fabs(state[10])+floor;
-    for(int s=0;s<5;++s) {const double term=state[5+s]*data::formation_energy[s];residual-=term;scale+=fabs(term);}
+    double residual=(state[4]-state[10])-offset,scale=fabs(state[4])+fabs(state[10])+offset;
+    for(int s=0;s<5;++s) {const double term=state[5+s]*floor[s];residual-=term;scale+=fabs(term);}
     const double kinetic=((state[1]*state[1]+state[2]*state[2])+state[3]*state[3])/(2.*state[0]);
     residual-=kinetic;scale+=fabs(kinetic);
-    return fabs(residual)>up(sign_gamma*scale)?residual>0:thermal_sign(state,data::formation_energy,floor);
+    return fabs(residual)>up(sign_gamma*scale)?residual>0:thermal_sign(state,floor,offset);
+}
+__device__ inline bool pressure_admissible(const double state[11])
+{
+    return thermal_margin_admissible(state,data::formation_energy,pressure_floor());
 }
 __device__ inline void state_magnitude(const double high[11],const double carry[11],double magnitude[11])
 {
     for(int s=0;s<11;++s) {magnitude[s]=fabs(high[s])+fabs(carry[s]);if(magnitude[s]>0)magnitude[s]=up(magnitude[s]);}
 }
-__device__ inline bool pressure_pair_safe(const double state[11],const double magnitude[11],const double flux[11],bool use_carry)
+__device__ __forceinline__ bool pair_box_safe(const double state[11],const double magnitude[11],const double flux[11],bool use_carry,
+    const double tr_floor[5],const double v_floor[5])
 {
     const double commit=up((use_carry?13.:2.)*unit_roundoff/(1.-(use_carry?13.:2.)*unit_roundoff));
     const double pair=use_carry?up(3.*unit_roundoff/(1.-3.*unit_roundoff)):unit_roundoff;
-    const double coefficient=up(commit+pair);double worst[11];
+    const double coefficient=up(commit+pair);double worst[11],center[11],radius[11];
     for(int s=0;s<11;++s) {
-        const double center=state[s]+2.*flux[s];worst[s]=center;
-        double scale=magnitude[s]+2.*fabs(flux[s]),radius=0;
-        if(scale>0) {scale=up(scale);radius=up(coefficient*scale);}
-        if(radius==0)continue;
-        if(s==0 || s==4)worst[s]=down(center-radius);
-        else if(s<4)worst[s]=up(fabs(center)+radius);
-        else if(s<10)worst[s]=data::formation_energy[s-5]>=0?up(center+radius):down(center-radius);
-        else worst[s]=up(center+radius);
+        center[s]=state[s]+2.*flux[s];worst[s]=center[s];
+        const double scale=magnitude[s]+2.*fabs(flux[s]);
+        radius[s]=scale>0?up(coefficient*up(scale)):0.;
+        if(radius[s]==0)continue;
+        if(s==0 || s==4)worst[s]=down(center[s]-radius[s]);
+        else if(s<4)worst[s]=up(fabs(center[s])+radius[s]);
+        else if(s<10)worst[s]=data::formation_energy[s-5]>=0?up(center[s]+radius[s]):down(center[s]-radius[s]);
+        else worst[s]=up(center[s]+radius[s]);
     }
-    return worst[0]>0 && pressure_admissible(worst);
+    if(worst[0]<=0 || !pressure_admissible(worst))return false;
+    // Pressure and the two temperature floors have different minimizing corners.
+    for(int s=5;s<10;++s)if(radius[s]>0)
+        worst[s]=tr_floor[s-5]>=0?up(center[s]+radius[s]):down(center[s]-radius[s]);
+    if(!thermal_margin_admissible(worst,tr_floor,0.))return false;
+    if(radius[10]>0)worst[10]=down(center[10]-radius[10]);
+    for(int s=5;s<10;++s)if(radius[s]>0)worst[s]=up(center[s]+radius[s]);
+    return vibration_sign(worst,v_floor);
 }
 __device__ inline bool represented_pressure_sign(const double high[11],const double carry[11])
 {
@@ -158,22 +170,22 @@ __device__ inline void face_bounds(const double left[11],const double right[11],
     }
     mass=feasible_mass(high+5,lower,upper,high[0]);
 }
-__device__ inline bool pair_admissible(const double left[11],const double right[11],const double flux[11],
+__device__ __forceinline__ bool pair_admissible(const double left[11],const double right[11],const double flux[11],
     const double tr_floor[5],const double v_floor[5],const double lm[11],const double rm[11],bool use_carry)
 {
     double a[11],b[11],negative[11];
     for(int s=0;s<11;++s) {negative[s]=-flux[s];a[s]=left[s]+2.*flux[s];b[s]=right[s]-2.*flux[s];}
     return lower_admissible(a,tr_floor,v_floor) && lower_admissible(b,tr_floor,v_floor) &&
-        pressure_pair_safe(left,lm,flux,use_carry) && pressure_pair_safe(right,rm,negative,use_carry);
+        pair_box_safe(left,lm,flux,use_carry,tr_floor,v_floor) && pair_box_safe(right,rm,negative,use_carry,tr_floor,v_floor);
 }
-__device__ inline int thermal_limit(const double left[11],const double right[11],const double candidate[11],
+__device__ __forceinline__ int thermal_limit(const double left[11],const double right[11],const double candidate[11],
     const double tr_floor[5],const double v_floor[5],const double lm[11],const double rm[11],bool use_carry,
     double flux[11],double &ratio)
 {
     for(int s=0;s<11;++s)flux[s]=candidate[s];ratio=1.;
     if(!lower_admissible(left,tr_floor,v_floor) || !lower_admissible(right,tr_floor,v_floor))return invalid_composition;
     const double zero[11]={};
-    if(!pressure_pair_safe(left,lm,zero,use_carry) || !pressure_pair_safe(right,rm,zero,use_carry)) {
+    if(!pair_box_safe(left,lm,zero,use_carry,tr_floor,v_floor) || !pair_box_safe(right,rm,zero,use_carry,tr_floor,v_floor)) {
         for(int s=0;s<11;++s)flux[s]=0.;ratio=0.;return ok;
     }
     if(pair_admissible(left,right,flux,tr_floor,v_floor,lm,rm,use_carry))return ok;

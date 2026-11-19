@@ -50,6 +50,19 @@ contains
 #ifdef _CUDA
   attributes(host,device) &
 #endif
+  pure subroutine acoustic_amplitudes(difference,dpdq,v,sound,a2,amplitude)
+    real(real64),intent(in) :: difference(11),dpdq(11),v,sound,a2
+    real(real64),intent(out) :: amplitude(2)
+    real(real64) :: dp,dm
+
+    dp=sum(dpdq*difference)
+    dm=sound*(difference(3)-v*difference(1))
+    amplitude=[dp-dm,dp+dm]/(2.0_real64*a2)
+  end subroutine acoustic_amplitudes
+
+#ifdef _CUDA
+  attributes(host,device) &
+#endif
   pure subroutine air5_top_transport_rhs(q,target,pressure,sound,dpdq,normal_flux_gradient, &
       remaining_transport,relaxation_rate,rhs,valid,reference_sound)
     real(real64),intent(in) :: q(11),target(11),pressure,sound,dpdq(11)
@@ -57,8 +70,8 @@ contains
     real(real64),intent(in) :: reference_sound
     real(real64),intent(out) :: rhs(11)
     logical,intent(out) :: valid
-    real(real64) :: velocity(3),waves(11,2),difference(11),incoming(11),acoustic(11,2)
-    real(real64) :: dp,dmn,a2,convective_rate,convective_difference(11)
+    real(real64) :: velocity(3),waves(11,2),difference(11),amplitude(2),a2,convective_rate
+    logical :: convective_in,acoustic_in(2)
     integer :: mode,sign
 
     ! Caller supplies validated AIR5 thermodynamics at q. Upper-y Cartesian only.
@@ -87,24 +100,38 @@ contains
       waves(6:11,mode)=q(6:11)/q(1)
     enddo
 
-    ! P_in acts on the correction, leaving outgoing normal amplitudes untouched.
-    difference=normal_flux_gradient-relaxation_rate*(q-target)
-    dp=sum(dpdq*difference)
-    dmn=difference(3)-velocity(2)*difference(1)
-    acoustic(:,1)=waves(:,1)*(dp-sound*dmn)/(2.0_real64*a2)
-    acoustic(:,2)=waves(:,2)*(dp+sound*dmn)/(2.0_real64*a2)
-    incoming=0.0_real64
-    if(velocity(2)<0.0_real64) then
-      ! Only target relaxation uses the inflow transit rate; acoustic policy is unchanged.
-      convective_difference=normal_flux_gradient-convective_rate*(q-target)
-      dp=sum(dpdq*convective_difference)
-      dmn=convective_difference(3)-velocity(2)*convective_difference(1)
-      incoming=convective_difference-waves(:,1)*(dp-sound*dmn)/(2.0_real64*a2)- &
-        waves(:,2)*(dp+sound*dmn)/(2.0_real64*a2)
+    ! Assemble the outgoing normal contribution without subtracting the full incoming normal state.
+    convective_in=velocity(2)<0.0_real64
+    acoustic_in=[velocity(2)-sound<0.0_real64,velocity(2)+sound<0.0_real64]
+    if(convective_in) then
+      rhs=remaining_transport
+      if(.not.all(acoustic_in)) then
+        call acoustic_amplitudes(normal_flux_gradient,dpdq,velocity(2),sound,a2,amplitude)
+        do mode=1,2
+          if(.not.acoustic_in(mode)) rhs=rhs-waves(:,mode)*amplitude(mode)
+        enddo
+      endif
+    else
+      rhs=remaining_transport-normal_flux_gradient
+      if(any(acoustic_in)) then
+        call acoustic_amplitudes(normal_flux_gradient,dpdq,velocity(2),sound,a2,amplitude)
+        do mode=1,2
+          if(acoustic_in(mode)) rhs=rhs+waves(:,mode)*amplitude(mode)
+        enddo
+      endif
     endif
-    if(velocity(2)-sound<0.0_real64) incoming=incoming+acoustic(:,1)
-    if(velocity(2)+sound<0.0_real64) incoming=incoming+acoustic(:,2)
-    rhs=-normal_flux_gradient+incoming+remaining_transport
+    if(convective_in.and.convective_rate/=0.0_real64) then
+      difference=-convective_rate*(q-target)
+      call acoustic_amplitudes(difference,dpdq,velocity(2),sound,a2,amplitude)
+      rhs=rhs+(difference-waves(:,1)*amplitude(1)-waves(:,2)*amplitude(2))
+    endif
+    if(relaxation_rate/=0.0_real64.and.any(acoustic_in)) then
+      difference=-relaxation_rate*(q-target)
+      call acoustic_amplitudes(difference,dpdq,velocity(2),sound,a2,amplitude)
+      do mode=1,2
+        if(acoustic_in(mode)) rhs=rhs+waves(:,mode)*amplitude(mode)
+      enddo
+    endif
     valid=all(abs(rhs)<=huge(1.0_real64))
   end subroutine air5_top_transport_rhs
 end module chemistry_characteristic

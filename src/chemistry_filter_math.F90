@@ -4,7 +4,7 @@ module chemistry_filter_math
   implicit none
   private
   public :: filter_lower_energy_admissible,filter_pressure_admissible,filter_feasible_mass,filter_pressure_energy_floor
-  public :: filter_pressure_pair_safe,filter_pressure_represented_admissible,filter_state_magnitude
+  public :: filter_pair_box_safe,filter_pressure_represented_admissible,filter_state_magnitude
   real(real64), parameter :: filter_pressure_energy_floor=maxval(air5_cv_tr_factor)*air5_pressure_min_pa
   integer, parameter :: expansion_size=32
   real(real64), parameter :: splitter=134217729.0_real64
@@ -193,21 +193,29 @@ contains
 #endif
   logical function filter_pressure_admissible(state)
     real(real64), intent(in) :: state(11)
+    filter_pressure_admissible=thermal_margin_admissible(state,air5_formation_energy,filter_pressure_energy_floor)
+  end function
+
+#ifdef _CUDA
+  attributes(host,device) &
+#endif
+  logical function thermal_margin_admissible(state,floor,offset)
+    real(real64), intent(in) :: state(11),floor(5),offset
     real(real64) :: residual,scale,term,kinetic,bound
     integer :: s
-    residual=(state(5)-state(11))-filter_pressure_energy_floor
-    scale=abs(state(5))+abs(state(11))+filter_pressure_energy_floor
+    residual=(state(5)-state(11))-offset
+    scale=abs(state(5))+abs(state(11))+offset
     do s=1,5
-      term=state(s+5)*air5_formation_energy(s)
+      term=state(s+5)*floor(s)
       residual=residual-term; scale=scale+abs(term)
     enddo
     kinetic=((state(2)*state(2)+state(3)*state(3))+state(4)*state(4))/(2.0_real64*state(1))
     residual=residual-kinetic; scale=scale+abs(kinetic)
     bound=nearest(sign_gamma*scale,1.0_real64)
     if(abs(residual)>bound) then
-      filter_pressure_admissible=residual>0.0_real64
+      thermal_margin_admissible=residual>0.0_real64
     else
-      filter_pressure_admissible=thermal_sign(state,air5_formation_energy,filter_pressure_energy_floor)
+      thermal_margin_admissible=thermal_sign(state,floor,offset)
     endif
   end function
 
@@ -227,8 +235,8 @@ contains
 #ifdef _CUDA
   attributes(host,device) &
 #endif
-  logical function filter_pressure_pair_safe(state,magnitude,flux,use_carry)
-    real(real64), intent(in) :: state(11),magnitude(11),flux(11)
+  logical function filter_pair_box_safe(state,magnitude,flux,use_carry,tr_floor,v_floor)
+    real(real64), intent(in) :: state(11),magnitude(11),flux(11),tr_floor(5),v_floor(5)
     logical, intent(in) :: use_carry
     real(real64) :: center(11),worst(11),radius(11),scale,coefficient,commit_gamma,pair_gamma
     integer :: s
@@ -267,9 +275,25 @@ contains
         worst(s)=nearest(center(s)+radius(s),1.0_real64)
       end select
     enddo
-    filter_pressure_pair_safe=.false.
+    filter_pair_box_safe=.false.
     if(worst(1)<=0.0_real64) return
-    filter_pressure_pair_safe=filter_pressure_admissible(worst)
+    if(.not.filter_pressure_admissible(worst)) return
+    ! Pressure and the two temperature floors have different minimizing corners.
+    do s=6,10
+      if(radius(s)==0.0_real64) cycle
+      if(tr_floor(s-5)>=0.0_real64) then
+        worst(s)=nearest(center(s)+radius(s),1.0_real64)
+      else
+        worst(s)=nearest(center(s)-radius(s),-1.0_real64)
+      endif
+    enddo
+    if(.not.thermal_margin_admissible(worst,tr_floor,0.0_real64)) return
+    if(radius(11)>0.0_real64) worst(11)=nearest(center(11)-radius(11),-1.0_real64)
+    do s=6,10
+      if(radius(s)==0.0_real64) cycle
+      worst(s)=nearest(center(s)+radius(s),1.0_real64)
+    enddo
+    filter_pair_box_safe=vibration_sign(worst,v_floor)
   end function
 
 #ifdef _CUDA

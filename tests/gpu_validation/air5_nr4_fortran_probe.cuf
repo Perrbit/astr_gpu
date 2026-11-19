@@ -1,0 +1,154 @@
+module air5_nr4_probe_math
+  use iso_fortran_env, only: real64
+  use chemistry_air5_data, only: air5_ru,air5_molar_mass,air5_cv_tr_factor,air5_formation_energy, &
+    air5_temperature_min_k,air5_temperature_max_k
+  use cudafor
+  implicit none
+contains
+  attributes(host,device) subroutine two_sum(a,b,c)
+    real(real64),intent(in) :: a,b
+    real(real64),intent(out) :: c(2)
+    real(real64) :: v
+    c(1)=a+b
+    v=c(1)-a
+    c(2)=(a-(c(1)-v))+(b-v)
+  end subroutine
+
+  attributes(host,device) subroutine add(a,b)
+    real(real64),intent(inout) :: a(2)
+    real(real64),intent(in) :: b(2)
+    real(real64) :: s(2),c(2)
+    call two_sum(a(1),b(1),s)
+    call two_sum(s(1),s(2)+(a(2)+b(2)),c)
+    a=c
+  end subroutine
+
+  attributes(host,device) subroutine subtract(a,b)
+    real(real64),intent(inout) :: a(2)
+    real(real64),intent(in) :: b(2)
+    real(real64) :: opposite(2)
+    opposite(1)=-b(1);opposite(2)=-b(2)
+    call add(a,opposite)
+  end subroutine
+
+  attributes(host,device) subroutine multiply(a,b)
+    real(real64),intent(inout) :: a(2)
+    real(real64),intent(in) :: b(2)
+    real(real64),parameter :: splitter=134217729.0_real64
+    real(real64) :: p,sa,sb,ah,bh,al,bl,e1,e2,e3,error,c(2)
+    ! Error-free product for the normal, bounded probe operands, with contraction disabled.
+    p=a(1)*b(1)
+    sa=splitter*a(1);sb=splitter*b(1)
+    ah=sa-(sa-a(1));bh=sb-(sb-b(1))
+    al=a(1)-ah;bl=b(1)-bh
+    e1=p-ah*bh;e2=e1-al*bh;e3=e2-ah*bl
+    error=al*bl-e3
+    call two_sum(p,(error+a(1)*b(2))+a(2)*b(1),c)
+    a=c
+  end subroutine
+
+  attributes(host,device) subroutine add_product(sum,a,b)
+    real(real64),intent(inout) :: sum(2)
+    real(real64),intent(in) :: a,b
+    real(real64) :: prod(2)
+    prod=[a,0.0_real64]
+    call multiply(prod,[b,0.0_real64])
+    call add(sum,prod)
+  end subroutine
+
+  attributes(host,device) integer function direction(w) result(s)
+    real(real64),intent(in) :: w(2)
+    real(real64) :: x
+    x=w(1)
+    if(x==0.0_real64)x=w(2)
+    s=0
+    if(x>0.0_real64)s=1
+    if(x<0.0_real64)s=-1
+  end function
+
+  attributes(host,device) subroutine classify(q,value)
+    real(real64),intent(in) :: q(12)
+    integer,intent(out) :: value(4)
+    real(real64) :: cr(2),gr(2),cy(2),gy(2),formation(2),momentum(2),thermal(2),denominator(2),indicator(2),term(2),mix(2)
+    real(real64) :: y(5),g,c,sy,t
+    integer :: s,region,side
+    cr=0.0_real64;gr=0.0_real64;cy=0.0_real64;gy=0.0_real64;formation=0.0_real64;momentum=0.0_real64
+    y=q(6:10)/q(1)
+    if(q(12)==0.0_real64)then
+      sy=0.0_real64
+      do s=2,5
+        sy=sy+y(s)
+      enddo
+      y(1)=1.0_real64-sy
+    endif
+    do s=1,5
+      g=air5_ru/air5_molar_mass(s);c=air5_cv_tr_factor(s)*g
+      call add_product(cr,q(5+s),c);call add_product(gr,q(5+s),g)
+      call add_product(cy,y(s),c);call add_product(gy,y(s),g)
+      call add_product(formation,q(5+s),air5_formation_energy(s))
+    enddo
+    do s=2,4
+      call add_product(momentum,q(s),q(s))
+    enddo
+    thermal=[q(5),0.0_real64];call add(thermal,[-q(11),0.0_real64]);call subtract(thermal,formation)
+    term=[2.0_real64*q(1),0.0_real64];denominator=term
+    call multiply(term,thermal);thermal=term;call subtract(thermal,momentum)
+    call multiply(denominator,cr)
+    region=0
+    term=denominator;call multiply(term,[air5_temperature_min_k,0.0_real64]);call subtract(term,thermal)
+    if(direction(term)>0)region=-1
+    term=denominator;call multiply(term,[air5_temperature_max_k,0.0_real64]);call subtract(term,thermal)
+    if(direction(term)<0)region=1
+    mix=cy;call add(mix,gy)
+    if(region==0)then
+      indicator=[2.0_real64*q(3),0.0_real64];call multiply(indicator,[q(3),0.0_real64])
+      call multiply(indicator,cr);call multiply(indicator,cy)
+      term=gr;call multiply(term,mix);call multiply(term,thermal)
+    else
+      t=merge(air5_temperature_min_k,air5_temperature_max_k,region<0)
+      indicator=[q(3),0.0_real64];call multiply(indicator,[q(3),0.0_real64]);call multiply(indicator,cy)
+      term=[q(1),0.0_real64];call multiply(term,gr);call multiply(term,mix);call multiply(term,[t,0.0_real64])
+    endif
+    call subtract(indicator,term)
+    side=direction(indicator)
+    value=[merge(1,0,q(3)<=0.0_real64.or.side<0),merge(1,0,q(3)<0.0_real64.and.side>0),side,region]
+  end subroutine
+
+  attributes(global) subroutine evaluate(n,q,values)
+    integer,value :: n
+    real(real64),device,intent(in) :: q(12,n)
+    integer,device,intent(out) :: values(4,n)
+    integer :: i
+    i=(blockidx%x-1)*blockdim%x+threadidx%x
+    if(i<=n)call classify(q(:,i),values(:,i))
+  end subroutine
+end module
+
+program air5_nr4_fortran_probe
+  use air5_nr4_probe_math, only: real64,classify,evaluate,cudaSetDevice,cudaDeviceSynchronize
+  implicit none
+  real(real64),allocatable :: q(:,:)
+  real(real64),device,allocatable :: dq(:,:)
+  integer,allocatable :: cpu(:,:),gpu(:,:)
+  integer,device,allocatable :: dg(:,:)
+  integer :: n,i,u
+  character(1024) :: input,output
+  call get_command_argument(1,input)
+  call get_command_argument(2,output)
+  open(newunit=u,file=trim(input),access='stream',form='unformatted',status='old',action='read')
+  read(u)n
+  allocate(q(12,n),dq(12,n),cpu(4,n),gpu(4,n),dg(4,n))
+  read(u)q
+  close(u)
+  do i=1,n
+    call classify(q(:,i),cpu(:,i))
+  enddo
+  if(cudaSetDevice(0)/=0)error stop 'select test CUDA device'
+  dq=q
+  call evaluate<<<(n+127)/128,128>>>(n,dq,dg)
+  if(cudaDeviceSynchronize()/=0)error stop 'evaluate test classification'
+  gpu=dg
+  open(newunit=u,file=trim(output),access='stream',form='unformatted',status='new',action='write')
+  write(u)n,cpu,gpu
+  close(u)
+end program

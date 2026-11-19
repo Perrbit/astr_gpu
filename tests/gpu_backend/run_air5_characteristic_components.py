@@ -1,5 +1,6 @@
 """Original AIR5 Cartesian characteristic operators, with fixed thermodynamic inputs."""
 import argparse
+from fractions import Fraction
 import hashlib
 import json
 import math
@@ -74,6 +75,14 @@ def inputs(reference):
                 labels.append(f'state-{index}-mach-{mach}-rate-{rate}')
                 tags.append('supersonic-out' if mach > 1. else 'general')
                 derivatives.append(differential)
+                if mach < -1. and rate == 0.:
+                    stress = x.copy()
+                    stress[33:44] = np.ldexp(x[33:44], 40)
+                    stress[44:55] = np.arange(1, 12) / 8.
+                    rows.append(stress)
+                    labels.append(f'state-{index}-all-in-cancellation')
+                    tags.append('supersonic-in-zero-rate')
+                    derivatives.append(differential)
         x = rows[-1].copy()
         x[11:22] = x[:11]
         x[33:88] = 0.
@@ -117,6 +126,34 @@ def compare(ref, new, labels):
         assert ratio[i, c] <= 1., (name, labels[i], c, float(ratio[i, c]))
         groups[name] = float(ratio[i, c])
     return dict(statuses_exact=True, maximum_original_budget_ratio=groups)
+
+
+def exact_rhs(row):
+    # Evaluate the original incoming-correction formula without floating-point cancellation.
+    q, target, dpdq, normal, remaining = (list(map(Fraction, row[i:i + 11])) for i in range(0, 55, 11))
+    p, sound, rate, ref_sound = map(Fraction, row[89:93])
+    u, v, w = (m / q[0] for m in q[1:4])
+    classification_v = row[2] / row[0]
+    waves = [[1, u, v + sign * sound, w, (q[4] + p) / q[0] + sign * sound * v]
+             + [z / q[0] for z in q[5:]] for sign in (-1, 1)]
+
+    def project(scale):
+        d = [n - scale * (a - b) for n, a, b in zip(normal, q, target)]
+        dp = sum(a * b for a, b in zip(dpdq, d))
+        dm = sound * (d[2] - v * d[0])
+        modes = [[a * (dp + sign * dm) / (2 * sound**2) for a in wave]
+                 for wave, sign in zip(waves, (-1, 1))]
+        return d, modes
+
+    rhs = [r - n for r, n in zip(remaining, normal)]
+    if classification_v < 0.:
+        d, (left, right) = project(-v * rate / ref_sound)
+        rhs = [r + c - l - h for r, c, l, h in zip(rhs, d, left, right)]
+    _, modes = project(rate)
+    for sign, mode in zip((-1, 1), modes):
+        if classification_v + sign * row[90] < 0.:
+            rhs = [r + a for r, a in zip(rhs, mode)]
+    return np.array(list(map(float, rhs)))
 
 
 def main():
@@ -175,8 +212,19 @@ def main():
     tolerance = 1e-13 * np.maximum(1., np.max(abs(derivative), axis=1))[:, None] + 5e-12 * abs(derivative)
     derivative_ratio = float(np.max(abs(values[:, 33:44] - derivative) / tolerance))
     assert derivative_ratio <= 1., ('complex-step flux differential', derivative_ratio)
-    uniform = supersonic = 0
+    uniform = supersonic = incoming = 0
+    oracle_ratio = 0.
     for i, tag in enumerate(tags):
+        if tag != 'invalid':
+            expected = exact_rhs(rows[i])
+            tolerance = 1e-13 * max(1., np.max(abs(expected))) + 5e-12 * abs(expected)
+            ratio = float(np.max(abs(values[i, 22:33] - expected) / tolerance))
+            assert ratio <= 1., (labels[i], 'exact RHS', ratio)
+            oracle_ratio = max(oracle_ratio, ratio)
+        if tag == 'supersonic-in-zero-rate':
+            for _, observed in products.values():
+                assert np.array_equal(observed[i, 22:33], rows[i, 44:55]), labels[i]
+            incoming += 1
         if tag == 'uniform':
             assert np.all(values[i] == 0.), labels[i]
             uniform += 1
@@ -190,6 +238,7 @@ def main():
     assert 'ERROR SUMMARY: 0 errors' in text and 'LEAK SUMMARY: 0 bytes leaked' in text
     report = dict(source_sha256=hashes, candidate_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
                   inputs=len(rows), comparisons=comparisons, complex_step_flux_budget_ratio=derivative_ratio,
+                  exact_rhs_budget_ratio=oracle_ratio, supersonic_in_exact_remaining=incoming,
                   uniform_exact_zero=uniform, supersonic_out_exact_outgoing=supersonic, memcheck='zero errors/leaks')
     (out / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({k: v for k, v in report.items() if k != 'source_sha256'}, indent=2))

@@ -27,7 +27,8 @@ contains
       out(1)=merge(1.0_real64,0.0_real64,filter_pressure_represented_admissible(x(1:11),x(12:22)))
       call filter_state_magnitude(x(1:11),x(12:22),out(2:12))
     case(2)
-      out(1)=merge(1.0_real64,0.0_real64,filter_pressure_pair_safe(x(1:11),x(12:22),x(23:33),x(34)/=0.0_real64))
+      out(1)=merge(1.0_real64,0.0_real64,filter_pair_box_safe(x(1:11),x(12:22),x(23:33), &
+        x(34)/=0.0_real64,x(35:39),x(40:44)))
     case(3)
       call filter_feasible_mass(x(1:5),x(6:10),x(11:15),x(16),out(1))
     case(4)

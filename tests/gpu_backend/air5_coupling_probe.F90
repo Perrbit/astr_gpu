@@ -9,7 +9,7 @@ program air5_coupling_probe
   type(air5_device_report) :: report
   real(c_double) :: input(18),duration,interval
   real(c_double) :: q(-2:2,-2:2,-2:2,11),carry(0:0,0:0,0:0,11),history(0:0,0:0,0:0)
-  integer(c_int) :: first(3),last(3),chem_status
+  integer(c_int) :: first(3),last(3),chem_status,collect
   integer :: n,mode,segments,unit,step,counts(4),status
   character(len=4096) :: text,input_path,output_path
   call get_command_argument(1,text)
@@ -33,6 +33,15 @@ program air5_coupling_probe
   call get_command_argument(6,text);read(text,*) segments
   options%source_mode=mode;options%compensated=1;options%preserve_all=1
   options%block_size=32;options%specialized_dispatch=0
+  collect=1
+  call get_command_argument(8,text)
+  select case(trim(text))
+  case('','general-counted')
+  case('general-quiet');collect=0
+  case('specialized-counted');options%specialized_dispatch=1
+  case('specialized-quiet');options%specialized_dispatch=1;collect=0
+  case default;error stop 'invalid context probe diagnostic mode'
+  end select
   options%source_only=0
   call get_environment_variable('ASTR_AIR5_SOURCE_EVALUATION',text,status=status)
   if(status==0) then
@@ -58,7 +67,7 @@ program air5_coupling_probe
   interval=duration/segments
   do step=1,segments
     call check(air5_chemistry_begin(handle))
-    call check(air5_chemistry_region(handle,first,last,interval,1))
+    call check(air5_chemistry_region(handle,first,last,interval,collect))
     call check(air5_chemistry_status(handle,chem_status))
     call check(air5_chemistry_report(handle,report))
     if(report%status/=chem_status.or.report%total/=1) error stop 'chemistry scalar/report region accounting'
@@ -70,6 +79,7 @@ program air5_coupling_probe
   if(options%history_enabled/=0) call check(device_state_download(handle,device_air5_history,history,8_c_size_t))
   open(newunit=unit,file=trim(output_path),status='new')
   write(unit,'(A,I0,A,I0)') '# AIR5_CONTEXT_ABI options_bytes=',c_sizeof(options),' report_bytes=',c_sizeof(report)
+  write(unit,'(A,I0,A,I0)') '# AIR5_CONTEXT_PROBE specialized=',options%specialized_dispatch,' collect=',collect
   write(unit,'(6(I0,1X),18(ES25.17,1X))') 1,chem_status,counts,q(0,0,0,:),carry(0,0,0,6:11),history
   close(unit)
   call check(device_state_destroy(handle))

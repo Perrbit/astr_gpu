@@ -56,6 +56,15 @@ Catalyst/ParaView dependencies as detailed in the consumer sections below.
 These build commands do not submit a scheduler task or establish production
 physics/performance acceptance.
 
+The DCU AIR5 short-run qualification in migration progress 10.282 used
+`ASTR_AIR5_CHEMISTRY_DISPATCH=specialized` explicitly for both fresh runs and
+restarts. Keep that setting in the launch environment for the qualified
+configuration. `air5_config.bin` neither stores nor restores this choice;
+omitting it selects `general`, which reproduced a device fault on DCU for
+the frozen cold-air input. A successful exact restore does not select the
+qualified dispatch mode on its own. This note does not change the default
+or extend the qualified numerical and boundary configurations.
+
 ## MB8 AIR5 Boundary Target Components
 
 `astr_backend_air5_boundary_targets` tests resident fixed left/right states,

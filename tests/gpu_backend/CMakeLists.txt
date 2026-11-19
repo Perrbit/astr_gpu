@@ -5,7 +5,7 @@ set_target_properties(astr_backend_air5_primitives_regions PROPERTIES CUDA_STAND
 target_link_libraries(astr_backend_air5_primitives_regions PRIVATE astr_device_state)
 target_compile_options(astr_backend_air5_primitives_regions PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false;${ASTR_AIR5_FP_OPTIONS}>")
 if(NOT ASTR_NUMERICAL_PRECISION STREQUAL "fp32")
-  add_executable(astr_backend_air5_convection_budget EXCLUDE_FROM_ALL air5_convection_budget_probe.F90
+  add_executable(astr_backend_air5_convection_budget EXCLUDE_FROM_ALL air5_convection_budget_probe.F90 air5_convection_budget_mask.cu
     ${CMAKE_SOURCE_DIR}/src/chemistry_air5_data.F90)
   set_target_properties(astr_backend_air5_convection_budget PROPERTIES POSITION_INDEPENDENT_CODE YES CUDA_RESOLVE_DEVICE_SYMBOLS ON
     BUILD_RPATH "${CMAKE_Fortran_IMPLICIT_LINK_DIRECTORIES}" LINKER_LANGUAGE CUDA)
@@ -35,6 +35,15 @@ if(NOT ASTR_NUMERICAL_PRECISION STREQUAL "fp32")
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_mean_runtime_modules")
   target_include_directories(astr_backend_air5_mean_runtime BEFORE PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/air5_mean_runtime_modules" ${HDF5_INCLUDE_DIRS})
   target_link_libraries(astr_backend_air5_mean_runtime PRIVATE astr_device_state astr_backend_precision MPI::MPI_Fortran ${HDF5_Fortran_LIBRARIES})
+  add_executable(astr_backend_air5_restart_geometry EXCLUDE_FROM_ALL
+    "${CMAKE_SOURCE_DIR}/src/checkpoint_state_io.F90" air5_restart_geometry_probe.F90)
+  set_target_properties(astr_backend_air5_restart_geometry PROPERTIES POSITION_INDEPENDENT_CODE YES CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    BUILD_RPATH "${CMAKE_Fortran_IMPLICIT_LINK_DIRECTORIES}" LINKER_LANGUAGE Fortran
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_restart_geometry_modules")
+  target_include_directories(astr_backend_air5_restart_geometry BEFORE PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/air5_restart_geometry_modules" ${HDF5_INCLUDE_DIRS})
+  target_link_libraries(astr_backend_air5_restart_geometry PRIVATE astr_device_state astr_backend_precision
+    MPI::MPI_Fortran ${HDF5_Fortran_LIBRARIES})
   add_executable(astr_backend_air5_mean EXCLUDE_FROM_ALL air5_mean_probe.F90)
   set_target_properties(astr_backend_air5_mean PROPERTIES POSITION_INDEPENDENT_CODE YES CUDA_RESOLVE_DEVICE_SYMBOLS ON
     BUILD_RPATH "${CMAKE_Fortran_IMPLICIT_LINK_DIRECTORIES}" LINKER_LANGUAGE CUDA)
@@ -67,6 +76,20 @@ add_executable(astr_backend_air5_characteristic EXCLUDE_FROM_ALL air5_characteri
 set_target_properties(astr_backend_air5_characteristic PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES)
 target_include_directories(astr_backend_air5_characteristic PRIVATE "${CMAKE_SOURCE_DIR}/src_gpu")
 target_compile_options(astr_backend_air5_characteristic PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false;${ASTR_AIR5_FP_OPTIONS}>")
+add_executable(astr_backend_air5_acoustic_state EXCLUDE_FROM_ALL air5_acoustic_state_probe.cu)
+set_target_properties(astr_backend_air5_acoustic_state PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES)
+target_include_directories(astr_backend_air5_acoustic_state PRIVATE "${CMAKE_SOURCE_DIR}/src_gpu")
+target_compile_options(astr_backend_air5_acoustic_state PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false;${ASTR_AIR5_FP_OPTIONS}>")
+set(nr4_dir "${CMAKE_CURRENT_BINARY_DIR}/nr4_component")
+configure_file("${CMAKE_SOURCE_DIR}/src_gpu/chemistry_characteristic_math.cuh" "${nr4_dir}/original.cuh" COPYONLY)
+file(READ "${nr4_dir}/original.cuh" nr4_source)
+string(REPLACE "double rhs[11],double reference_sound)" "double rhs[11],double reference_sound,const bool *fixed=nullptr)" nr4_source "${nr4_source}")
+string(REPLACE "acoustic_in[2]={u[1]-sound<0.,u[1]+sound<0.}" "acoustic_in[2]={fixed?fixed[0]:u[1]-sound<0.,fixed?fixed[1]:u[1]+sound<0.}" nr4_source "${nr4_source}")
+file(GENERATE OUTPUT "${nr4_dir}/chemistry_characteristic_math.cuh" CONTENT "${nr4_source}")
+add_executable(astr_backend_air5_nr4_rhs EXCLUDE_FROM_ALL air5_nr4_rhs_probe.cu)
+set_target_properties(astr_backend_air5_nr4_rhs PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES)
+target_include_directories(astr_backend_air5_nr4_rhs PRIVATE "${nr4_dir}" "${CMAKE_SOURCE_DIR}/src_gpu")
+target_compile_options(astr_backend_air5_nr4_rhs PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false;${ASTR_AIR5_FP_OPTIONS}>")
 add_executable(astr_backend_air5_boundary_targets EXCLUDE_FROM_ALL air5_boundary_targets_probe.cu)
 set_target_properties(astr_backend_air5_boundary_targets PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES
   CUDA_RESOLVE_DEVICE_SYMBOLS ON LINKER_LANGUAGE CUDA)
@@ -95,6 +118,11 @@ add_executable(astr_backend_air5_filter_math EXCLUDE_FROM_ALL air5_filter_math_p
 set_target_properties(astr_backend_air5_filter_math PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES)
 target_include_directories(astr_backend_air5_filter_math PRIVATE "${CMAKE_SOURCE_DIR}/src_gpu")
 target_compile_options(astr_backend_air5_filter_math PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false;${ASTR_AIR5_FP_OPTIONS}>")
+add_executable(astr_backend_air5_nr2_capacity EXCLUDE_FROM_ALL air5_filter_math_probe.cu)
+set_target_properties(astr_backend_air5_nr2_capacity PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES)
+target_include_directories(astr_backend_air5_nr2_capacity PRIVATE "${CMAKE_SOURCE_DIR}/src_gpu")
+target_compile_definitions(astr_backend_air5_nr2_capacity PRIVATE ASTR_TEST_NR2_CAPACITY)
+target_compile_options(astr_backend_air5_nr2_capacity PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false;${ASTR_AIR5_FP_OPTIONS}>")
 add_executable(astr_backend_air5_flux_exchange EXCLUDE_FROM_ALL air5_flux_exchange_probe.cu)
 set_target_properties(astr_backend_air5_flux_exchange PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES
   CUDA_RESOLVE_DEVICE_SYMBOLS ON LINKER_LANGUAGE CUDA)
@@ -127,6 +155,44 @@ add_executable(astr_backend_air5_nr1_witness EXCLUDE_FROM_ALL air5_nr1_witness_p
 set_target_properties(astr_backend_air5_nr1_witness PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES)
 target_include_directories(astr_backend_air5_nr1_witness PRIVATE "${CMAKE_SOURCE_DIR}/src_gpu")
 target_compile_options(astr_backend_air5_nr1_witness PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false;${ASTR_AIR5_FP_OPTIONS}>")
+
+# Reuse the production face trial arithmetic with test-only projection and selection.
+set(nr1_component_dir "${CMAKE_CURRENT_BINARY_DIR}/nr1_component")
+configure_file("${CMAKE_SOURCE_DIR}/src_gpu/chemistry_flux_math.cuh" "${nr1_component_dir}/original.cuh" COPYONLY)
+file(READ "${nr1_component_dir}/original.cuh" nr1_face_source)
+string(REPLACE "namespace astr { namespace air5 {" "namespace astr { namespace air5 {
+namespace nr1_budget { __device__ inline int project(const double *,const double *,const double *,
+    double,const double *,double,double *); }" nr1_face_source "${nr1_face_source}")
+string(REPLACE "const int projection=close_species_flux_moment(" "const int projection=nr1_budget::project("
+    nr1_face_source "${nr1_face_source}")
+set(nr1_outer_start "    double beta_lo=0,beta_hi=1,beta=1;")
+set(nr1_trial_start "        if(!check_left) {")
+set(nr1_trial_end "        if(iteration==ratio_iterations+2) {")
+string(FIND "${nr1_face_source}" "${nr1_outer_start}" nr1_outer_offset)
+string(FIND "${nr1_face_source}" "${nr1_trial_start}" nr1_trial_offset)
+string(FIND "${nr1_face_source}" "${nr1_trial_end}" nr1_commit_offset)
+if(nr1_outer_offset LESS 0 OR nr1_trial_offset LESS nr1_outer_offset OR nr1_commit_offset LESS nr1_trial_offset)
+  message(FATAL_ERROR "NR1 trial extraction no longer matches the production face layout")
+endif()
+math(EXPR nr1_trial_size "${nr1_commit_offset}-${nr1_trial_offset}")
+string(SUBSTRING "${nr1_face_source}" 0 ${nr1_outer_offset} nr1_prefix)
+string(SUBSTRING "${nr1_face_source}" ${nr1_trial_offset} ${nr1_trial_size} nr1_trial)
+string(REPLACE "const int projection=" "projection=" nr1_trial "${nr1_trial}")
+configure_file(air5_nr1_joint_selection.inc "${nr1_component_dir}/joint_selection.inc" COPYONLY)
+file(READ "${nr1_component_dir}/joint_selection.inc" nr1_selection)
+set(nr1_face_source "${nr1_prefix}    auto evaluate=[&](double beta,double trial[11],int &projection) {
+        double species[5],delta[5];for(int c=0;c<11;++c)trial[c]=low[c]+beta*(high[c]-low[c]);
+${nr1_trial}        return admissible;
+    };
+${nr1_selection}}
+}}
+")
+file(GENERATE OUTPUT "${nr1_component_dir}/chemistry_flux_math.cuh" CONTENT "${nr1_face_source}")
+add_executable(astr_backend_air5_nr1_flux EXCLUDE_FROM_ALL air5_flux_math_probe.cu)
+set_target_properties(astr_backend_air5_nr1_flux PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES)
+target_include_directories(astr_backend_air5_nr1_flux PRIVATE "${nr1_component_dir}" "${CMAKE_SOURCE_DIR}/src_gpu")
+target_compile_definitions(astr_backend_air5_nr1_flux PRIVATE ASTR_TEST_NR1_BUDGET)
+target_compile_options(astr_backend_air5_nr1_flux PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false;${ASTR_AIR5_FP_OPTIONS}>")
 add_executable(astr_backend_air5_spatial EXCLUDE_FROM_ALL air5_spatial_probe.cu)
 set_target_properties(astr_backend_air5_spatial PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES
   CUDA_RESOLVE_DEVICE_SYMBOLS ON LINKER_LANGUAGE CUDA)

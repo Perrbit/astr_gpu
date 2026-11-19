@@ -3803,6 +3803,9 @@ contains
     use validation_io, only: rhs_validation_requested,write_q_validation_snapshot, &
       write_rhs_validation_snapshot,write_primitive_validation_snapshot, &
       write_scalar_validation_snapshot
+#ifdef ASTR_BUILD_TESTING
+    use validation_io, only: write_air5_filter_validation_snapshot
+#endif
     logical, intent(in), optional :: first_stage_prepared,copy_back
     logical :: prepared,need_copy_back,periodic_filter_case
     integer :: ntot,ratio_ntot,rkstep,direction,apply_left_x,apply_right_x
@@ -3865,7 +3868,13 @@ contains
       phase_started=begin_air5_phase()
       if(lfilter) then
         if(air5_conservative_filter) then
+#ifdef ASTR_BUILD_TESTING
+          call snapshot_filter('pre_filter')
+#endif
           call air5_filter_conservative_gpu()
+#ifdef ASTR_BUILD_TESTING
+          call snapshot_filter('post_filter')
+#endif
         else
         if(air5_compensated) then
           call compensation_filter_state_gpu(.false.)
@@ -3885,6 +3894,9 @@ contains
       endif
       call mark_air5_phase('transport_filter',phase_started,rkstep)
       if(lfilter .or. .not.(prepared .and. rkstep==1)) call air5_prepare_spatial_state_gpu()
+#ifdef ASTR_BUILD_TESTING
+      if(lfilter.and.air5_conservative_filter)call snapshot_filter('post_spatial')
+#endif
       call mark_air5_phase('transport_spatial_state',phase_started,rkstep)
       if(rkstep==1) call write_air5_acoustic_probe_gpu()
       if(rhs_validation_requested()) then
@@ -4134,6 +4146,21 @@ contains
     call record_air5_conservation_gpu(nstep+1)
     call launch_air5_interior_primitive_gpu()
     if(need_copy_back) call copy_flow_from_gpu()
+#ifdef ASTR_BUILD_TESTING
+  contains
+    subroutine snapshot_filter(label)
+      use commarray_gpu, only: q_d
+      use chemistry_compensation_gpu, only: air5_carry_d
+      character(*),intent(in) :: label
+      real(real64),allocatable :: high(:,:,:,:),carry(:,:,:,:)
+      if(nstep/=0.or.rkstep/=2.or..not.air5_compensated)return
+      if(.not.rhs_validation_requested())return
+      allocate(high(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11),carry(0:im,0:jm,0:km,11))
+      high=q_d
+      carry=air5_carry_d
+      call write_air5_filter_validation_snapshot(label,rkstep,high(0:im,0:jm,0:km,:),carry)
+    end subroutine
+#endif
   end subroutine air5_transport_rk3_step_gpu
 
 end module chemistry_flow_solver_gpu

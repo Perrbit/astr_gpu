@@ -1,5 +1,5 @@
 module chemistry_runtime_cpp
-  use iso_c_binding, only: c_ptr,c_int,c_double,c_size_t
+  use iso_c_binding, only: c_ptr,c_int,c_double,c_size_t,c_int8_t
   use iso_fortran_env, only: int64
   use mpi
   use astr_precision, only: real_bytes
@@ -11,9 +11,11 @@ module chemistry_runtime_cpp
   use chemistry_air5_data, only: air5_temperature_min_k
   use chemistry_thermo, only: air5_species_vibrational_energy
   use chemistry_flow_runtime
+  use chemistry_flow_solver, only: air5_filter_configuration
   use chemistry_compensation, only: air5_compensated,air5_carry
   use chemistry_postshock_boundary, only: get_air5_postshock_boundary
-  use chemistry_hbl_boundary, only: get_air5_hbl_boundary,get_air5_incident_top,air5_dynamic_top
+  use chemistry_hbl_boundary, only: get_air5_hbl_boundary,get_air5_incident_top,air5_dynamic_top, &
+    get_air5_top_rate,get_air5_top_reference_sound
   use case_model_options, only: get_case_option
   use boundary_high_order, only: high_order_wall_enabled,high_order_wall_axis,high_order_adiabatic_wall_enabled
   use device_state
@@ -31,7 +33,7 @@ module chemistry_runtime_cpp
   public :: initialize_air5_cpp,advance_air5_cpp,check_air5_cpp_state,transfer_air5_aux_cpp
   public :: sample_air5_mean_cpp
   type(air5_rk_options),save :: options
-  integer(c_int),save :: first(3,1),last(3,1),physical_low(3),physical_high(3)
+  integer(c_int),save :: first(3,2),last(3,2),regions,physical_low(3),physical_high(3)
   integer(c_int),save :: recovered_core(3,2)
   logical,save :: reacts,open_x,hbl,normal,reports_only,packed,activity,reuse_primitives
   real(c_double),save :: outlet_pressure,wall_temperature
@@ -42,8 +44,10 @@ contains
     type(air5_device_options) :: chemistry
     integer(c_int) :: lower(3),upper(3),periodic(3),scalar,flux_mode
     integer :: s,status
+    integer :: filter_global(3),filter_offset(3)
     character(32) :: value
     real(c_double) :: left_q(11),right_q(11),farfield_q(11),incident_q(11,2),origin,incident_x
+    real(c_double) :: filter_tr(5),filter_v(5)
     real(c_double),allocatable :: inlet(:,:)
     logical :: incident
 
@@ -59,9 +63,6 @@ contains
     normal=air5_normal_shock_flowtype(flowtype);reacts=air5_reacting_flowtype(flowtype)
     periodic=merge(1,0,[lihomo,ljhomo,lkhomo])
     call require(all(periodic==[merge(0,1,open_x.or.hbl),merge(0,1,hbl),1]),'fixed AIR5 boundary topology')
-    if(hbl)call require(.not.air5_dynamic_top(),'AIR5 C++ characteristic top pending coupled validation')
-    call require(.not.air5_symmetric_species_convection(),'AIR5 C++ symmetric projection pending NR1')
-    call require(.not.(lfilter.and.air5_conservative_filter),'AIR5 C++ conservative filtering pending NR2')
     reuse_primitives=env_choice('ASTR_AIR5_PRIMITIVE_REUSE',[character(9)::'off','chemistry'])==1
 
     lower=[mpileft,mpidown,mpiback];upper=[mpiright,mpiup,mpifront]
@@ -72,11 +73,23 @@ contains
     where(physical_high==1) options%ntypes=2
     where(physical_low==1.and.physical_high==1) options%ntypes=4
     first(:,1)=[is,js,ks];last(:,1)=[ie,je,ke]
+    options%characteristic_top=hbl.and.air5_dynamic_top()
+    regions=1
+    if(options%characteristic_top)then
+      options%top_rate=get_air5_top_rate()
+      options%top_reference_sound=get_air5_top_reference_sound()
+      if(physical_high(2)==1)then
+        regions=2
+        first(:,2)=[physical_low(1),jm,0_c_int];last(:,2)=[im,jm,km]
+      endif
+    endif
     recovered_core(:,1)=max(first(:,1),1_c_int)
     recovered_core(:,2)=min(last(:,1),options%upper-1_c_int)
     if(reuse_primitives.and.reacts)call require(all(recovered_core(:,2)>=recovered_core(:,1)), &
       'AIR5 chemistry reuse requires a nonempty recovered interior')
-    options%halo=hm;options%comm=MPI_COMM_WORLD;options%preserve=0
+    options%halo=hm;options%comm=MPI_COMM_WORLD
+    options%symmetric_convection=air5_symmetric_species_convection()
+    options%preserve=merge(1_c_int,0_c_int,options%symmetric_convection)
     options%convection_mode=air5_conv_full_state
     if(air5_convection_species_budget())options%convection_mode=air5_conv_species_budget
     if(air5_consistent_species_convection())options%convection_mode=air5_conv_consistent_species
@@ -115,8 +128,15 @@ contains
     call check(air5_rk_prepare(handle),'AIR5 RK workspace')
     call check(device_transport_prepare(handle,options%comm,lower,upper,[isize,jsize,ksize], &
       11_c_int,transport_mode,0_c_int,periodic),'AIR5 halo transport')
-    call check(air5_convection_budget_prepare(handle,merge(1,0,options%convection_mode==air5_conv_consistent_species)), &
-      'AIR5 convection workspaces')
+    if(options%symmetric_convection.or.options%characteristic_top)then
+      call check(air5_faces_prepare(handle),'AIR5 convection faces')
+      call check(air5_symmetric_prepare(handle,options%floor,merge(1_c_int,0_c_int,options%characteristic_top)), &
+        'AIR5 symmetric convection workspace')
+    endif
+    if(.not.options%symmetric_convection)then
+      call check(air5_convection_budget_prepare(handle,merge(1,0,options%convection_mode==air5_conv_consistent_species)), &
+        'AIR5 convection workspaces')
+    endif
     if(options%viscous)then
       flux_mode=env_choice('ASTR_AIR5_FLUX_HALO',[character(14)::'separate','packed','packed-overlap'])
       call check(air5_transport_prepare(handle,merge(1,0,options%layered)),'AIR5 viscous fields')
@@ -128,7 +148,13 @@ contains
     if(options%capturing)call check(shock_prepare_cpp(handle),'AIR5 sensor fields')
     if(options%filtering)then
       scalar=1-env_choice('ASTR_GPU_FILTER_WORKSPACE',[character(6)::'scalar','full'])
-      call check(air5_legacy_linear_prepare(handle,scalar),'AIR5 explicit filter workspace')
+      if(options%conservative_filter)then
+        call air5_filter_configuration(filter_global,filter_offset,filter_tr,filter_v)
+        call check(air5_filter_prepare(handle,filter_tr,filter_v,int(filter_global,c_int), &
+          int(filter_offset,c_int),periodic,scalar),'AIR5 conservative filter workspace')
+      else
+        call check(air5_legacy_linear_prepare(handle,scalar),'AIR5 explicit filter workspace')
+      endif
     endif
     if(open_x)then
       call get_air5_postshock_boundary(left_q,right_q,outlet_pressure)
@@ -141,6 +167,8 @@ contains
         'AIR5 inlet profile')
       if(physical_high(2)==1)call check(air5_top_boundary_prepare(handle,farfield_q,incident_q,origin,incident_x, &
         merge(1,0,incident),x(0:im,jm,0:km,1),int(im+1,c_size_t)*int(km+1,c_size_t)),'AIR5 top targets')
+      if(regions==2)call check(air5_characteristic_top_prepare(handle,x(0:im,jm,0:km,2)-x(0:im,jm-1,0:km,2), &
+        int(im+1,c_size_t)*int(km+1,c_size_t)),'AIR5 characteristic top geometry')
     endif
     call check(device_state_upload(handle,device_q,q,8_c_size_t*size(q,kind=c_size_t)),'AIR5 initial q upload')
     call check(device_state_upload(handle,device_metric,dxi,8_c_size_t*size(dxi,kind=c_size_t)),'AIR5 metric upload')
@@ -194,8 +222,12 @@ contains
     endif
     call sample_air5_conservation_cpp(handle,int(nstep,int64),0)
     do rkstep=1,3
-      call check(air5_rk_transport_stage(handle,rkstep,.true.,options,first,last,diagnostics, &
-        state_boundary,no_boundary_rhs),'AIR5 transport stage')
+      call check(air5_rk_transport_stage(handle,rkstep,.true.,options,first(:,:regions),last(:,:regions),diagnostics, &
+        state_boundary,no_boundary_rhs &
+#ifdef ASTR_BUILD_TESTING
+        ,observe_raw_convection,observe_conservative_filter &
+#endif
+        ),'AIR5 transport stage')
       call snapshot(handle,'post_update',rkstep)
     enddo
     call sample_air5_conservation_cpp(handle,int(nstep,int64)+1,1)
@@ -212,7 +244,7 @@ contains
     type(air5_device_report) :: local
     type(air5_chemistry_global_report) :: global
     integer :: status
-    status=air5_chemistry_apply_regions(handle,1_c_int,first,last,0.5_c_double*options%dt, &
+    status=air5_chemistry_apply_regions(handle,regions,first(:,:regions),last(:,:regions),0.5_c_double*options%dt, &
       .not.reports_only.or.report_step(),packed,activity,options%comm,local,global)
     if(status/=0.and.local%failure(1)/=0)then
       write(*,'(a,8(i0,1x))') 'AIR5_CHEMISTRY_FAILURE rank/step/half/i/j/k/status/phase=', &
@@ -259,14 +291,97 @@ contains
     status=0
     if(open_x)status=air5_postshock_boundary_apply(handle,physical_low(1),physical_high(1),normal, &
       outlet_pressure,options%preserve,options%comm)
-    if(hbl)status=air5_hbl_boundary_apply(handle,physical_low,physical_high,wall_temperature,.false., &
+    if(hbl)status=air5_hbl_boundary_apply(handle,physical_low,physical_high,wall_temperature,options%characteristic_top, &
       options%preserve,options%compensated,options%comm,failed_stage)
   end function
 
   integer(c_int) function no_boundary_rhs(handle) result(status)
+#ifdef ASTR_BUILD_TESTING
+    use validation_io, only: rhs_validation_requested,write_scalar_validation_snapshot
+#endif
+    type(c_ptr),intent(in) :: handle
+#ifdef ASTR_BUILD_TESTING
+    real(c_double),allocatable :: ratio(:,:,:)
+#endif
+    status=0
+#ifdef ASTR_BUILD_TESTING
+    if(options%conservative_filter.and.rhs_validation_requested())then
+      call snapshot_rhs(handle,'conv')
+      if(.not.options%symmetric_convection)then
+        allocate(ratio(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+        call check(device_state_download(handle,device_air5_diffusion_ratio,ratio,8_c_size_t*size(ratio,kind=c_size_t)), &
+          'AIR5 validation convection ratio')
+        call write_scalar_validation_snapshot('convection_ratio',ratio,rkstep)
+      endif
+    endif
+#endif
+  end function
+
+#ifdef ASTR_BUILD_TESTING
+  subroutine observe_conservative_filter(handle,label)
+    use validation_io, only: rhs_validation_requested,write_air5_filter_validation_snapshot
+    type(c_ptr),intent(in) :: handle
+    character(*),intent(in) :: label
+    real(c_double),allocatable :: high(:,:,:,:),carry(:,:,:,:)
+    if(nstep/=0.or.rkstep/=2.or..not.options%compensated)return
+    if(.not.rhs_validation_requested())return
+    allocate(high(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11),carry(0:im,0:jm,0:km,11))
+    call check(device_state_download(handle,device_q,high,8_c_size_t*size(high,kind=c_size_t)),'AIR5 filter validation q')
+    call check(device_state_download(handle,device_air5_carry,carry,8_c_size_t*size(carry,kind=c_size_t)), &
+      'AIR5 filter validation carry')
+    call write_air5_filter_validation_snapshot(label,rkstep,high(0:im,0:jm,0:km,:),carry)
+  end subroutine
+
+  integer(c_int) function observe_raw_convection(handle) result(status)
+    use validation_io, only: rhs_validation_requested
     type(c_ptr),intent(in) :: handle
     status=0
+    if(.not.options%conservative_filter.or..not.rhs_validation_requested())return
+    call snapshot(handle,'pre_rhs',rkstep)
+    call snapshot_rhs(handle,'conv_raw')
+    if(.not.options%symmetric_convection.and.nstep==0.and.rkstep==2)call snapshot_convection_replay(handle)
   end function
+
+  subroutine snapshot_convection_replay(handle)
+    use commvar, only: ia,ja,ka
+    use shock_sensor_cpp, only: shock_mask_download_cpp
+    type(c_ptr),intent(in) :: handle
+    real(c_double),allocatable :: primitive(:,:,:,:),save(:,:,:,:)
+    integer(c_int8_t),allocatable :: mask(:,:,:)
+    integer(c_size_t) :: word_bytes
+    integer :: unit
+    character(1024) :: prefix
+    character(1200) :: name
+    allocate(primitive(-hm:im+hm,-hm:jm+hm,-hm:km+hm,10),save(0:im,0:jm,0:km,11))
+    word_bytes=8_c_size_t*size(jacob,kind=c_size_t)
+    call check(device_state_download(handle,device_rho,primitive(:,:,:,1),word_bytes),'replay density')
+    call check(device_state_download(handle,device_velocity,primitive(:,:,:,2:4),3*word_bytes),'replay velocity')
+    call check(device_state_download(handle,device_pressure,primitive(:,:,:,5),word_bytes),'replay pressure')
+    call check(device_state_download(handle,device_air5_species,primitive(:,:,:,6:10),5*word_bytes),'replay species')
+    call check(device_state_download(handle,device_save,save,8_c_size_t*size(save,kind=c_size_t)),'replay RK origin')
+    call get_environment_variable('ASTR_VALIDATION_RHS_PREFIX',prefix)
+    write(name,'(a,".rk2_replay.rank",i8.8,".bin")')trim(prefix),mpirank
+    open(newunit=unit,file=trim(name),access='stream',form='unformatted',status='new',action='write')
+    write(unit) [ia,ja,ka],merge(1,0,[lihomo,ljhomo,lkhomo]),options%floor
+    write(unit) [im,jm,km,hm],merge(1,0,options%capturing),0.25_c_double*options%dt,q,save,jacob,dxi,primitive
+    if(options%capturing)then
+      allocate(mask(0:im,0:jm,0:km))
+      call check(shock_mask_download_cpp(handle,mask,size(mask,kind=c_size_t)),'replay shock mask')
+      write(unit) mask
+    endif
+    close(unit)
+  end subroutine
+
+  subroutine snapshot_rhs(handle,label)
+    use commarray, only: qrhs
+    use validation_io, only: write_rhs_validation_snapshot
+    type(c_ptr),intent(in) :: handle
+    character(*),intent(in) :: label
+    call check(device_state_download(handle,device_rhs,qrhs,8_c_size_t*size(qrhs,kind=c_size_t)), &
+      'AIR5 validation convection RHS')
+    call write_rhs_validation_snapshot(label,nstep,rkstep)
+  end subroutine
+#endif
 
   subroutine check_air5_cpp_state(handle)
     type(c_ptr),intent(in) :: handle

@@ -13,6 +13,9 @@ module validation_io
   public :: h1_stage_validation_requested,check_h1_cpu_stage_state,check_h1_cpu_properties
   public :: h1_low_order_validation_requested
   public :: gradient_validation_requested,write_gradient_validation_snapshot
+#ifdef ASTR_BUILD_TESTING
+  public :: write_air5_filter_validation_snapshot
+#endif
   logical,save :: configured=.false.,enabled=.false.
   character(len=1024),save :: prefix=''
   integer(int64),save :: validation_step=0,validation_step_secondary=-1,validation_step_end=-1
@@ -399,6 +402,24 @@ contains
     write(unit) q
     close(unit)
   end subroutine write_q_validation_snapshot
+
+#ifdef ASTR_BUILD_TESTING
+  subroutine write_air5_filter_validation_snapshot(label,stage,high,carry)
+    use commvar, only: im,jm,km
+    use parallel, only: mpirank
+    character(*),intent(in) :: label
+    integer,intent(in) :: stage
+    real(real_kind),intent(in) :: high(:,:,:,:),carry(:,:,:,:)
+    character(1200) :: filename
+    integer :: unit
+    write(filename,'(A,".",A,".step",I8.8,".rk",I2.2,".rank",I8.8,".bin")') &
+      trim(prefix),trim(label),nstep,stage,mpirank
+    open(newunit=unit,file=trim(filename),access='stream',form='unformatted',status='new',action='write')
+    write(unit) im,jm,km,size(high,4)
+    write(unit) high,carry
+    close(unit)
+  end subroutine
+#endif
 
   subroutine write_primitive_validation_snapshot(label,step_index,stage_index)
     use commvar, only: im,jm,km,hm,nstep,rkstep

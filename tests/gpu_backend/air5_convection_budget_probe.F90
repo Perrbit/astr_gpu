@@ -31,6 +31,7 @@ program air5_convection_budget_probe
   integer :: ierr,rank,comm,sizes(3),coords(3),periodic(3),lower(3),upper(3),extent(3),origin(3),whole(3)
   integer :: i,j,k,d,u,p(3),mode,limiter,test,local,stage,ntypes(3),lo(3),hi(3),capturing
   integer :: nx,ny,nz,first_phase,last_phase,phase,species_budget,status,global_status,active(10),location(4)
+  logical :: trace_counts
   integer(c_int64_t) :: bits(10)
   real(c_double) :: floor(5),a,b,cdt,minimum(10)
   real(c_double),allocatable :: input(:,:,:,:),q(:,:,:,:),save(:,:,:,:),rhs(:,:,:,:),raw(:,:,:,:)
@@ -48,6 +49,14 @@ program air5_convection_budget_probe
   type(c_ptr) :: context
   type(device_view) :: field_view
   type(air5_convection_report) :: report
+  interface
+    integer(c_int) function upload_probe_mask(handle,host,bytes) bind(C)
+      import c_ptr,c_int,c_int8_t,c_size_t
+      type(c_ptr),value :: handle
+      integer(c_int8_t),intent(in) :: host(*)
+      integer(c_size_t),value :: bytes
+    end function upload_probe_mask
+  end interface
 #endif
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -59,11 +68,20 @@ program air5_convection_budget_probe
   call get_command_argument(6,arg);read(arg,*) limiter
   call get_command_argument(7,arg);read(arg,*) test
   call get_command_argument(8,arg);read(arg,*) mode
+  call get_command_argument(9,arg)
+  trace_counts=trim(arg)=='counts'
+  if(trace_counts.and.(test/=5.or.(limiter/=0.and.limiter/=1)))call check(2)
   call get_command_argument(1,name)
+  if(test==5)then
+    write(rank_text,'(i8.8)')rank
+    name=trim(name)//'.rank'//rank_text//'.bin'
+  endif
   open(newunit=u,file=trim(name),access='stream',form='unformatted',status='old')
   read(u) whole,periodic,floor
-  allocate(input(0:whole(1),0:whole(2),0:whole(3),20))
-  read(u)input;close(u)
+  if(test/=5)then
+    allocate(input(0:whole(1),0:whole(2),0:whole(3),20))
+    read(u)input;close(u)
+  endif
   call MPI_Cart_create(MPI_COMM_WORLD,3,sizes,periodic==1,.false.,comm,ierr)
   call MPI_Cart_coords(comm,rank,3,coords,ierr)
   do d=1,3
@@ -82,6 +100,19 @@ program air5_convection_budget_probe
     metric(-h:nx+h,-h:ny+h,-h:nz+h,3,3))
   allocate(save(0:nx,0:ny,0:nz,11),rhs(0:nx,0:ny,0:nz,11),raw(0:nx,0:ny,0:nz,11), &
     ratios(-h:nx+h,-h:ny+h,-h:nz+h,2))
+  stage=merge(1,2,test==0);a=merge(0.0_c_double,0.75_c_double,stage==1);b=1.0_c_double-a
+  cdt=5.e-5_c_double
+  if(test==5)then
+    read(u)p,i,capturing,cdt
+    if(any(p/=extent).or.i/=h)call check(2)
+    read(u)q,save,jac,metric,rho,velocity,pressure,ys
+    if(capturing/=0)then
+      allocate(mask(0:nx,0:ny,0:nz))
+      read(u)mask
+    endif
+    close(u)
+  else
+  capturing=merge(1,0,test==1.or.test==3.or.test==4)
   metric=0.0_c_double;jac=1.0_c_double
   do k=-h,nz+h;do j=-h,ny+h;do i=-h,nx+h
     p=[i,j,k]+origin
@@ -99,15 +130,13 @@ program air5_convection_budget_probe
     pressure(i,j,k)=input(p(1),p(2),p(3),15)
     ys(i,j,k,:)=input(p(1),p(2),p(3),16:20)
   enddo;enddo;enddo
-  stage=merge(1,2,test==0);a=merge(0.0_c_double,0.75_c_double,stage==1);b=1.0_c_double-a
-  cdt=5.e-5_c_double
-  capturing=merge(1,0,test==1.or.test==3.or.test==4)
+  save=0.998_c_double*q(0:nx,0:ny,0:nz,:)
+  endif
   if(test==4)then
     allocate(temperature,source=pressure/(rho*sum(ys*spread(spread(spread(air5_ru/air5_molar_mass, &
       1,size(rho,1)),2,size(rho,2)),3,size(rho,3)),dim=4)))
     allocate(gradient(0:nx,0:ny,0:nz,3,3),sensor(-h:nx+h,-h:ny+h,-h:nz+h),mask(0:nx,0:ny,0:nz))
   endif
-  save=0.998_c_double*q(0:nx,0:ny,0:nz,:)
   if(test==3.and.rank==0) save(lo(1),lo(2),lo(3),1)=-2.0_c_double
   ratios=1.0_c_double;active=0;minimum=huge(1.0_c_double);location=0
 #ifdef ASTR_OLD_CONVECTION
@@ -123,6 +152,7 @@ program air5_convection_budget_probe
   allocate(diffusion_ratio_d(-h:nx+h,-h:ny+h,-h:nz+h,1),convection_fluid_ratio_d(-h:nx+h,-h:ny+h,-h:nz+h,1))
   q_d=q;qsave_d=save;jacob_d=jac;dxi_d=metric;rho_d=rho;prs_d=pressure;vel_d=velocity;spc_d=ys
   shock_mask_d=int(capturing,1)
+  if(test==5.and.capturing/=0)shock_mask_d=mask
   if(test==4)then
     npdci=ntypes(1);npdcj=ntypes(2);npdck=ntypes(3)
     lcomb=.true.;flowtype='air5hbl';shkcrt=threshold
@@ -144,7 +174,7 @@ program air5_convection_budget_probe
   call air5_zero_rhs_kernel<<<grid,256>>>(nx,ny,nz)
   call check(cudaGetLastError())
   if(capturing/=0)then
-    if(command_argument_count()==9)allocate(trace_rhs(0:nx,0:ny,0:nz,11,3))
+    if(command_argument_count()==9.and..not.trace_counts)allocate(trace_rhs(0:nx,0:ny,0:nz,11,3))
     call air5_selective_convective_rhs_x_kernel<<<gx,bx>>>(nx,ny,nz,ntypes(1),lo(1),hi(1),lo(2),hi(2),lo(3),hi(3))
     call check(cudaGetLastError())
     if(allocated(trace_rhs))trace_rhs(:,:,:,:,1)=qrhs_d
@@ -204,6 +234,7 @@ program air5_convection_budget_probe
   enddo
   rhs=qrhs_d;ratios(:,:,:,1)=diffusion_ratio_d(:,:,:,1)
   if(limiter==2)ratios(:,:,:,2)=convection_fluid_ratio_d(:,:,:,1)
+  if(trace_counts)call write_node_counts()
 #else
   call check(device_bind(local))
   call check(device_state_create(local,nx,ny,nz,h,1_c_int,context))
@@ -223,7 +254,9 @@ program air5_convection_budget_probe
     if(device_state_view(context,device_stress,field_view)/=device_not_allocated)call check(device_invalid_argument)
     if(device_state_view(context,device_air5_dspecies,field_view)/=device_not_allocated)call check(device_invalid_argument)
     call check(shock_prepare_cpp(context))
-    if(test==4)then
+    if(test==5)then
+      call check(upload_probe_mask(context,mask,size(mask,kind=c_size_t)))
+    elseif(test==4)then
       call check(device_state_upload(context,device_temperature,temperature,int(size(temperature),c_size_t)*8))
       call air5_prepare_shock_mask(context,ntypes,threshold,int(comm,c_int))
       call check(device_state_download(context,device_dvelocity,gradient,int(size(gradient),c_size_t)*8))
@@ -247,6 +280,7 @@ program air5_convection_budget_probe
   call check(device_state_download(context,device_rhs,rhs,int(size(rhs),c_size_t)*8))
   call check(device_state_download(context,device_air5_diffusion_ratio,ratios(:,:,:,1),int(size(jac),c_size_t)*8))
   if(limiter==2)call check(device_state_download(context,device_air5_convection_fluid_ratio,ratios(:,:,:,2),int(size(jac),c_size_t)*8))
+  if(trace_counts)call write_node_counts()
   call check(device_state_destroy(context))
 #endif
   call get_command_argument(2,name)
@@ -262,6 +296,49 @@ program air5_convection_budget_probe
   call MPI_Comm_free(comm,ierr)
   call MPI_Finalize(ierr)
 contains
+  subroutine write_node_counts()
+    integer :: unit,ix,iy,iz,node(3),code,counts(10),counted(10)
+    integer(c_int64_t) :: local_bits(10)
+    character(2048) :: prefix
+    character(8) :: rank_suffix
+    call get_command_argument(2,prefix)
+    write(rank_suffix,'(I8.8)')rank
+    open(newunit=unit,file=trim(prefix)//'.counts.rank'//rank_suffix//'.bin', &
+         access='stream',form='unformatted',status='new',action='write')
+    write(unit)lo,hi
+    counted=0
+    do iz=lo(3),hi(3);do iy=lo(2),hi(2);do ix=lo(1),hi(1)
+      node=[ix,iy,iz]
+#ifdef ASTR_OLD_CONVECTION
+      call reset_air5_status()
+      air5_limited_points_d=0;air5_minimum_ratio_bits_d=transfer(huge(1.0_c_double),local_bits(1))
+      air5_constraint_active_points_d=0;air5_constraint_minimum_ratio_bits_d=transfer(huge(1.0_c_double),local_bits(1))
+      air5_species_constraint_active_points_d=0
+      air5_species_constraint_minimum_ratio_bits_d=transfer(huge(1.0_c_double),local_bits(1))
+      call air5_full_state_convection_ratio_kernel<<<grid,256>>>(cdt,a,b,1.0_c_double,stage,1,nx,ny,nz, &
+        ntypes(1),ntypes(2),ntypes(3),ix,ix,iy,iy,iz,iz,capturing,species_budget,0)
+      call check(cudaGetLastError());call check(cudaDeviceSynchronize())
+      code=air5_flow_status_d;call check(code)
+      counts(1)=air5_limited_points_d;counts(2:5)=air5_constraint_active_points_d
+      counts(6:10)=air5_species_constraint_active_points_d
+      local_bits(1)=air5_minimum_ratio_bits_d;local_bits(2:5)=air5_constraint_minimum_ratio_bits_d
+      local_bits(6:10)=air5_species_constraint_minimum_ratio_bits_d
+#else
+      call check(air5_convection_budget_begin(context,0_c_int))
+      call check(air5_convection_budget(context,ntypes,node,node,floor,a,b,cdt,0_c_int,capturing, &
+        merge(1_c_int,0_c_int,limiter==1),0_c_int,1_c_int))
+      call check(air5_device_check(context,code))
+      call check(code)
+      call check(air5_convection_read_report(context,report))
+      counts=report%active;local_bits=report%minimum_bits
+#endif
+      counted=counted+counts
+      write(unit)counts,local_bits
+    enddo;enddo;enddo
+    close(unit)
+    if(any(counted/=active))call check(2)
+  end subroutine
+
   subroutine check(code)
     integer,intent(in) :: code
     integer :: ignored

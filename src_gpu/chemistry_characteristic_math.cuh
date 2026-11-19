@@ -22,6 +22,13 @@ __device__ inline bool normal_convection(const double q0[11],const double q1[11]
     y_flux_differential(q0,pressure,dpdq,gradient,normal);
     for(int c=0;c<11;++c)valid=valid && finite(normal[c]);return valid;
 }
+__device__ inline void acoustic_amplitudes(const double difference[11],const double dpdq[11],
+    double v,double sound,double a2,double amplitude[2])
+{
+    double dp=0.;for(int c=0;c<11;++c)dp+=dpdq[c]*difference[c];
+    const double dm=sound*(difference[2]-v*difference[0]);
+    amplitude[0]=(dp-dm)/(2.*a2);amplitude[1]=(dp+dm)/(2.*a2);
+}
 __device__ inline bool transport_rhs(const double q[11],const double target[11],double pressure,double sound,
     const double dpdq[11],const double normal[11],const double remaining[11],double rate,double rhs[11],double reference_sound)
 {
@@ -32,29 +39,35 @@ __device__ inline bool transport_rhs(const double q[11],const double target[11],
     const double u[3]={q[1]/q[0],q[2]/q[0],q[3]/q[0]};
     const double convective_rate=(fmax(-u[1],0.)/reference_sound)*rate;
     if(!finite(u[0]) || !finite(u[1]) || !finite(u[2]) || !finite(convective_rate))return false;
-    const double a2=sound*sound;double waves[2][11],difference[11],acoustic[2][11],incoming[11]{};
+    const double a2=sound*sound;double waves[2][11],difference[11],amplitude[2];
     for(int mode=0;mode<2;++mode) {
         const int sign=2*mode-1;waves[mode][0]=1.;
         for(int d=0;d<3;++d)waves[mode][d+1]=u[d];waves[mode][2]=u[1]+sign*sound;
         waves[mode][4]=(q[4]+pressure)/q[0]+sign*sound*u[1];
         for(int c=5;c<11;++c)waves[mode][c]=q[c]/q[0];
     }
-    double dp=0.;for(int c=0;c<11;++c) {difference[c]=normal[c]-rate*(q[c]-target[c]);dp+=dpdq[c]*difference[c];}
-    const double dmn=difference[2]-u[1]*difference[0];
-    for(int c=0;c<11;++c) {
-        acoustic[0][c]=waves[0][c]*(dp-sound*dmn)/(2.*a2);
-        acoustic[1][c]=waves[1][c]*(dp+sound*dmn)/(2.*a2);
+    // The outgoing normal part and the incoming target relaxation are independent.
+    const bool convective_in=u[1]<0.,acoustic_in[2]={u[1]-sound<0.,u[1]+sound<0.};
+    for(int c=0;c<11;++c)rhs[c]=convective_in?remaining[c]:remaining[c]-normal[c];
+    if(acoustic_in[0]!=convective_in || acoustic_in[1]!=convective_in) {
+        acoustic_amplitudes(normal,dpdq,u[1],sound,a2,amplitude);
+        for(int mode=0;mode<2;++mode)if(acoustic_in[mode]!=convective_in) {
+            const double scale=convective_in?-amplitude[mode]:amplitude[mode];
+            for(int c=0;c<11;++c)rhs[c]+=waves[mode][c]*scale;
+        }
     }
-    if(u[1]<0.) {
-        dp=0.;for(int c=0;c<11;++c) {difference[c]=normal[c]-convective_rate*(q[c]-target[c]);dp+=dpdq[c]*difference[c];}
-        const double dm=difference[2]-u[1]*difference[0];
-        for(int c=0;c<11;++c)incoming[c]=difference[c]-waves[0][c]*(dp-sound*dm)/(2.*a2)-waves[1][c]*(dp+sound*dm)/(2.*a2);
+    if(convective_in && convective_rate!=0.) {
+        for(int c=0;c<11;++c)difference[c]=-convective_rate*(q[c]-target[c]);
+        acoustic_amplitudes(difference,dpdq,u[1],sound,a2,amplitude);
+        for(int c=0;c<11;++c)rhs[c]+=difference[c]-waves[0][c]*amplitude[0]-waves[1][c]*amplitude[1];
     }
-    for(int c=0;c<11;++c) {
-        if(u[1]-sound<0.)incoming[c]+=acoustic[0][c];
-        if(u[1]+sound<0.)incoming[c]+=acoustic[1][c];
-        rhs[c]=-normal[c]+incoming[c]+remaining[c];valid=valid && finite(rhs[c]);
+    if(rate!=0. && (acoustic_in[0] || acoustic_in[1])) {
+        for(int c=0;c<11;++c)difference[c]=-rate*(q[c]-target[c]);
+        acoustic_amplitudes(difference,dpdq,u[1],sound,a2,amplitude);
+        for(int mode=0;mode<2;++mode)if(acoustic_in[mode])
+            for(int c=0;c<11;++c)rhs[c]+=waves[mode][c]*amplitude[mode];
     }
+    for(int c=0;c<11;++c)valid=valid && finite(rhs[c]);
     return valid;
 }
 // Same frozen thermodynamic differential assembled by the original top kernel.

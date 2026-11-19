@@ -17,9 +17,46 @@ void check(int code) {if(code){std::fprintf(stderr,"operation %d\n",code);MPI_Ab
 size_t count(AstrDeviceView v) {return v.stride[4]*v.extent[4];}
 size_t offset(AstrDeviceView v,int i,int j,int k,int c)
 {return (i-v.lower[0])*v.stride[0]+(j-v.lower[1])*v.stride[1]+(k-v.lower[2])*v.stride[2]+c*v.stride[3];}
+
+void trace_filter_axis(void *handle,MPI_Comm cart,const int low[3],const int high[3],
+    const int upper[3],int axis,int rank,const char *prefix)
+{
+    const int a=axis+1,has_low=low[axis]!=MPI_PROC_NULL,has_high=high[axis]!=MPI_PROC_NULL;
+    auto require_admissible=[&]() {
+        int local,global;
+        check(astr_device_air5_check(handle,&local));
+        check(MPI_Allreduce(&local,&global,1,MPI_INT,MPI_MAX,cart));
+        check(global);
+    };
+    check(astr_device_air5_filter_pack(handle,a));
+    check(astr_device_air5_filter_exchange(handle,a,0));
+    check(astr_device_air5_filter_faces(handle,a,has_high));
+    require_admissible();
+    check(astr_device_air5_filter_exchange(handle,a,1));
+    check(astr_device_air5_filter_commit(handle,a,has_low,has_high));
+    check(astr_device_air5_filter_alias(handle,a,0));
+    check(astr_device_air5_filter_exchange(handle,a,2));
+    if(has_high)check(astr_device_air5_filter_alias(handle,a,1));
+    check(astr_device_air5_filter_check(handle,1));
+    require_admissible();
+
+    char path[2048];std::snprintf(path,sizeof(path),"%s.axis%d.rank%d.bin",prefix,a,rank);
+    FILE *file=std::fopen(path,"wb");if(!file)check(2);
+    if(std::fwrite(upper,4,3,file)!=3)check(2);
+    for(int field:{ASTR_DEVICE_Q,ASTR_DEVICE_AIR5_CARRY,ASTR_DEVICE_RHS}) {
+        AstrDeviceView view;check(astr_device_state_view(handle,field,&view));
+        std::vector<double> data(count(view)),physical;
+        check(astr_device_state_download(handle,field,data.data(),data.size()*8));
+        for(int c=0;c<11;++c)for(int k=0;k<=upper[2];++k)for(int j=0;j<=upper[1];++j)for(int i=0;i<=upper[0];++i)
+            physical.push_back(data[offset(view,i,j,k,c)]);
+        if(std::fwrite(physical.data(),8,physical.size(),file)!=physical.size())check(2);
+    }
+    if(std::fclose(file))check(2);
+}
+
 int main(int argc,char **argv)
 {
-    if(argc!=11 && argc!=13 && argc!=14)return 2;
+    if(argc!=11 && argc!=12 && argc!=13 && argc!=14)return 2;
     const char *local=std::getenv("OMPI_COMM_WORLD_LOCAL_RANK");if(!local)return 2;
     const int devices=std::atoi(argv[10]);if(devices<1)return 2;const int device=std::atoi(local)%devices;
     if(astr_device_bind(device))return 3;
@@ -28,6 +65,10 @@ int main(int argc,char **argv)
     const int scalar=std::atoi(argv[6]),compensated=std::atoi(argv[7]),mode=std::atoi(argv[8]),debug=std::atoi(argv[9]);
     // Stage modes: 1 legacy, 2 conservative, 3 unfiltered reuse, 4 later unfiltered stage.
     const int stage=argc==14 ? std::atoi(argv[13]) : 0;
+    const bool trace=argc==12 && std::strcmp(argv[11],"trace")==0;
+    const int passes=trace ? 1 : (argc==12 ? std::atoi(argv[11]) : (stage<3 ? 2 : 1));
+    if(passes<1)check(1);
+    if(trace && !compensated)check(1);
     const bool legacy=argc==13 || stage==1;
     const int wall_axis=argc>=13 ? std::atoi(argv[11]) : -1,family=argc>=13 ? std::atoi(argv[12]) : 0;
     FILE *file=std::fopen(argv[1],"rb");if(!file)check(2);int global[3],periodic[3];double tr[5],v[5];
@@ -68,7 +109,7 @@ int main(int argc,char **argv)
         check(astr_device_state_upload(handle,cache,initial.data(),initial.size()*8));
     }
     const int edges[]={low[0]==MPI_PROC_NULL,high[0]==MPI_PROC_NULL};
-    int physics=0;for(int step=0;step<(stage<3 ? 2 : 1);++step) {
+    int physics=0;for(int step=0;step<passes;++step) {
         if(stage) {
             int calls=-1;
             physics=prepare_rk_probe(handle,upper,edges,MPI_Comm_c2f(cart),compensated,stage==4 ? 2 : step+1,stage<3,
@@ -76,6 +117,7 @@ int main(int argc,char **argv)
             if(calls!=(stage==3 || physics ? 0 : 1))check(8);
         }
         else if(legacy)check(astr_device_air5_legacy_filter_apply(handle,v,wall_axis,family,&physics));
+        else if(trace)for(int a=0;a<3;++a)trace_filter_axis(handle,cart,low,high,upper,a,rank,argv[2]);
         else check(astr_device_air5_filter_apply(handle,1,&physics));
         if(physics)break;
     }

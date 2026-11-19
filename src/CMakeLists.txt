@@ -1447,6 +1447,23 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
   target_include_directories(chemistry_ros2_compensation_gpu_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_compensation_gpu_probe_modules")
   target_link_libraries(chemistry_ros2_compensation_gpu_probe PRIVATE MPI::MPI_Fortran)
+  include("${CMAKE_SOURCE_DIR}/tests/gpu_validation/air5_ros2_residual_probe.cmake")
+  add_executable(air5_acoustic_state_fortran_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    ../src_gpu/chemistry_core_gpu.cuf ../src_gpu/chemistry_flow_state_gpu.cuf
+    ../tests/gpu_validation/air5_acoustic_state_fortran_probe.cuf)
+  set_target_properties(air5_acoustic_state_fortran_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_acoustic_state_fortran_probe_modules")
+  target_include_directories(air5_acoustic_state_fortran_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/air5_acoustic_state_fortran_probe_modules")
+  target_link_libraries(air5_acoustic_state_fortran_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(air5_nr4_fortran_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 ../tests/gpu_validation/air5_nr4_fortran_probe.cuf)
+  set_target_properties(air5_nr4_fortran_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_nr4_fortran_probe_modules")
+  target_include_directories(air5_nr4_fortran_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/air5_nr4_fortran_probe_modules")
+  target_compile_options(air5_nr4_fortran_probe PRIVATE -Kieee -Mnofma -gpu=nofma,noflushz)
   add_executable(air5_filter_flux_probe EXCLUDE_FROM_ALL
     chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
     ../src_gpu/gpu_check.cuf ../src_gpu/chemistry_core_gpu.cuf

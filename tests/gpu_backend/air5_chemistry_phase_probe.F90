@@ -25,13 +25,18 @@ program air5_chemistry_phase_probe
   integer(c_int64_t),allocatable :: all_activity(:,:)
   integer(c_int) :: first(3,2),last(3,2),regions,physics,returned,devices,device
   integer :: rank,ranks,cart,topology(3),coord(3),i,j,k,c,n,u,status,ierr,test,side,field
-  logical :: collect,packed,activity,periods(3)
+  integer :: pci_end
+  logical :: collect,packed,activity,periods(3),specialized
   character(1024) :: input,text
+  character(kind=c_char,len=32) :: pci
 
   call get_command_argument(1,input)
   do i=1,3
     call get_command_argument(i+1,text);read(text,*)topology(i)
   enddo
+  call get_command_argument(5,text)
+  if(len_trim(text)>0.and.trim(text)/='specialized')error stop 'invalid chemistry phase dispatch'
+  specialized=trim(text)=='specialized'
   call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',text,status=status)
   if(status/=0)error stop 'missing local rank'
   read(text,*)rank
@@ -57,6 +62,7 @@ program air5_chemistry_phase_probe
     activity=test==4
     options=air5_device_options(1_c_int,1_c_int,0_c_int,0_c_int,1_c_int,32_c_int, &
       int(modulo(test,2),c_int),1e-9_c_double,1e-13_c_double,0._c_double)
+    options%specialized_dispatch=merge(1_c_int,0_c_int,specialized)
     if(activity)options%activity_threshold=1e30_c_double
     if(test==5)then
       options%source_mode=1;options%source_only=1
@@ -72,6 +78,11 @@ program air5_chemistry_phase_probe
     do side=1,2
       call check(device_state_create(device,int(im,c_int),int(jm,c_int),int(km,c_int), &
         int(h,c_int),int(modulo(test,2),c_int),handle(side)))
+      if(test==1.and.side==1)then
+        call check(device_pci_identity(handle(side),pci,int(len(pci),c_int)))
+        pci_end=index(pci,c_null_char)
+        call require(pci_end>1,'physical device PCI identity')
+      endif
       call check(air5_device_prepare(handle(side)));call check(air5_chemistry_prepare(handle(side),options))
       call check(device_state_upload(handle(side),device_q,initial,int(size(initial),c_size_t)*8_c_size_t))
       call check(device_state_upload(handle(side),device_air5_carry,low,int(size(low),c_size_t)*8_c_size_t))
@@ -138,8 +149,8 @@ program air5_chemistry_phase_probe
       call check(device_state_destroy(handle(side)))
     enddo
   enddo
-  write(*,'(a,i0,a,i0)')'AIR5_CHEMISTRY_PHASE_PASS rank=',rank, &
-    ' cases=9 global_failures=2 device_words=exact device=',device
+  write(*,'(a,i0,a,i0,2a)')'AIR5_CHEMISTRY_PHASE_PASS rank=',rank, &
+    ' cases=9 global_failures=2 device_words=exact device=',device,' pci=',pci(:pci_end-1)
   call MPI_Comm_free(cart,ierr);call check(ierr)
   call MPI_Finalize(ierr)
 contains

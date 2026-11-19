@@ -118,7 +118,7 @@ program air5_filter_field_reference
   use air5_filter_reference_gpu,only:air5_filter_conservative_gpu
 #endif
   implicit none
-  integer :: sizes(3),coordinates(3),cart,ierr,u,i,j,k,c,step,scalar,compensated,device,devices
+  integer :: sizes(3),coordinates(3),cart,ierr,u,i,j,k,c,step,scalar,compensated,device,devices,passes
   integer :: global(3),periods(3),head(4),local_rank
   logical :: periodic(3)
   real(real64) :: tr(5),v(5)
@@ -131,6 +131,11 @@ program air5_filter_field_reference
   call get_command_argument(6,text);read(text,*)scalar
   call get_command_argument(7,text);read(text,*)compensated
   call get_command_argument(8,text);read(text,*)devices
+  passes=2
+  if(command_argument_count()==9)then
+    call get_command_argument(9,text);read(text,*)passes
+  endif
+  if(passes<1)error stop 'invalid filter replay pass count'
 #ifdef ASTR_AIR5_REFERENCE_GPU
   call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',text);read(text,*)local_rank
   device=modulo(local_rank,devices);ierr=cudaSetDevice(device)
@@ -172,7 +177,7 @@ program air5_filter_field_reference
   q_d=q;qrhs_d=0;test_scalar=scalar/=0
   call configure_air5_species_cache_gpu(.true.)
 #endif
-  do step=1,2
+  do step=1,passes
 #ifdef ASTR_AIR5_REFERENCE_GPU
     call air5_filter_conservative_gpu()
 #else

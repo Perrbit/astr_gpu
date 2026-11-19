@@ -1,5 +1,8 @@
 #include <cuda_runtime.h>
 #include "chemistry_filter_math.cuh"
+#ifdef ASTR_TEST_NR2_CAPACITY
+#include "air5_nr2_capacity_math.cuh"
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -16,12 +19,16 @@ __global__ void evaluate(const double *input,double *output,int *statuses,int n)
         out[1]=filter::pressure_admissible(x);out[2]=filter::lower_admissible(x,x+11,x+16);break;
     case 1:
         out[0]=filter::pressure_represented_admissible(x,x+11);filter::state_magnitude(x,x+11,out+1);break;
-    case 2:out[0]=filter::pressure_pair_safe(x,x+11,x+22,x[33]!=0);break;
+    case 2:out[0]=filter::pair_box_safe(x,x+11,x+22,x[33]!=0,x+34,x+39);break;
     case 3:out[0]=filter::feasible_mass(x,x+5,x+10,x[15]);break;
     case 4:filter::high_face(x,x+110,static_cast<int>(x[220]),static_cast<int>(x[221]),x[222]!=0,x[223]!=0,out);break;
     case 5:
         filter::face_bounds(x,x+11,x+22,out,out+5,out[10]);
+#ifdef ASTR_TEST_NR2_CAPACITY
+        status=nr2_capacity::project(x+27,out,out+5,out[10],out+11);break;
+#else
         status=close_species_flux(x+27,out,out+5,out[10],out+11);break;
+#endif
     case 6:
         status=filter::thermal_limit(x,x+11,x+22,x+33,x+38,x+43,x+54,x[65]!=0,out,out[11]);
         if(status==0)out[12]=filter::pair_admissible(x,x+11,out,x+33,x+38,x+43,x+54,x[65]!=0);

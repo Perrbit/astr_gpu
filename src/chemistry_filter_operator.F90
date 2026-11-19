@@ -2,7 +2,7 @@ module chemistry_filter_operator
   use iso_fortran_env, only: real64
   use chemistry_model, only: air5_ratio_bisection_iterations,air5_transport_roundoff_gamma
   use chemistry_filter_math, only: filter_lower_energy_admissible,filter_pressure_admissible, &
-    filter_feasible_mass,filter_pressure_pair_safe
+    filter_feasible_mass,filter_pair_box_safe
   implicit none
   private
   public :: filter_node,filter_high_face,face_bounds,lower_admissible,pair_admissible,thermal_limit
@@ -67,8 +67,8 @@ contains
     b=right-2.0_real64*flux
     pair_admissible=lower_admissible(a,tr_floor,v_floor).and.lower_admissible(b,tr_floor,v_floor)
     if(.not.pair_admissible) return
-    pair_admissible=filter_pressure_pair_safe(left,left_magnitude,flux,use_carry).and. &
-      filter_pressure_pair_safe(right,right_magnitude,negative,use_carry)
+    pair_admissible=filter_pair_box_safe(left,left_magnitude,flux,use_carry,tr_floor,v_floor).and. &
+      filter_pair_box_safe(right,right_magnitude,negative,use_carry,tr_floor,v_floor)
   end function
 
 #ifdef _CUDA
@@ -92,8 +92,8 @@ contains
     endif
     zero=0.0_real64
     ! A near-bound node freezes every incident face, not just one failed exchange.
-    if(.not.filter_pressure_pair_safe(left,left_magnitude,zero,use_carry).or. &
-       .not.filter_pressure_pair_safe(right,right_magnitude,zero,use_carry)) then
+    if(.not.filter_pair_box_safe(left,left_magnitude,zero,use_carry,tr_floor,v_floor).or. &
+       .not.filter_pair_box_safe(right,right_magnitude,zero,use_carry,tr_floor,v_floor)) then
       flux=0.0_real64; ratio=0.0_real64
       return
     endif

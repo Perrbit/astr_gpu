@@ -1,0 +1,73 @@
+module acoustic_state_probe_device
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_flow_state_gpu, only: air5_conservative_to_primitive_gpu
+  implicit none
+contains
+  attributes(global) subroutine observe(n,q,value,status,preserve)
+    integer,value :: n,preserve
+    real(real64),device,intent(in) :: q(12,n)
+    real(real64),device,intent(inout) :: value(10,n)
+    integer,device,intent(inout) :: status(n)
+    integer :: i
+    real(real64) :: v(3)
+    i=(blockidx%x-1)*blockdim%x+threadidx%x
+    if(i>n)return
+    if(int(q(12,i))/=preserve)return
+    call air5_conservative_to_primitive_gpu(q(1:11,i),value(8,i),v,value(1,i),value(3:7,i), &
+      value(2,i),value(10,i),status(i))
+    value(9,i)=v(2)
+  end subroutine observe
+end module acoustic_state_probe_device
+
+program air5_acoustic_state_fortran_probe
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_flow_state, only: air5_conservative_to_primitive,configure_air5_species_cache
+  use chemistry_flow_state_gpu, only: configure_air5_species_cache_gpu
+  use acoustic_state_probe_device, only: observe
+  implicit none
+  real(real64),allocatable :: q(:,:),value(:,:)
+  integer,allocatable :: status(:)
+  real(real64),device,allocatable :: dq(:,:),dv(:,:)
+  integer,device,allocatable :: ds(:)
+  integer :: n,u,i,mode,err
+  real(real64) :: velocity(3)
+  character(1024) :: input,cpu_output,gpu_output
+  call get_command_argument(1,input)
+  call get_command_argument(2,cpu_output)
+  call get_command_argument(3,gpu_output)
+  open(newunit=u,file=trim(input),access='stream',form='unformatted',status='old',action='read')
+  read(u)n
+  allocate(q(12,n),value(10,n),status(n))
+  read(u)q
+  close(u)
+  do i=1,n
+    call configure_air5_species_cache(q(12,i)/=0.0_real64)
+    call air5_conservative_to_primitive(q(1:11,i),value(8,i),velocity,value(1,i),value(3:7,i), &
+      value(2,i),value(10,i),status(i))
+    value(9,i)=velocity(2)
+  end do
+  call write_result(cpu_output)
+  err=cudaSetDevice(0)
+  if(err/=0)error stop 'select legacy CUDA Fortran device'
+  allocate(dq(12,n),dv(10,n),ds(n))
+  dq=q
+  ds=-1
+  do mode=0,1
+    call configure_air5_species_cache_gpu(mode==1)
+    call observe<<<(n+127)/128,128>>>(n,dq,dv,ds,mode)
+    err=cudaDeviceSynchronize()
+    if(err/=0)error stop 'observe legacy CUDA Fortran state'
+  end do
+  value=dv
+  status=ds
+  call write_result(gpu_output)
+contains
+  subroutine write_result(path)
+    character(*),intent(in) :: path
+    open(newunit=u,file=trim(path),access='stream',form='unformatted',status='new',action='write')
+    write(u)n,status,value
+    close(u)
+  end subroutine write_result
+end program air5_acoustic_state_fortran_probe

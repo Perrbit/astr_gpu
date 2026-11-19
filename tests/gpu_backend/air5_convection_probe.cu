@@ -41,10 +41,21 @@ __global__ void capture_point(astr::air5::FaceFields fields,AstrDeviceView base,
     if(data.top)out[68]=!(a==0 && data.p[0]==data.upper[0] && (data.types[0]==2 || data.types[0]==4));
     for(int s=0;s<5;++s)out[70+s]=data.floor[s];out[75]=data.p[0];out[76]=data.p[1];out[77]=data.p[2];out[78]=a+1;out[79]=4;
 }
+bool write_point(astr::State &state,AstrDeviceView base,const Capture &input,const char *path)
+{
+    double *device,out[80];check(cudaMalloc(&device,sizeof(out)));
+    capture_point<<<1,1,0,state.stream>>>(astr::air5::face_fields(state),base,input,state.shock_mask,device);
+    check(cudaGetLastError());check(cudaMemcpyAsync(out,device,sizeof(out),cudaMemcpyDeviceToHost,state.stream));
+    check(cudaStreamSynchronize(state.stream));check(cudaFree(device));
+    FILE *file=std::fopen(path,"wb");if(!file)return false;
+    const int count=1;
+    const bool ok=write(file,&count,4,1) && write(file,out,8,80);
+    return std::fclose(file)==0 && ok;
+}
 }
 int main(int argc,char **argv)
 {
-    if(argc!=4)return 2;FILE *file=std::fopen(argv[1],"rb");if(!file)return 2;
+    if(argc!=4 && argc!=9)return 2;FILE *file=std::fopen(argv[1],"rb");if(!file)return 2;
     int head[4];if(std::fread(head,4,4,file)!=4)return 2;
     const int im=head[0],jm=head[1],km=head[2],cases=head[3],halo=5;
     const size_t total=static_cast<size_t>(im+11)*(jm+11)*(km+11),physical=static_cast<size_t>(im+1)*(jm+1)*(km+1);
@@ -89,6 +100,25 @@ int main(int argc,char **argv)
     int period[3],nulls[3]={MPI_PROC_NULL,MPI_PROC_NULL,MPI_PROC_NULL},sizes[3]={1,1,1};
     for(int a=0;a<3;++a)period[a]=jobs[a]==3;
     check(astr_device_transport_prepare(handle,static_cast<int>(MPI_Comm_c2f(MPI_COMM_SELF)),nulls,nulls,sizes,11,0,0,period));
+    // Diagnostic usage appends job, axis (1-based), and i/j/k to the normal arguments.
+    if(argc==9) {
+        const int job=std::atoi(argv[4]),axis=std::atoi(argv[5])-1;
+        const int i=std::atoi(argv[6]),j=std::atoi(argv[7]),k=std::atoi(argv[8]);
+        if(job<0 || job>=cases || axis<0 || axis>2 || i<0 || i>im || j<0 || j>jm || k<0 || k>km)return 2;
+        const int *option=jobs.data()+8*job;const int stage=option[3]-1;
+        const double a[]={1.,.75,1./3.},b[]={0.,.25,2./3.},c[]={1.,.25,2./3.};
+        const double cdt=c[stage]*dt;
+        upload(handle,ASTR_DEVICE_RHS,rhs_data);
+        upload(handle,ASTR_DEVICE_SAVE,saved_data);
+        check(astr_device_air5_symmetric_base(handle,option,a[stage],b[stage],cdt,stage==0,option[6]));
+        check(physics(handle));
+        for(int d=0;d<3;++d)check(astr_device_exchange_axis(handle,ASTR_DEVICE_AIR5_CONVECTION_BASE,d,0));
+        Capture input{{i,j,k},{im,jm,km},{option[0],option[1],option[2]},axis,option[6],option[4],cdt,{}};
+        for(int s=0;s<5;++s)input.floor[s]=floor[s];
+        const bool ok=write_point(state,base,input,argv[2]);
+        check(astr_device_state_destroy(&handle));check(MPI_Finalize());
+        return ok?0:15;
+    }
     void *buffers[4];size_t capacity;check(astr_device_air5_symmetric_buffers(handle,buffers,&capacity));
     for(int slot=1;slot<4;++slot)if(static_cast<double *>(buffers[slot])-static_cast<double *>(buffers[0])!=static_cast<ptrdiff_t>(slot*capacity))return 4;
     file=std::fopen(argv[2],"wb");if(!file)return 2;bool written=write(file,&cases,4,1);
@@ -116,12 +146,8 @@ int main(int argc,char **argv)
                 for(int k=0;k<=km && !captured;++k)for(int j=0;j<=jm && !captured;++j)for(int i=0;i<=im && !captured;++i)
                     if(values[offset(faces,i,j,k,12)]<0) {
                         Capture input{{i,j,k},{im,jm,km},{option[0],option[1],option[2]},axis,top_only,option[4],cdt,{}};
-                        for(int s=0;s<5;++s)input.floor[s]=floor[s];double *device,out[80];check(cudaMalloc(&device,sizeof(out)));
-                        capture_point<<<1,1,0,state.stream>>>(astr::air5::face_fields(state),base,input,state.shock_mask,device);
-                        check(cudaGetLastError());check(cudaMemcpyAsync(out,device,sizeof(out),cudaMemcpyDeviceToHost,state.stream));
-                        check(cudaStreamSynchronize(state.stream));check(cudaFree(device));
-                        FILE *capture=std::fopen((std::string(argv[2])+".point.bin").c_str(),"wb");int one=1;
-                        if(!capture)return 15;write(capture,&one,4,1);write(capture,out,8,80);std::fclose(capture);
+                        for(int s=0;s<5;++s)input.floor[s]=floor[s];
+                        if(!write_point(state,base,input,(std::string(argv[2])+".point.bin").c_str()))return 15;
                         std::fprintf(stderr,"captured face i/j/k=%d/%d/%d\n",i,j,k);captured=true;
                     }
                 return 8;
