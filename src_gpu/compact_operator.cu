@@ -17,11 +17,11 @@ __device__ void point(int axis,int position,int line,int nx,int ny,int &i,int &j
     else { i=line%nx;j=line/nx;k=position; }
 }
 
-__device__ Real value(Fields f,AstrCompactStencil s,int position,int column,int nx,int ny,int lines)
+__device__ Real value(const Fields &f,const AstrCompactStencil &s,int position,int i,int j,int k,int m)
 {
-    int i,j,k;
-    const int index=s.start+column,m=index/lines+1;
-    point(s.axis,position,index%lines,nx,ny,i,j,k);
+    if(s.axis==0) i=position;
+    else if(s.axis==1) j=position;
+    else k=position;
     if(s.kind==1) return m<=3 ? at(f.vel,i,j,k,m) : at(f.tmp,i,j,k);
     if(s.kind==4) return at(f.q,i,j,k,m+s.component_offset-1);
     Real metric[3];
@@ -43,27 +43,30 @@ __global__ void rhs_kernel(Fields fields,AstrCompactStencil s,int n,int nx,int n
 {
     const int row=blockIdx.x*blockDim.x+threadIdx.x,column=blockIdx.y;
     if(row>=n) return;
+    const int index=s.start+column,m=index/lines+1;
+    int i,j,k;
+    point(s.axis,0,index%lines,nx,ny,i,j,k);
     const int g=s.first+row;
     Real result=0;
     if(s.kind!=4) {
-        if(!s.periodic && g==0) result=2*(value(fields,s,row+1,column,nx,ny,lines)-value(fields,s,row,column,nx,ny,lines))
-            +Real(.5)*(value(fields,s,row+2,column,nx,ny,lines)-value(fields,s,row,column,nx,ny,lines));
-        else if(!s.periodic && g==s.total) result=2*(value(fields,s,row,column,nx,ny,lines)-value(fields,s,row-1,column,nx,ny,lines))
-            +Real(.5)*(value(fields,s,row,column,nx,ny,lines)-value(fields,s,row-2,column,nx,ny,lines));
-        else if(!s.periodic && (g==1 || g==s.total-1)) result=Real(.75)*(value(fields,s,row+1,column,nx,ny,lines)-value(fields,s,row-1,column,nx,ny,lines));
-        else result=(Real(7)/Real(9))*(value(fields,s,row+1,column,nx,ny,lines)-value(fields,s,row-1,column,nx,ny,lines))
-            +(Real(1)/Real(36))*(value(fields,s,row+2,column,nx,ny,lines)-value(fields,s,row-2,column,nx,ny,lines));
+        if(!s.periodic && g==0) result=2*(value(fields,s,row+1,i,j,k,m)-value(fields,s,row,i,j,k,m))
+            +Real(.5)*(value(fields,s,row+2,i,j,k,m)-value(fields,s,row,i,j,k,m));
+        else if(!s.periodic && g==s.total) result=2*(value(fields,s,row,i,j,k,m)-value(fields,s,row-1,i,j,k,m))
+            +Real(.5)*(value(fields,s,row,i,j,k,m)-value(fields,s,row-2,i,j,k,m));
+        else if(!s.periodic && (g==1 || g==s.total-1)) result=Real(.75)*(value(fields,s,row+1,i,j,k,m)-value(fields,s,row-1,i,j,k,m));
+        else result=(Real(7)/Real(9))*(value(fields,s,row+1,i,j,k,m)-value(fields,s,row-1,i,j,k,m))
+            +(Real(1)/Real(36))*(value(fields,s,row+2,i,j,k,m)-value(fields,s,row-2,i,j,k,m));
     } else if(!s.periodic && (g<=2 || s.total-g<=2)) {
         const int distance=g<=2 ? g : s.total-g;
         for(int r=0;r<=6;++r) result+=s.boundary[distance+3*r]*
-            value(fields,s,g<=2 ? row-distance+r : row+distance-r,column,nx,ny,lines);
+            value(fields,s,g<=2 ? row-distance+r : row+distance-r,i,j,k,m);
     } else {
         const int distance=g<s.total-g ? g : s.total-g;
         const int radius=!s.periodic && distance==3 ? 3 : (!s.periodic && distance==4 ? 4 : 5);
         const Real *c=radius==3 ? s.c6 : (radius==4 ? s.c8 : s.c10);
-        const Real center=value(fields,s,row,column,nx,ny,lines);
+        const Real center=value(fields,s,row,i,j,k,m);
         result=c[0]*(center+center);
-        for(int r=1;r<=radius;++r) result+=c[r]*(value(fields,s,row+r,column,nx,ny,lines)+value(fields,s,row-r,column,nx,ny,lines));
+        for(int r=1;r<=radius;++r) result+=c[r]*(value(fields,s,row+r,i,j,k,m)+value(fields,s,row-r,i,j,k,m));
     }
     rhs[row+static_cast<size_t>(n)*column]=result;
 }

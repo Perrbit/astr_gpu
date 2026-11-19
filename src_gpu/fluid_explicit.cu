@@ -347,6 +347,43 @@ __device__ Real convective_flux(AstrDeviceView q, AstrDeviceView vel, AstrDevice
     return at(jac,i,j,k)*(value*u+at(metric,i,j,k,direction,component-1)*pressure);
 }
 
+#ifdef ASTR_GPUFUSION_PERIODIC_CONVECTION
+__device__ Real periodic_convective_pair(const AstrDeviceView &q, const AstrDeviceView &vel,
+    const AstrDeviceView &prs, const AstrDeviceView &metric, const AstrDeviceView &jac,
+    int i, int j, int k, int c, int direction, int di, int dj, int dk)
+{
+    const Real plus = convective_flux(q,vel,prs,metric,jac,i+di,j+dj,k+dk,c,direction);
+    const Real minus = convective_flux(q,vel,prs,metric,jac,i-di,j-dj,k-dk,c,direction);
+    return plus-minus;
+}
+
+__global__ __launch_bounds__(threads)
+void periodic_convection_kernel(AstrDeviceView q, AstrDeviceView vel, AstrDeviceView prs,
+    AstrDeviceView metric, AstrDeviceView jac, AstrDeviceView rhs, int nx, int ny, size_t count, int axis)
+{
+    const int lane = threadIdx.x+blockDim.x*(threadIdx.y+blockDim.y*threadIdx.z);
+    const size_t id = static_cast<size_t>(blockIdx.x)*threads+lane;
+    if (id>=count) return;
+    int i,j,k;
+    point(id,nx,ny,i,j,k);
+    const int di=axis==0,dj=axis==1,dk=axis==2;
+    const int direction=axis+1;
+    // Limit live flux temporaries across the five conserved components.
+    #pragma unroll 1
+    for (int c=1; c<=5; ++c) {
+        Real df=0;
+        #pragma unroll 1
+        for (int r=1; r<=3; ++r) {
+            const Real pair = periodic_convective_pair(q,vel,prs,metric,jac,i,j,k,c,direction,r*di,r*dj,r*dk);
+            if (r==1) df=Real(.75)*pair;
+            else if (r==2) df-=Real(.15)*pair;
+            else df+=inv60*pair;
+        }
+        at(rhs,i,j,k,c) -= df;
+    }
+}
+#endif
+
 __device__ Real viscous_flux(AstrDeviceView stress, AstrDeviceView heat,
                                AstrDeviceView metric, AstrDeviceView jac,
                                int i, int j, int k, int component, int direction)
@@ -661,11 +698,19 @@ template<bool viscous> int divergence(State &s)
     const size_t count = physical_count(s);
     for (int axis = 0; axis < 3; ++axis) {
         const dim3 block = axis == 0 ? dim3(512,1,1) : (axis == 1 ? dim3(32,16,1) : dim3(64,1,8));
-        divergence_kernel<viscous><<<(count+threads-1)/threads,block,0,s.stream>>>(
-            s.fields[0].view,s.fields[4].view,s.fields[5].view,s.fields[7].view,
-            s.fields[ASTR_DEVICE_JACOBIAN].view,s.fields[ASTR_DEVICE_STRESS].view,
-            s.fields[ASTR_DEVICE_HEAT_FLUX].view,s.fields[1].view,
-            s.upper[0]+1,s.upper[1]+1,count,axis,FluxBox{});
+#ifdef ASTR_GPUFUSION_PERIODIC_CONVECTION
+        if (!viscous)
+            periodic_convection_kernel<<<(count+threads-1)/threads,block,0,s.stream>>>(
+                s.fields[0].view,s.fields[4].view,s.fields[5].view,s.fields[7].view,
+                s.fields[ASTR_DEVICE_JACOBIAN].view,s.fields[1].view,
+                s.upper[0]+1,s.upper[1]+1,count,axis);
+        else
+#endif
+            divergence_kernel<viscous><<<(count+threads-1)/threads,block,0,s.stream>>>(
+                s.fields[0].view,s.fields[4].view,s.fields[5].view,s.fields[7].view,
+                s.fields[ASTR_DEVICE_JACOBIAN].view,s.fields[ASTR_DEVICE_STRESS].view,
+                s.fields[ASTR_DEVICE_HEAT_FLUX].view,s.fields[1].view,
+                s.upper[0]+1,s.upper[1]+1,count,axis,FluxBox{});
         const int status = astr::finish_launch(s);
         if (status != 0) return status;
     }

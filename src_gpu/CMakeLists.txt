@@ -35,6 +35,9 @@ set_target_properties(astr_device_state PROPERTIES CUDA_STANDARD 14
 target_include_directories(astr_device_state PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/src" "${ASTR_DEVICE_STATE_MODULES}")
 target_compile_options(astr_device_state PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+if(ASTR_GPU_CPP_BACKEND STREQUAL "gpufusion" AND ASTR_NUMERICAL_PRECISION STREQUAL "fp64")
+  set_property(SOURCE fluid_explicit.cu APPEND PROPERTY COMPILE_DEFINITIONS ASTR_GPUFUSION_PERIODIC_CONVECTION)
+endif()
 set_source_files_properties(
   chemistry_properties.cu chemistry_coupling.cu chemistry_transport.cu chemistry_faces.cu
   ${air5_candidate_sources} chemistry_diffusion.cu chemistry_convection_budget.cu

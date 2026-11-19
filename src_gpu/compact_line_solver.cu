@@ -347,11 +347,16 @@ int exchange(DistributedPlan &p,const Real *send,int nrhs,int left,int right)
     status=MPI_Waitall(4,requests,MPI_STATUSES_IGNORE);
     if(status!=MPI_SUCCESS) return status;
     if(p.mode==ASTR_HALO_PINNED) {
-        error=cudaMemcpyAsync(p.low,p.host[1],bytes,cudaMemcpyHostToDevice,p.parent->stream);
-        if(error!=cudaSuccess) return static_cast<int>(error);
-        error=cudaMemcpyAsync(p.high,p.host[2],bytes,cudaMemcpyHostToDevice,p.parent->stream);
-        if(error!=cudaSuccess) return static_cast<int>(error);
-        p.staging_bytes+=3*bytes;
+        // Both slots start at zero and stay mirrored; a null receive changes neither.
+        if(left!=MPI_PROC_NULL) {
+            error=cudaMemcpyAsync(p.low,p.host[1],bytes,cudaMemcpyHostToDevice,p.parent->stream);
+            if(error!=cudaSuccess) return static_cast<int>(error);
+        }
+        if(right!=MPI_PROC_NULL) {
+            error=cudaMemcpyAsync(p.high,p.host[2],bytes,cudaMemcpyHostToDevice,p.parent->stream);
+            if(error!=cudaSuccess) return static_cast<int>(error);
+        }
+        p.staging_bytes+=bytes*(1+(left!=MPI_PROC_NULL)+(right!=MPI_PROC_NULL));
     }
     p.sent_bytes+=bytes*((left!=MPI_PROC_NULL)+(right!=MPI_PROC_NULL));
     return p.parent->compact_sync || p.parent->debug_sync ? static_cast<int>(cudaStreamSynchronize(p.parent->stream)) : 0;
