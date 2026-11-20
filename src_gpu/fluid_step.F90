@@ -2,6 +2,7 @@ module fluid_step
   use iso_c_binding, only: c_int,c_ptr
   use device_state, only: real_kind=>c_device_real_kind,device_q,device_filter_work,device_stress,device_heat_flux
   use fluid_explicit
+  use halo_transport, only: device_viscous_exchange_begin,device_viscous_exchange_end
   implicit none
   private
   public :: fluid_advance_stage,fluid_prepare_stage,fluid_advance_prepared_stage
@@ -165,7 +166,7 @@ contains
 
   integer(c_int) function fluid_advance_prepared_stage(handle,stage,dt,c2,c6,reynolds,prandtl,c5,tc,tc1, &
       viscous,exchange,begin_exchange,end_exchange,gradient_operator,convection_operator,divergence_operator, &
-      integrated_viscous_operator,source_operator,sensor_operator,post_update_operator) result(status)
+      integrated_viscous_operator,source_operator,sensor_operator,post_update_operator,packed_viscous) result(status)
     type(c_ptr),value :: handle
     integer,intent(in) :: stage
     real(real_kind),intent(in) :: dt,c2,c6,reynolds,prandtl,c5,tc,tc1
@@ -177,6 +178,8 @@ contains
     procedure(device_operator),optional :: source_operator
     procedure(device_operator),optional :: sensor_operator
     procedure(device_operator),optional :: post_update_operator
+    logical,intent(in),optional :: packed_viscous
+    logical :: packed
     integer(c_int) :: axis
     real(real_kind),parameter :: a(3)=[1._real_kind,.75_real_kind,1._real_kind/3._real_kind], &
       b(3)=[0._real_kind,.25_real_kind,2._real_kind/3._real_kind], &
@@ -185,6 +188,8 @@ contains
       status=-1
       return
     endif
+    packed=.false.
+    if(present(packed_viscous)) packed=packed_viscous
     if(stage==1) then
       status=fluid_rk_save(handle)
       if(status/=0) return
@@ -206,7 +211,11 @@ contains
       if(.not.present(integrated_viscous_operator)) then
         status=fluid_viscous_flux(handle,reynolds,prandtl,c5,tc,tc1)
         if(status/=0) return
-        status=begin_exchange(handle,device_stress,0_c_int,0_c_int)
+        if(packed) then
+          status=device_viscous_exchange_begin(handle,0_c_int)
+        else
+          status=begin_exchange(handle,device_stress,0_c_int,0_c_int)
+        endif
         if(status/=0) return
       endif
     endif
@@ -222,16 +231,27 @@ contains
       if(present(integrated_viscous_operator)) then
         status=integrated_viscous_operator(handle)
       else
-      status=end_exchange(handle,device_stress,0_c_int,0_c_int)
-      if(status/=0) return
-      status=exchange(handle,device_heat_flux,0_c_int,0_c_int)
-      if(status/=0) return
-      do axis=1,2
-        status=exchange(handle,device_stress,axis,0_c_int)
+      if(packed) then
+        status=device_viscous_exchange_end(handle,0_c_int)
         if(status/=0) return
-        status=exchange(handle,device_heat_flux,axis,0_c_int)
+        do axis=1,2
+          status=device_viscous_exchange_begin(handle,axis)
+          if(status/=0) return
+          status=device_viscous_exchange_end(handle,axis)
+          if(status/=0) return
+        enddo
+      else
+        status=end_exchange(handle,device_stress,0_c_int,0_c_int)
         if(status/=0) return
-      enddo
+        status=exchange(handle,device_heat_flux,0_c_int,0_c_int)
+        if(status/=0) return
+        do axis=1,2
+          status=exchange(handle,device_stress,axis,0_c_int)
+          if(status/=0) return
+          status=exchange(handle,device_heat_flux,axis,0_c_int)
+          if(status/=0) return
+        enddo
+      endif
       if(present(divergence_operator)) then
         status=divergence_operator(handle)
       else

@@ -69,6 +69,7 @@ module fluid_runtime
   logical,save :: crashfix_ready=.false.
   real(real_kind),save :: crashfix_pressure_floor=0.e0_real_kind
   logical,save :: mixed_viscous_flux=.false.,mixed_interface_flux=.false.,mixed_characteristic_flux=.false.,mixed_derivative=.false.
+  logical,save :: packed_viscous_halo=.false.,halo_axis_timing=.false.
   real(real_kind),allocatable,save :: lower_wall_velocity(:,:)
 #ifdef ASTR_BUILD_TESTING
   integer(c_int),save :: exchange_sequence=0
@@ -160,12 +161,32 @@ contains
     use benchmark_runtime, only: benchmark_gpu_rk_timing_enabled
     integer :: local_rank,ierr,choice,low,high,env_status,filter_components,workspace_choice
     integer(c_size_t) :: sigma_bytes,heat_bytes
-    integer(c_int) :: transport_mode
+    integer(c_int) :: transport_mode,halo_timing,halo_components
     logical :: nodal_fluxes,characteristic_periodic,characteristic_plate,characteristic_xphysical,derivative_periodic,derivative_plate
     type(device_view) :: filter_view
     character(32) :: sync,value,precision,candidate
+    call get_environment_variable('ASTR_CPP_VISCOUS_HALO',value,status=env_status)
+    if(env_status==1) value='separate'
+    choice=-1
+    if(value=='separate') choice=0
+    if(value=='packed') choice=1
+    call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call check(ierr,'viscous halo mode minimum')
+    call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call check(ierr,'viscous halo mode maximum')
+    call require((env_status==0.or.env_status==1).and.low>=0.and.low==high, &
+      'ASTR_CPP_VISCOUS_HALO requires consistent separate or packed')
+    packed_viscous_halo=choice==1
+    call get_environment_variable('ASTR_CPP_HALO_AXIS_TIMING',value,status=env_status)
+    if(env_status==1) value='0'
+    call require((env_status==0.or.env_status==1).and.(value=='0'.or.value=='1'), &
+      'ASTR_CPP_HALO_AXIS_TIMING requires 0 or 1')
+    halo_axis_timing=value=='1'
+    call require(.not.halo_axis_timing.or.benchmark_gpu_rk_timing_enabled(), &
+      'ASTR_CPP_HALO_AXIS_TIMING requires ASTR_GPU_RK_TIMING=1')
 #ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb)then
+      call require(.not.packed_viscous_halo.and..not.halo_axis_timing,'use the AIR5 private halo controls for reacting flow')
       call create_solver_context(transport_mode,local_rank,sync)
       call initialize_air5_cpp(context,transport_mode)
       write(*,'(a,i0,2a,a,i0,2a)') 'ASTR_GPU_CPP rank=',mpirank,' backend=',ASTR_GPU_CPP_NAME, &
@@ -327,6 +348,11 @@ contains
       if(lio) write(*,'(2a)') 'ASTR_GPU_CPP filter_workspace=',trim(value)
     endif
     call create_solver_context(transport_mode,local_rank,sync)
+    if(packed_viscous_halo) call require(transport_mode==halo_device.and..not.physical_boundaries.and. &
+      all([lihomo,ljhomo,lkhomo]).and.diffterm.and.conschm=='643e'.and.difschm=='643e'.and. &
+      convection_form=='standard'.and.viscous_form=='standard'.and..not.mixed_viscous_flux, &
+      'packed viscous halo requires periodic device MPI with standard 643e/643e and native-precision fluxes')
+    if(lio) write(*,'(a,a)') 'ASTR_GPU_CPP viscous_halo=',merge('packed  ','separate',packed_viscous_halo)
     ! TGV scalar enstrophy/dissipation consume gradients even for inviscid runs.
     call check(fluid_prepare(context,1_c_int),'prepare primitive and gradient fields')
     if(mixed_derivative) then
@@ -374,10 +400,12 @@ contains
       if(lio) write(*,'(a,i0)') 'ASTR_GPU_CPP filter_workspace_bytes=', &
         bytes(product(int(filter_view%extent,c_size_t)))
     endif
+    halo_components=int(merge(9,merge(6,5,nodal_fluxes),packed_viscous_halo),c_int)
+    halo_timing=int(merge(1,0,benchmark_gpu_rk_timing_enabled()),c_int)
+    if(halo_axis_timing) halo_timing=2_c_int
     call check(device_transport_prepare(context,int(MPI_COMM_WORLD,c_int), &
       int([mpileft,mpidown,mpiback],c_int),int([mpiright,mpiup,mpifront],c_int), &
-      int([isize,jsize,ksize],c_int),int(merge(6,5,nodal_fluxes),c_int),transport_mode, &
-      int(merge(1,0,benchmark_gpu_rk_timing_enabled()),c_int), &
+      int([isize,jsize,ksize],c_int),halo_components,transport_mode,halo_timing, &
       int(merge(1,0,[lihomo,ljhomo,lkhomo]),c_int)),'prepare halo transport')
     if(mp_positivity) then
       call check(mp_positivity_prepare_cpp(context,int(MPI_COMM_WORLD,c_int), &
@@ -854,6 +882,9 @@ contains
     logical :: timing
     real(clock_kind) :: started,prepared,statistics_begin,statistics_seconds,elapsed
     real(c_double) :: halo_times(6)
+    real(c_double) :: axis_times(7,5,3)
+    character(14),parameter :: groups(5)=[character(14) :: 'q','filter_work','stress','heat','viscous_packed']
+    integer :: axis,group
 #ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb)then
       host_primitives_current=.false.
@@ -930,7 +961,7 @@ contains
         call check(fluid_advance_prepared_stage(context,rkstep,deltat,const2,const6,reynolds,prandtl, &
           const5,tempconst,tempconst1,diffterm,cpp_exchange_axis,device_exchange_begin,cpp_exchange_end, &
           gradient_selected,convection_selected,viscous_selected,source_operator=source_selected, &
-          post_update_operator=post_update_selected),'advance RK stage')
+          post_update_operator=post_update_selected,packed_viscous=packed_viscous_halo),'advance RK stage')
       endif
 #ifdef ASTR_BUILD_TESTING
       call snapshot_updated_stage()
@@ -945,6 +976,16 @@ contains
         'ASTR_GPU_RANK_RK_TIMING',mpirank,nstep,prepared,elapsed-prepared,elapsed
       call check(device_transport_metrics(context,halo_times,1_c_int),'RK halo timing')
       write(*,'(a,2(1x,i0),6(1x,es24.16e3))') 'ASTR_CPP_HALO_TIMING',mpirank,nstep,halo_times
+      if(halo_axis_timing) then
+        call check(device_transport_axis_metrics(context,axis_times),'RK halo axis timing')
+        do axis=1,3
+          do group=1,5
+            if(axis_times(7,group,axis)>0) write(*,'(a,3(1x,i0),1x,a,1x,i0,6(1x,es24.16e3))') &
+              'ASTR_CPP_HALO_AXIS_TIMING',mpirank,nstep,axis,trim(groups(group)), &
+              int(axis_times(7,group,axis)),axis_times(1:6,group,axis)
+          enddo
+        enddo
+      endif
     endif
   end subroutine
   integer(c_int) function prepare_staged_profile(handle) result(status)
