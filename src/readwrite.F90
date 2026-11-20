@@ -1210,8 +1210,22 @@ module readwrite
     use hdf5io
     !
     character(len=*),intent(in) :: gridh5file
+    character(len=16) :: grid_read
+    integer :: env_status
+    logical :: independent
     !
-    call h5io_init(filename=gridh5file,mode='read')
+    independent=.false.
+    if(mpirank==0) then
+      call get_environment_variable('ASTR_GRID_HDF5_READ',grid_read,status=env_status)
+      if(env_status/=1) then
+        if(env_status/=0.or.grid_read/='independent') error stop 'ASTR_GRID_HDF5_READ must be independent or unset'
+        if(iomode/='h') error stop 'independent HDF5 grid read requires structured input (iomode=h)'
+        independent=.true.
+        print*, ' ** HDF5 grid read: independent rank-local hyperslabs'
+      endif
+    endif
+    call bcast(independent)
+    call h5io_init(filename=gridh5file,mode='read',independent_read=independent)
     call h5read(varname='x',var=x(0:im,0:jm,0:km,1),mode=iomode)
     call h5read(varname='y',var=x(0:im,0:jm,0:km,2),mode=iomode)
     call h5read(varname='z',var=x(0:im,0:jm,0:km,3),mode=iomode)

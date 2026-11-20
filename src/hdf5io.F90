@@ -76,6 +76,7 @@ module hdf5io
   !
 #ifdef HDF5
   integer(hid_t) :: h5file_id
+  logical, private :: h5_independent_read = .false.
 #endif
   !+------------------------------------------+
   ! h5file_id : file id to operate h5 file io |
@@ -92,7 +93,7 @@ module hdf5io
   !| -------------                                                     |
   !| 03-Jun-2020 | Created by J. Fang STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
-  subroutine h5io_init(filename,mode,comm)
+  subroutine h5io_init(filename,mode,comm,independent_read)
     !
     use parallel, only: mpirank
     use output_input_resources, only: wall_source_path
@@ -101,6 +102,7 @@ module hdf5io
     character(len=*),intent(in) :: filename
     character(len=*),intent(in) :: mode
     integer,intent(in),optional :: comm
+    logical,intent(in),optional :: independent_read
     ! h5file_id is returned
     !
 #ifdef HDF5
@@ -115,13 +117,21 @@ module hdf5io
     call h5pcreate_f(h5p_file_access_f,plist_id,h5error)
     if(h5error.ne.0)  stop ' !! error in h5io_init call h5pcreate_f'
     !
-    if(present(comm)) then
+    h5_independent_read=.false.
+    if(present(independent_read)) h5_independent_read=independent_read
+    if(h5_independent_read) then
+      if(mode/='read') error stop 'independent HDF5 access is read-only'
+      call h5pset_fapl_sec2_f(plist_id,h5error)
+    elseif(present(comm)) then
       call h5pset_fapl_mpio_f(plist_id,comm,mpi_info_null,h5error)
     else
       call h5pset_fapl_mpio_f(plist_id,mpi_comm_world,mpi_info_null,   &
                                                                 h5error)
     endif
-    if(h5error.ne.0)  stop ' !! error in h5io_init call h5pset_fapl_mpio_f'
+    if(h5error.ne.0) then
+      if(h5_independent_read) error stop ' !! error selecting independent HDF5 grid driver'
+      stop ' !! error in h5io_init call h5pset_fapl_mpio_f'
+    endif
     !
     if(mode=='write') then
       call h5fcreate_f(filename,h5f_acc_trunc_f,h5file_id,             &
@@ -167,6 +177,7 @@ module hdf5io
     !
     call h5close_f(h5error)
     if(h5error.ne.0)  stop ' !! error in h5io_end call h5close_f'
+    h5_independent_read=.false.
     !
 #endif
     !
@@ -242,14 +253,16 @@ module hdf5io
     call h5dget_space_f(dset_id,filespace,h5error)
     call h5sselect_hyperslab_f(filespace,h5s_select_set_f,offset,      &
                                                            dimt,h5error)
-    ! Create property list for collective dataset read
-    call h5pcreate_f(h5p_dataset_xfer_f,plist_id,h5error)
-    call h5pset_dxpl_mpio_f(plist_id,h5fd_mpio_collective_f,h5error)
-    !
-    ! Read 3D array
+    ! Independent grid reads use the same local hyperslab without an MPI transfer list.
+    plist_id=h5p_default_f
+    if(.not.h5_independent_read) then
+      call h5pcreate_f(h5p_dataset_xfer_f,plist_id,h5error)
+      call h5pset_dxpl_mpio_f(plist_id,h5fd_mpio_collective_f,h5error)
+    endif
     call h5dread_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),var,dimt,h5error,         &
                    mem_space_id=memspace,file_space_id=filespace,      &
                                                       xfer_prp=plist_id)
+    if(h5_independent_read.and.h5error<0) error stop 'independent HDF5 grid coordinate read failed'
     !Close dataspace
     call h5sclose_f(filespace,h5error)
     !
@@ -257,7 +270,7 @@ module hdf5io
     !
     call h5dclose_f(dset_id,h5error)
     !
-    call h5pclose_f(plist_id,h5error)
+    if(.not.h5_independent_read) call h5pclose_f(plist_id,h5error)
     !
     if(lio) print*,' >> ',varname
     !
@@ -388,14 +401,15 @@ module hdf5io
     call h5dget_space_f(dset_id,filespace,h5error)
     call h5sselect_hyperslab_f(filespace,h5s_select_set_f,offset,      &
                                                            dimt,h5error)
-    ! Create property list for collective dataset read
-    call h5pcreate_f(h5p_dataset_xfer_f,plist_id,h5error)
-    call h5pset_dxpl_mpio_f(plist_id,h5fd_mpio_collective_f,h5error)
-    !
-    ! Read 3D array
+    plist_id=h5p_default_f
+    if(.not.h5_independent_read) then
+      call h5pcreate_f(h5p_dataset_xfer_f,plist_id,h5error)
+      call h5pset_dxpl_mpio_f(plist_id,h5fd_mpio_collective_f,h5error)
+    endif
     call h5dread_f(dset_id,h5t_native_integer,var,dimt,h5error,        &
                    mem_space_id=memspace,file_space_id=filespace,      &
                                                       xfer_prp=plist_id)
+    if(h5_independent_read.and.h5error<0) error stop 'independent HDF5 grid node-state read failed'
     !Close dataspace
     call h5sclose_f(filespace,h5error)
     !
@@ -403,7 +417,7 @@ module hdf5io
     !
     call h5dclose_f(dset_id,h5error)
     !
-    call h5pclose_f(plist_id,h5error)
+    if(.not.h5_independent_read) call h5pclose_f(plist_id,h5error)
     !
     if(lio) print*,' >> ',varname
     !

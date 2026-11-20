@@ -536,6 +536,11 @@ mpiexec -np 2 ./build/bin/astr run datin/input.chl.case
 
 lreadgrid=t 从 gridfile 读取 x/y/z HDF5 数据集。维数、索引、共享端点及
 Fortran/HDF5 排布应沿用已验证工具，不能凭 NumPy 数组外观猜测。
+
+默认并行读取网格。对已有结构网格（`lreadgrid=t`、`iomode='h'`），可在启动
+环境中显式设置 `ASTR_GRID_HDF5_READ=independent`，使各 MPI rank 以只读方式
+独立读取同一文件中的本地子块。不改变网格内容、分区、halo 通信、检查点或
+场输出方式；它不是自动回退，也不改变未设置该变量时的行为。
 lreadgrid=f 根据 flowtype 生成网格，不代表域长可由输入中任意新字段指定。
 
 曲线网格检查 Jacobian、度量、面法向和边界兼容性，先做自由流保持与短窗对照。
