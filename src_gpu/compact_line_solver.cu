@@ -256,6 +256,7 @@ namespace {
 struct InterfaceExchange {
     MPI_Request requests[4]{MPI_REQUEST_NULL,MPI_REQUEST_NULL,MPI_REQUEST_NULL,MPI_REQUEST_NULL};
     int nrhs=0,left=MPI_PROC_NULL,right=MPI_PROC_NULL;
+    bool restore_only=false;
 };
 
 struct DistributedPlan {
@@ -361,14 +362,19 @@ int post_exchange(DistributedPlan &p,const Real *send,int nrhs,int left,int righ
     Real *low=p.mode==ASTR_HALO_DEVICE ? p.low : p.host[1];
     Real *high=p.mode==ASTR_HALO_DEVICE ? p.high : p.host[2];
     const Real *source=p.mode==ASTR_HALO_DEVICE ? send : p.host[0];
-    int status=MPI_Irecv(low,2*nrhs,compact_mpi_type,left,1,p.communicator,&request.requests[0]);
-    if(status!=MPI_SUCCESS) return status;
+    int status=MPI_SUCCESS;
+    if(!request.restore_only) {
+        status=MPI_Irecv(low,2*nrhs,compact_mpi_type,left,1,p.communicator,&request.requests[0]);
+        if(status!=MPI_SUCCESS) return status;
+    }
     status=MPI_Irecv(high,2*nrhs,compact_mpi_type,right,0,p.communicator,&request.requests[1]);
     if(status!=MPI_SUCCESS) return status;
     status=MPI_Isend(source,2*nrhs,compact_mpi_type,left,0,p.communicator,&request.requests[2]);
     if(status!=MPI_SUCCESS) return status;
-    status=MPI_Isend(source,2*nrhs,compact_mpi_type,right,1,p.communicator,&request.requests[3]);
-    if(status!=MPI_SUCCESS) return status;
+    if(!request.restore_only) {
+        status=MPI_Isend(source,2*nrhs,compact_mpi_type,right,1,p.communicator,&request.requests[3]);
+        if(status!=MPI_SUCCESS) return status;
+    }
     request.nrhs=nrhs;request.left=left;request.right=right;
     return 0;
 }
@@ -380,25 +386,28 @@ int complete_exchange(DistributedPlan &p,InterfaceExchange &request)
     const int status=MPI_Waitall(4,request.requests,MPI_STATUSES_IGNORE);
     if(status!=MPI_SUCCESS) return status;
     request.nrhs=0;
+    const bool has_left=left!=MPI_PROC_NULL,has_right=right!=MPI_PROC_NULL;
+    const bool receive_low=has_left && !request.restore_only;
     if(p.mode==ASTR_HALO_PINNED) {
         // Both slots start at zero and stay mirrored; a null receive changes neither.
-        if(left!=MPI_PROC_NULL) {
+        if(receive_low) {
             const cudaError_t error=cudaMemcpyAsync(p.low,p.host[1],bytes,cudaMemcpyHostToDevice,p.parent->stream);
             if(error!=cudaSuccess) return static_cast<int>(error);
         }
-        if(right!=MPI_PROC_NULL) {
+        if(has_right) {
             const cudaError_t error=cudaMemcpyAsync(p.high,p.host[2],bytes,cudaMemcpyHostToDevice,p.parent->stream);
             if(error!=cudaSuccess) return static_cast<int>(error);
         }
-        p.staging_bytes+=bytes*(1+(left!=MPI_PROC_NULL)+(right!=MPI_PROC_NULL));
+        p.staging_bytes+=bytes*(1+receive_low+has_right);
     }
-    p.sent_bytes+=bytes*((left!=MPI_PROC_NULL)+(right!=MPI_PROC_NULL));
+    p.sent_bytes+=bytes*(has_left+(has_right && !request.restore_only));
     return p.parent->compact_sync || p.parent->debug_sync ? static_cast<int>(cudaStreamSynchronize(p.parent->stream)) : 0;
 }
 
-int exchange(DistributedPlan &p,const Real *send,int nrhs,int left,int right)
+int exchange(DistributedPlan &p,const Real *send,int nrhs,int left,int right,bool restore_only=false)
 {
     InterfaceExchange request;
+    request.restore_only=restore_only;
     const int status=post_exchange(p,send,nrhs,left,right,request);
     return status==0 ? complete_exchange(p,request) : status;
 }
@@ -650,7 +659,8 @@ extern "C" int astr_compact_distributed_restore(void *handle,int nrhs)
     int left=p.rank-1,right=p.rank+1;
     if(p.cyclic) { left=(left+p.ranks)%p.ranks;right%=p.ranks; }
     else { if(left<0) left=MPI_PROC_NULL;if(right>=p.ranks) right=MPI_PROC_NULL; }
-    if(status==0) status=exchange(p,p.endpoint[0],nrhs,left,right);
+    // Only the right rank's first node is needed to restore our upper shared node.
+    if(status==0) status=exchange(p,p.endpoint[0],nrhs,left,right,true);
     if(p.phase_begin) p.phase_seconds[4]+=MPI_Wtime()-started;
     if(status==0) status=start_device_phase(p);
     if(status==0) {

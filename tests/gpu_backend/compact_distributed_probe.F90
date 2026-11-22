@@ -21,7 +21,7 @@ program compact_distributed_probe_cpp
   integer,allocatable :: counts(:),displacements(:)
   real(real_kind) :: alpha,edge(2),constructed_edge(2),scaled,residual,restored_error,manufactured,scale
   real(real_kind) :: maximum_error=0,maximum_residual=0,maximum_restore=0
-  integer(c_int64_t) :: metrics(2),wire(5)
+  integer(c_int64_t) :: metrics(2),wire(5),before_restore(5),packet_bytes
   integer(c_int) :: mode,status
   integer :: ierr,world_rank,world_size,local_rank,parent,cart,line,rank,ranks,axis,coords(3),dims(3), &
     plane,il,kind,ip,n,m,nodes,i,j,g,batch,nrhs,debug,cases=0,csv,binary,header(9)
@@ -168,7 +168,14 @@ program compact_distributed_probe_cpp
               else
                 call solve_distributed_compact_cpp(plan,nrhs)
               endif
+              call wire_counts(before_restore)
               call restore_distributed_compact_cpp(plan,nrhs)
+              call wire_counts(wire)
+              if(any(wire(1:2)-before_restore(1:2)/=1)) call fail('restore must post one send and one receive')
+              packet_bytes=2_c_int64_t*nrhs*real_bytes
+              if(wire(3)-before_restore(3)/=merge(packet_bytes,0_c_int64_t,periodic.or.rank>0).or. &
+                wire(4)-before_restore(4)/=merge(packet_bytes,0_c_int64_t,periodic.or.rank<ranks-1)) &
+                call fail('restore must send left and receive right only')
               call compact_distributed_transfer_cpp(plan,actual,nrhs,2)
               call compact_distributed_transfer_cpp(plan,restored,nrhs,3)
               if(.not.all(ieee_is_finite(actual(:,:nrhs))).or. &
