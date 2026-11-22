@@ -67,6 +67,7 @@ def main():
     parser.add_argument('--topologies', nargs='+', default=['1,1,1', '2,1,1', '1,2,1', '1,1,2'])
     parser.add_argument('--transport', choices=['pinned', 'device-aware'], required=True)
     parser.add_argument('--compare', type=Path, help='same topology records from another transport')
+    parser.add_argument('--split', action='store_true', help='exercise split PCR while preparing a second batch')
     parser.add_argument('--precision',choices=['fp64','fp32'],default='fp64')
     parser.add_argument('--sanitizer',choices=['memcheck','initcheck'])
     options = parser.parse_args()
@@ -78,6 +79,8 @@ def main():
         if len(dims) != 3 or min(dims) < 1:
             raise ValueError('topology must contain three positive dimensions')
         ranks = int(np.prod(dims))
+        if options.split and ranks == 1:
+            parser.error('--split needs at least one distributed axis')
         name = 'np%d_%dx%dx%d' % (ranks, *dims)
         directory = options.output/name
         directory.mkdir()
@@ -87,10 +90,19 @@ def main():
                 '--tool',options.sanitizer,'--error-exitcode','99','--log-file',str(directory.resolve()/'sanitizer.%p.log')]
             if options.sanitizer=='memcheck':command+=['--leak-check','full']
         command += [str(options.binary.resolve()), str(directory.resolve()), *map(str, dims), options.transport]
+        if options.split:
+            command += ['split']
         with (directory/'run.log').open('w') as log:
             subprocess.run(command, env=os.environ, stdin=subprocess.DEVNULL, stdout=log,
                            stderr=subprocess.STDOUT, check=True)
         summary = summarize(directory, ranks, options.transport,options.precision)
+        if options.split:
+            counts = re.findall(r'^CPP_DISTRIBUTED_SPLIT_CASES\s+(\d+)\s+(\d+)$',
+                                (directory/'run.log').read_text(), re.M)
+            expected = 72 * sum(v > 1 for v in dims)
+            if sorted((int(r), int(n)) for r, n in counts) != [(r, expected) for r in range(ranks)]:
+                raise AssertionError(f'{name}: incomplete split PCR observations')
+            summary['split_cases'] = ranks*expected
         actual = records(directory,options.precision)
         if len(actual) != 216*ranks:
             raise AssertionError(f'{name}: incomplete binary observations')
@@ -109,7 +121,8 @@ def main():
             if options.sanitizer=='memcheck' and any('LEAK SUMMARY: 0 bytes leaked' not in p.read_text() for p in paths):
                 raise AssertionError('compact allocation leak')
         report[name] = dict(command=command, transport=options.transport,precision=options.precision,
-            binary_sha256=hashlib.sha256(options.binary.read_bytes()).hexdigest(),sanitizer=options.sanitizer, **summary)
+            binary_sha256=hashlib.sha256(options.binary.read_bytes()).hexdigest(),sanitizer=options.sanitizer,
+            test_shared_devices=os.environ.get("ASTR_TEST_COMPACT_LOCAL_DEVICES"), **summary)
         print(name, summary, flush=True)
         (options.output/'report.json').write_text(json.dumps(report, indent=2)+'\n')
 

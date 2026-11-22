@@ -253,6 +253,11 @@ extern "C" int astr_compact_line_destroy(void **handle)
 }
 
 namespace {
+struct InterfaceExchange {
+    MPI_Request requests[4]{MPI_REQUEST_NULL,MPI_REQUEST_NULL,MPI_REQUEST_NULL,MPI_REQUEST_NULL};
+    int nrhs=0,left=MPI_PROC_NULL,right=MPI_PROC_NULL;
+};
+
 struct DistributedPlan {
     CompactPlan *local = nullptr;
     astr::State *parent = nullptr;
@@ -265,7 +270,28 @@ struct DistributedPlan {
     Real *endpoint[2]{}, *low=nullptr, *high=nullptr, *first=nullptr, *last=nullptr;
     Real *host[3]{};
     Real correction[4]{};
+    InterfaceExchange pending;
+    int local_ready=0;
+    cudaEvent_t phase_begin=nullptr,phase_end=nullptr;
+    // Local GPU, PCR interface host, periodic endpoint host, backsolve GPU, restore exchange host.
+    double phase_seconds[5]{};
 };
+
+int start_device_phase(DistributedPlan &p)
+{
+    return p.phase_begin ? static_cast<int>(cudaEventRecord(p.phase_begin,p.parent->stream)) : 0;
+}
+
+int end_device_phase(DistributedPlan &p,int phase,int status)
+{
+    if(status!=0 || !p.phase_begin) return status;
+    cudaError_t error=cudaEventRecord(p.phase_end,p.parent->stream);
+    if(error==cudaSuccess) error=cudaEventSynchronize(p.phase_end);
+    float ms=0.0f;
+    if(error==cudaSuccess) error=cudaEventElapsedTime(&ms,p.phase_begin,p.phase_end);
+    if(error==cudaSuccess) p.phase_seconds[phase]+=1e-3*ms;
+    return static_cast<int>(error);
+}
 
 __global__ void endpoints(int n,int nrhs,const Real *values,Real *endpoint)
 {
@@ -323,7 +349,7 @@ __global__ void restore_nodes(int n,int nodes,const Real *solution,const Real *h
         ? solution[i+static_cast<size_t>(n)*j] : high[2*j];
 }
 
-int exchange(DistributedPlan &p,const Real *send,int nrhs,int left,int right)
+int post_exchange(DistributedPlan &p,const Real *send,int nrhs,int left,int right,InterfaceExchange &request)
 {
     const size_t bytes=2*static_cast<size_t>(nrhs)*sizeof(Real);
     cudaError_t error=cudaSuccess;
@@ -335,31 +361,46 @@ int exchange(DistributedPlan &p,const Real *send,int nrhs,int left,int right)
     Real *low=p.mode==ASTR_HALO_DEVICE ? p.low : p.host[1];
     Real *high=p.mode==ASTR_HALO_DEVICE ? p.high : p.host[2];
     const Real *source=p.mode==ASTR_HALO_DEVICE ? send : p.host[0];
-    MPI_Request requests[4];
-    int status=MPI_Irecv(low,2*nrhs,compact_mpi_type,left,1,p.communicator,&requests[0]);
+    int status=MPI_Irecv(low,2*nrhs,compact_mpi_type,left,1,p.communicator,&request.requests[0]);
     if(status!=MPI_SUCCESS) return status;
-    status=MPI_Irecv(high,2*nrhs,compact_mpi_type,right,0,p.communicator,&requests[1]);
+    status=MPI_Irecv(high,2*nrhs,compact_mpi_type,right,0,p.communicator,&request.requests[1]);
     if(status!=MPI_SUCCESS) return status;
-    status=MPI_Isend(source,2*nrhs,compact_mpi_type,left,0,p.communicator,&requests[2]);
+    status=MPI_Isend(source,2*nrhs,compact_mpi_type,left,0,p.communicator,&request.requests[2]);
     if(status!=MPI_SUCCESS) return status;
-    status=MPI_Isend(source,2*nrhs,compact_mpi_type,right,1,p.communicator,&requests[3]);
+    status=MPI_Isend(source,2*nrhs,compact_mpi_type,right,1,p.communicator,&request.requests[3]);
     if(status!=MPI_SUCCESS) return status;
-    status=MPI_Waitall(4,requests,MPI_STATUSES_IGNORE);
+    request.nrhs=nrhs;request.left=left;request.right=right;
+    return 0;
+}
+
+int complete_exchange(DistributedPlan &p,InterfaceExchange &request)
+{
+    const int left=request.left,right=request.right;
+    const size_t bytes=2*static_cast<size_t>(request.nrhs)*sizeof(Real);
+    const int status=MPI_Waitall(4,request.requests,MPI_STATUSES_IGNORE);
     if(status!=MPI_SUCCESS) return status;
+    request.nrhs=0;
     if(p.mode==ASTR_HALO_PINNED) {
         // Both slots start at zero and stay mirrored; a null receive changes neither.
         if(left!=MPI_PROC_NULL) {
-            error=cudaMemcpyAsync(p.low,p.host[1],bytes,cudaMemcpyHostToDevice,p.parent->stream);
+            const cudaError_t error=cudaMemcpyAsync(p.low,p.host[1],bytes,cudaMemcpyHostToDevice,p.parent->stream);
             if(error!=cudaSuccess) return static_cast<int>(error);
         }
         if(right!=MPI_PROC_NULL) {
-            error=cudaMemcpyAsync(p.high,p.host[2],bytes,cudaMemcpyHostToDevice,p.parent->stream);
+            const cudaError_t error=cudaMemcpyAsync(p.high,p.host[2],bytes,cudaMemcpyHostToDevice,p.parent->stream);
             if(error!=cudaSuccess) return static_cast<int>(error);
         }
         p.staging_bytes+=bytes*(1+(left!=MPI_PROC_NULL)+(right!=MPI_PROC_NULL));
     }
     p.sent_bytes+=bytes*((left!=MPI_PROC_NULL)+(right!=MPI_PROC_NULL));
     return p.parent->compact_sync || p.parent->debug_sync ? static_cast<int>(cudaStreamSynchronize(p.parent->stream)) : 0;
+}
+
+int exchange(DistributedPlan &p,const Real *send,int nrhs,int left,int right)
+{
+    InterfaceExchange request;
+    const int status=post_exchange(p,send,nrhs,left,right,request);
+    return status==0 ? complete_exchange(p,request) : status;
 }
 
 int broadcast(DistributedPlan &p,Real *values,int nrhs,int root)
@@ -382,20 +423,28 @@ int broadcast(DistributedPlan &p,Real *values,int nrhs,int root)
     return p.parent->compact_sync || p.parent->debug_sync ? static_cast<int>(cudaStreamSynchronize(p.parent->stream)) : 0;
 }
 
-int solve_base(DistributedPlan &p,int nrhs)
+int prepare_local(DistributedPlan &p,int nrhs)
 {
     const int n=p.local->f.n;
-    int status=astr_compact_line_solve(p.local,nrhs);
+    int status=start_device_phase(p);
+    if(status!=0) return status;
+    status=astr_compact_line_solve(p.local,nrhs);
     if(status!=0) return status;
     endpoints<<<(nrhs+127)/128,128,0,p.parent->stream>>>(n,nrhs,p.local->solution,p.endpoint[0]);
-    status=finish_compact(*p.parent);
-    if(status!=0) return status;
+    return end_device_phase(p,0,finish_compact(*p.parent));
+}
+
+int solve_interfaces(DistributedPlan &p,int nrhs,InterfaceExchange *first=nullptr)
+{
+    const int n=p.local->f.n;
+    int status;
     int stride=1;
+    const double started=p.phase_begin ? MPI_Wtime() : 0.0;
     for(int level=0;level<p.levels;++level) {
         int left=p.rank-stride,right=p.rank+stride;
         if(left<0) left=MPI_PROC_NULL;
         if(right>=p.ranks) right=MPI_PROC_NULL;
-        status=exchange(p,p.endpoint[level%2],nrhs,left,right);
+        status=level==0 && first ? complete_exchange(p,*first) : exchange(p,p.endpoint[level%2],nrhs,left,right);
         if(status!=0) return status;
         interface_pcr<<<(nrhs+127)/128,128,0,p.parent->stream>>>(nrhs,level,p.coefficient,
             p.endpoint[level%2],p.low,p.high,p.endpoint[(level+1)%2]);
@@ -406,9 +455,18 @@ int solve_base(DistributedPlan &p,int nrhs)
     status=exchange(p,p.endpoint[p.levels%2],nrhs,p.rank==0 ? MPI_PROC_NULL : p.rank-1,
                     p.rank==p.ranks-1 ? MPI_PROC_NULL : p.rank+1);
     if(status!=0) return status;
+    if(p.phase_begin) p.phase_seconds[1]+=MPI_Wtime()-started;
+    status=start_device_phase(p);
+    if(status!=0) return status;
     reconstruct_global<<<dim3((n+127)/128,nrhs),128,0,p.parent->stream>>>(
         n,p.response,p.low,p.high,p.local->solution);
-    return finish_compact(*p.parent);
+    return end_device_phase(p,3,finish_compact(*p.parent));
+}
+
+int solve_base(DistributedPlan &p,int nrhs)
+{
+    const int status=prepare_local(p,nrhs);
+    return status==0 ? solve_interfaces(p,nrhs) : status;
 }
 
 int global_endpoints(DistributedPlan &p,int nrhs)
@@ -424,9 +482,30 @@ int global_endpoints(DistributedPlan &p,int nrhs)
     return broadcast(p,p.last,nrhs,p.ranks-1);
 }
 
+int correct_periodic(DistributedPlan &p,int nrhs)
+{
+    if(!p.cyclic) return 0;
+    const double started=p.phase_begin ? MPI_Wtime() : 0.0;
+    int status=global_endpoints(p,nrhs);
+    if(status!=0) return status;
+    if(p.phase_begin) p.phase_seconds[2]+=MPI_Wtime()-started;
+    status=start_device_phase(p);
+    if(status!=0) return status;
+    correct_global<<<dim3((p.local->f.n+127)/128,nrhs),128,0,p.parent->stream>>>(
+        p.local->f.n,p.cyclic_response,p.first,p.last,p.correction[0],p.correction[1],
+        p.correction[2],p.correction[3],p.local->solution);
+    return end_device_phase(p,3,finish_compact(*p.parent));
+}
+
 int release(DistributedPlan *p)
 {
     int status=static_cast<int>(cudaStreamSynchronize(p->parent->stream));
+    const cudaEvent_t events[]{p->phase_begin,p->phase_end};
+    for(auto event:events) {
+        if(!event) continue;
+        const int freed=static_cast<int>(cudaEventDestroy(event));
+        if(status==0) status=freed;
+    }
     void *buffers[]={p->response,p->coefficient,p->cyclic_response,p->restored,
         p->endpoint[0],p->endpoint[1],p->low,p->high,p->first,p->last};
     for(void *buffer:buffers) {
@@ -522,18 +601,42 @@ extern "C" int astr_compact_distributed_solve(void *handle,int nrhs)
 {
     if(!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
     DistributedPlan &p=*static_cast<DistributedPlan *>(handle);
-    if(nrhs<1 || nrhs>p.local->capacity) return ASTR_DEVICE_INVALID_ARGUMENT;
-    int status=solve_base(p,nrhs);
-    if(status==0 && p.cyclic) {
-        status=global_endpoints(p,nrhs);
-        if(status==0) {
-            correct_global<<<dim3((p.local->f.n+127)/128,nrhs),128,0,p.parent->stream>>>(
-                p.local->f.n,p.cyclic_response,p.first,p.last,p.correction[0],p.correction[1],
-                p.correction[2],p.correction[3],p.local->solution);
-            status=finish_compact(*p.parent);
-        }
-    }
+    if(nrhs<1 || nrhs>p.local->capacity || p.pending.nrhs || p.local_ready) return ASTR_DEVICE_INVALID_ARGUMENT;
+    const int status=solve_base(p,nrhs);
+    return status==0 ? correct_periodic(p,nrhs) : status;
+}
+
+extern "C" int astr_compact_distributed_local(void *handle,int nrhs)
+{
+    if(!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
+    auto &p=*static_cast<DistributedPlan *>(handle);
+    if(nrhs<1 || nrhs>p.local->capacity || p.ranks<2 || p.pending.nrhs || p.local_ready)
+        return ASTR_DEVICE_INVALID_ARGUMENT;
+    const int status=prepare_local(p,nrhs);
+    if(status==0) p.local_ready=nrhs;
     return status;
+}
+
+extern "C" int astr_compact_distributed_begin(void *handle,int nrhs)
+{
+    if(!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
+    auto &p=*static_cast<DistributedPlan *>(handle);
+    if(nrhs<1 || p.local_ready!=nrhs || p.pending.nrhs) return ASTR_DEVICE_INVALID_ARGUMENT;
+    const double started=p.phase_begin ? MPI_Wtime() : 0.0;
+    const int status=post_exchange(p,p.endpoint[0],nrhs,p.rank==0 ? MPI_PROC_NULL : p.rank-1,
+                                   p.rank==p.ranks-1 ? MPI_PROC_NULL : p.rank+1,p.pending);
+    if(p.phase_begin) p.phase_seconds[1]+=MPI_Wtime()-started;
+    if(status==0) p.local_ready=0;
+    return status;
+}
+
+extern "C" int astr_compact_distributed_finish(void *handle,int nrhs)
+{
+    if(!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
+    auto &p=*static_cast<DistributedPlan *>(handle);
+    if(nrhs<1 || p.pending.nrhs!=nrhs) return ASTR_DEVICE_INVALID_ARGUMENT;
+    const int status=solve_interfaces(p,nrhs,&p.pending);
+    return status==0 ? correct_periodic(p,nrhs) : status;
 }
 
 extern "C" int astr_compact_distributed_restore(void *handle,int nrhs)
@@ -541,16 +644,19 @@ extern "C" int astr_compact_distributed_restore(void *handle,int nrhs)
     if(!handle) return ASTR_DEVICE_INVALID_ARGUMENT;
     DistributedPlan &p=*static_cast<DistributedPlan *>(handle);
     if(nrhs<1 || nrhs>p.local->capacity) return ASTR_DEVICE_INVALID_ARGUMENT;
+    const double started=p.phase_begin ? MPI_Wtime() : 0.0;
     endpoints<<<(nrhs+127)/128,128,0,p.parent->stream>>>(p.local->f.n,nrhs,p.local->solution,p.endpoint[0]);
     int status=finish_compact(*p.parent);
     int left=p.rank-1,right=p.rank+1;
     if(p.cyclic) { left=(left+p.ranks)%p.ranks;right%=p.ranks; }
     else { if(left<0) left=MPI_PROC_NULL;if(right>=p.ranks) right=MPI_PROC_NULL; }
     if(status==0) status=exchange(p,p.endpoint[0],nrhs,left,right);
+    if(p.phase_begin) p.phase_seconds[4]+=MPI_Wtime()-started;
+    if(status==0) status=start_device_phase(p);
     if(status==0) {
         restore_nodes<<<dim3((p.nodes+127)/128,nrhs),128,0,p.parent->stream>>>(
             p.local->f.n,p.nodes,p.local->solution,p.high,p.restored);
-        status=finish_compact(*p.parent);
+        status=end_device_phase(p,3,finish_compact(*p.parent));
     }
     return status;
 }
@@ -576,10 +682,28 @@ extern "C" int astr_compact_distributed_metrics(void *handle,int64_t values[2],i
     return 0;
 }
 
+extern "C" int astr_compact_distributed_phase_enable(void *handle)
+{
+    auto &p=*static_cast<DistributedPlan *>(handle);
+    cudaError_t status=cudaEventCreate(&p.phase_begin);
+    if(status==cudaSuccess) status=cudaEventCreate(&p.phase_end);
+    return static_cast<int>(status);
+}
+
+extern "C" void astr_compact_distributed_phase_seconds(void *handle,double values[5])
+{
+    auto &p=*static_cast<DistributedPlan *>(handle);
+    for(int i=0;i<5;++i) {
+        values[i]=p.phase_seconds[i];
+        p.phase_seconds[i]=0;
+    }
+}
+
 extern "C" int astr_compact_distributed_destroy(void **handle)
 {
     if(!handle || !*handle) return ASTR_DEVICE_INVALID_ARGUMENT;
     DistributedPlan *p=static_cast<DistributedPlan *>(*handle);
+    if(p->pending.nrhs) return ASTR_DEVICE_INVALID_ARGUMENT;
     *handle=nullptr;
     return release(p);
 }

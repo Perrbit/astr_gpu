@@ -45,6 +45,7 @@ contains
     integer(c_int) :: lower(3),upper(3),periodic(3),scalar,flux_mode
     integer :: s,status
     integer :: filter_global(3),filter_offset(3)
+    character(14),parameter :: flux_modes(0:2)=[character(14)::'separate','packed','packed-overlap']
     character(32) :: value
     real(c_double) :: left_q(11),right_q(11),farfield_q(11),incident_q(11,2),origin,incident_x
     real(c_double) :: filter_tr(5),filter_v(5)
@@ -120,6 +121,7 @@ contains
     chemistry%block_size=merge(128,32,env_choice('ASTR_AIR5_CHEMISTRY_BLOCK_SIZE',[character(3)::'128','32'])==0)
     chemistry%specialized_dispatch=env_choice('ASTR_AIR5_CHEMISTRY_DISPATCH',[character(11)::'general','specialized'])
     reports_only=env_choice('ASTR_AIR5_CHEMISTRY_DIAGNOSTICS',[character(12)::'every-step','report-steps'])==1
+    options%phase_timing=env_choice('ASTR_AIR5_PHASE_TIMING',['0','1'])==1
     packed=env_choice('ASTR_AIR5_CHEMISTRY_REDUCTIONS',[character(8)::'baseline','packed'])==1
     activity=chemistry%activity_threshold>0.0_c_double
     call check(air5_device_prepare(handle),'resident AIR5 fields')
@@ -138,10 +140,11 @@ contains
         'AIR5 convection workspaces')
     endif
     if(options%viscous)then
-      flux_mode=env_choice('ASTR_AIR5_FLUX_HALO',[character(14)::'separate','packed','packed-overlap'])
+      flux_mode=env_choice('ASTR_AIR5_FLUX_HALO',flux_modes)
       call check(air5_transport_prepare(handle,merge(1,0,options%layered)),'AIR5 viscous fields')
       call check(air5_diffusion_prepare(handle),'AIR5 diffusion workspaces')
       call check(air5_flux_transport_prepare(handle,flux_mode),'AIR5 flux transport')
+      if(lio) write(*,'(a,a)') 'ASTR_CPP_AIR5_FLUX_HALO=',trim(flux_modes(flux_mode))
     elseif(options%capturing)then
       call check(air5_velocity_gradients_prepare(handle),'AIR5 inviscid gradients')
     endif
@@ -178,6 +181,8 @@ contains
       options%compensated,options%comm,state_boundary),'AIR5 initial spatial state')
     if(lio)write(*,'(a,l1,a,l1,a,l1)')'ASTR_GPU_CPP AIR5 resident RK3; Strang=',reacts, &
       ' compensation=',air5_compensated,' primitive_reuse=',reuse_primitives
+    if(lio)write(*,'(a,i0,a,i0)') 'ASTR_CPP_AIR5_CHEMISTRY block=',chemistry%block_size, &
+      ' specialized=',chemistry%specialized_dispatch
   end subroutine
 
   subroutine transfer_air5_aux_cpp(handle,writing)
@@ -210,6 +215,7 @@ contains
   subroutine advance_air5_cpp(handle)
     type(c_ptr),intent(in) :: handle
     type(air5_rk_diagnostics) :: diagnostics
+    real(c_double) :: started
     options%dt=deltat
     options%collect=report_step()
     ! Match the complete-step preparation preceding the old chemistry call.
@@ -222,12 +228,17 @@ contains
     endif
     call sample_air5_conservation_cpp(handle,int(nstep,int64),0)
     do rkstep=1,3
+      if(options%phase_timing) started=MPI_Wtime()
       call check(air5_rk_transport_stage(handle,rkstep,.true.,options,first(:,:regions),last(:,:regions),diagnostics, &
         state_boundary,no_boundary_rhs &
 #ifdef ASTR_BUILD_TESTING
         ,observe_raw_convection,observe_conservative_filter &
 #endif
         ),'AIR5 transport stage')
+      if(options%phase_timing) then
+        call log_phase('transport',rkstep,MPI_Wtime()-started)
+        if(options%viscous) call log_phase('viscous_halo',rkstep,diagnostics%viscous_halo_seconds)
+      endif
       call snapshot(handle,'post_update',rkstep)
     enddo
     call sample_air5_conservation_cpp(handle,int(nstep,int64)+1,1)
@@ -244,8 +255,12 @@ contains
     type(air5_device_report) :: local
     type(air5_chemistry_global_report) :: global
     integer :: status
+    real(c_double) :: started,applied
+    logical :: collect
+    collect=.not.reports_only.or.report_step().or.options%phase_timing
+    if(options%phase_timing) started=MPI_Wtime()
     status=air5_chemistry_apply_regions(handle,regions,first(:,:regions),last(:,:regions),0.5_c_double*options%dt, &
-      .not.reports_only.or.report_step(),packed,activity,options%comm,local,global)
+      collect,packed,activity,options%comm,local,global)
     if(status/=0.and.local%failure(1)/=0)then
       write(*,'(a,8(i0,1x))') 'AIR5_CHEMISTRY_FAILURE rank/step/half/i/j/k/status/phase=', &
         mpirank,nstep,half,local%failure(2:6)
@@ -253,10 +268,17 @@ contains
       write(*,'(a,6(es25.17,1x))') 'AIR5_CHEMISTRY_FAILURE carry=',local%failure_carry
     endif
     call check(status,'AIR5 chemistry half-step')
+    if(options%phase_timing) applied=MPI_Wtime()
     if(reuse_primitives)then
       call refresh_after_chemistry(handle,half,recovered_core)
     else
       call refresh_after_chemistry(handle,half)
+    endif
+    if(options%phase_timing) then
+      call log_phase('chemistry_and_reduction',half,applied-started)
+      call log_phase('chemistry_refresh',half,MPI_Wtime()-applied)
+      write(*,'(a,9(1x,i0))') 'ASTR_AIR5_RANK_CHEMISTRY',mpirank,nstep,half, &
+        local%total,local%skipped,local%max_counts
     endif
     if(lio.and.report_step())then
       write(*,'(a,i0,a,5(es12.4,1x),a,4(i0,1x))') 'AIR5_CHEMISTRY half=',half, &
@@ -265,6 +287,14 @@ contains
       if(activity)write(*,'(a,i0,a,i0,a,i0)') 'AIR5_ACTIVITY half=',half,' skipped_calls=',global%skipped, &
         ' total_calls=',global%total
     endif
+  end subroutine
+
+  subroutine log_phase(label,stage,seconds)
+    character(*),intent(in) :: label
+    integer,intent(in) :: stage
+    real(c_double),intent(in) :: seconds
+    write(*,'(a,3(1x,i0),1x,a,1x,es24.16e3)') &
+      'ASTR_AIR5_PHASE_TIMING',mpirank,nstep,stage,label,seconds
   end subroutine
 
   subroutine refresh_after_chemistry(handle,half,recovered)

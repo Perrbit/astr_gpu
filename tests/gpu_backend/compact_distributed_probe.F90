@@ -13,7 +13,7 @@ program compact_distributed_probe_cpp
   type(compact_matrix) :: full,core,constructed
   type(compact_reference_factor) :: factor
   type(compact_line_partition) :: part
-  type(compact_distributed_cpp_plan) :: plan
+  type(compact_distributed_cpp_plan) :: plan,other
   type(device_view) :: input_view,solution_view,nodes_view,again_input,again_solution,again_nodes
   type(c_ptr) :: state
   real(real_kind),allocatable :: exact(:,:),rhs(:,:),reference(:,:),local_rhs(:,:),actual(:,:),gathered(:,:), &
@@ -25,7 +25,8 @@ program compact_distributed_probe_cpp
   integer(c_int) :: mode,status
   integer :: ierr,world_rank,world_size,local_rank,parent,cart,line,rank,ranks,axis,coords(3),dims(3), &
     plane,il,kind,ip,n,m,nodes,i,j,g,batch,nrhs,debug,cases=0,csv,binary,header(9)
-  logical :: periods(3),periodic
+  logical :: periods(3),periodic,split
+  integer :: split_cases=0,shared_devices
   character(1024) :: output,path
   character(40) :: argument,transport
   interface
@@ -37,6 +38,13 @@ program compact_distributed_probe_cpp
   call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',argument,status=ierr)
   if(ierr/=0) error stop 'compact distributed probe needs MPI local rank'
   read(argument,*) local_rank
+  call get_environment_variable('ASTR_TEST_COMPACT_LOCAL_DEVICES',argument,status=ierr)
+  if(ierr==0) then
+    shared_devices=0
+    read(argument,*,iostat=ierr) shared_devices
+    if(ierr/=0.or.shared_devices<1) error stop 'invalid test device sharing count'
+    local_rank=mod(local_rank,shared_devices)
+  endif
   status=device_bind(int(local_rank,c_int))
   if(status/=0) error stop 'compact distributed pre-MPI device binding'
   call MPI_Init(ierr)
@@ -52,6 +60,9 @@ program compact_distributed_probe_cpp
   case('device-aware');mode=1_c_int
   case default;call fail('transport must be pinned or device-aware')
   end select
+  call get_command_argument(6,argument)
+  if(argument/=''.and.argument/='split') call fail('expected optional split mode')
+  split=argument=='split'
   if(product(dims)/=world_size) call fail('topology does not match MPI size')
   call MPI_Comm_split(MPI_COMM_WORLD,0,world_size-1-world_rank,parent,ierr)
   periods=.false.
@@ -142,14 +153,33 @@ program compact_distributed_probe_cpp
             if(mode==1.and.plan%host_bytes/=0) call fail('device transport allocated pinned slots')
             if(mode==0.and.plan%host_bytes/=6*capacity*real_bytes) call fail('pinned prefix slots')
             call compact_distributed_transfer_cpp(plan,local_rhs,capacity,0)
+            if(split.and.ranks>1) then
+              call prepare_distributed_compact_cpp(state,core,edge,part,line,capacity,mode,other)
+              unchanged=-2*local_rhs
+              call compact_distributed_transfer_cpp(other,unchanged,capacity,0)
+            endif
             do batch=1,size(batches)
               nrhs=batches(batch)
-              call solve_distributed_compact_cpp(plan,nrhs)
+              if(split.and.ranks>1) then
+                call check_split(compact_distributed_local_cpp(plan%handle,int(nrhs,c_int)), 'first local solve')
+                call check_split(compact_distributed_begin_cpp(plan%handle,int(nrhs,c_int)), 'first PCR post')
+                call check_split(compact_distributed_local_cpp(other%handle,int(nrhs,c_int)), 'next local solve')
+                call check_split(compact_distributed_finish_cpp(plan%handle,int(nrhs,c_int)), 'first finish')
+              else
+                call solve_distributed_compact_cpp(plan,nrhs)
+              endif
               call restore_distributed_compact_cpp(plan,nrhs)
               call compact_distributed_transfer_cpp(plan,actual,nrhs,2)
               call compact_distributed_transfer_cpp(plan,restored,nrhs,3)
               if(.not.all(ieee_is_finite(actual(:,:nrhs))).or. &
                 .not.all(ieee_is_finite(restored(:,:nrhs)))) call fail('nonfinite distributed result')
+              if(split.and.ranks>1) then
+                call check_split(compact_distributed_begin_cpp(other%handle,int(nrhs,c_int)), 'next PCR post')
+                call check_split(compact_distributed_finish_cpp(other%handle,int(nrhs,c_int)), 'next finish')
+                call compact_distributed_transfer_cpp(other,unchanged,nrhs,2)
+                if(any(unchanged(:,:nrhs)/=-2*actual(:,:nrhs))) call fail('second batch solution or buffer isolation')
+                split_cases=split_cases+1
+              endif
               do j=1,nrhs
                 call MPI_Allgatherv(actual(:,j),m,mpi_real_type,gathered(:,j),counts,displacements,mpi_real_type,line,ierr)
               enddo
@@ -198,6 +228,7 @@ program compact_distributed_probe_cpp
             if(.not.c_associated(input_view%data,again_input%data).or. &
               .not.c_associated(solution_view%data,again_solution%data).or. &
               .not.c_associated(nodes_view%data,again_nodes%data)) call fail('distributed buffers reallocated')
+            if(split.and.ranks>1) call release_distributed_compact_cpp(other)
             call release_distributed_compact_cpp(plan)
             status=device_state_destroy(state)
             if(status/=0.or.c_associated(state)) call fail('distributed release')
@@ -212,6 +243,7 @@ program compact_distributed_probe_cpp
   enddo
   write(*,'(a,2(1x,i0),3(1x,es24.16e3))') 'CPP_DISTRIBUTED_PASS',world_rank,cases, &
     maximum_error,maximum_residual,maximum_restore
+  if(split) write(*,'(a,2(1x,i0))') 'CPP_DISTRIBUTED_SPLIT_CASES',world_rank,split_cases
   call wire_counts(wire)
   if(wire(5)/=0) call fail('compact MPI packet type differs from build precision')
   write(*,'(a,2(1x,i0),5(1x,i0))') 'CPP_COMPACT_WIRE',world_rank,real_bytes,wire
@@ -219,6 +251,12 @@ program compact_distributed_probe_cpp
   call MPI_Comm_free(cart,ierr)
   call MPI_Finalize(ierr)
 contains
+  subroutine check_split(status,message)
+    integer(c_int),intent(in) :: status
+    character(*),intent(in) :: message
+    if(status/=0) call fail(message)
+  end subroutine
+
   subroutine fail(message)
     character(*),intent(in) :: message
     print '(a,i0,2a)', 'CPP_DISTRIBUTED_FAILURE rank=',world_rank,' ',message

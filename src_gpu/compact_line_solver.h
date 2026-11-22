@@ -43,10 +43,17 @@ int astr_compact_distributed_create(void **local, const AstrCompactDistributedFa
 int astr_compact_distributed_views(void *handle, AstrDeviceView *rhs,
                                   AstrDeviceView *solution, AstrDeviceView *nodes);
 int astr_compact_distributed_solve(void *handle, int nrhs);
+/* Distributed-only split solve. Between begin and finish another plan may
+ * enqueue its local work; the active plan owns the first PCR MPI requests. */
+int astr_compact_distributed_local(void *handle, int nrhs);
+int astr_compact_distributed_begin(void *handle, int nrhs);
+int astr_compact_distributed_finish(void *handle, int nrhs);
 int astr_compact_distributed_restore(void *handle, int nrhs);
 /* Modes 0/1/2 match local transfer; mode 3 reads restored shared nodes. */
 int astr_compact_distributed_transfer(void *handle, int mode, astr_numerical_real *host, int nrhs);
 int astr_compact_distributed_metrics(void *handle, int64_t values[2], int reset);
+int astr_compact_distributed_phase_enable(void *handle);
+void astr_compact_distributed_phase_seconds(void *handle, double values[5]);
 int astr_compact_distributed_destroy(void **handle);
 
 #ifdef __cplusplus

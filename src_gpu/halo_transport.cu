@@ -14,7 +14,8 @@
 
 namespace astr {
 struct Air5FluxSlot {
-    double *device=nullptr,*host=nullptr;
+    double *device[4]{};
+    double *host=nullptr;
     size_t capacity=0;
 };
 struct HaloTransport {
@@ -76,7 +77,9 @@ int release_transport(HaloTransport *transport)
         if(status==0)status=freed;
     }
     for(auto &slot:transport->air5_flux_slots) {
-        if(slot.device) {const int freed=static_cast<int>(cudaFree(slot.device));if(status==0)status=freed;}
+        for(double *p:slot.device)if(p) {
+            const int freed=static_cast<int>(cudaFree(p));if(status==0)status=freed;
+        }
         if(slot.host) {const int freed=static_cast<int>(cudaFreeHost(slot.host));if(status==0)status=freed;}
     }
     if (transport->communicator!=MPI_COMM_NULL) {
@@ -219,7 +222,10 @@ __global__ void air5_flux_periodic(Air5FluxFields fields,Air5FluxBox box,int axi
 int allocate_air5_flux_slot(astr::Air5FluxSlot &slot,size_t count,int mode)
 {
     slot.capacity=count;
-    int status=static_cast<int>(cudaMalloc(&slot.device,4*count*sizeof(double)));if(status)return status;
+    // Pass an allocation base pointer for each DCU device MPI message.
+    for(double *&p:slot.device) {
+        const int status=static_cast<int>(cudaMalloc(&p,count*sizeof(double)));if(status)return status;
+    }
     return mode==ASTR_HALO_PINNED?static_cast<int>(cudaMallocHost(&slot.host,4*count*sizeof(double))):0;
 }
 
@@ -250,7 +256,7 @@ int exchange_air5_flux_group(astr::State &s,int first,int components)
             host[2]=reinterpret_cast<double *>(t.recv_host[1]);host[3]=reinterpret_cast<double *>(t.recv_host[0]);
         } else {
             auto &slot=t.air5_flux_slots[a];
-            for(int i=0;i<4;++i) {device[i]=slot.device+i*slot.capacity;host[i]=slot.host?slot.host+i*slot.capacity:nullptr;}
+            for(int i=0;i<4;++i) {device[i]=slot.device[i];host[i]=slot.host?slot.host+i*slot.capacity:nullptr;}
         }
         const double started=t.timing?MPI_Wtime():0;
         if(!prepared[a]) {
@@ -279,7 +285,7 @@ int exchange_air5_flux_group(astr::State &s,int first,int components)
             if(next<3) {
                 auto &next_slot=t.air5_flux_slots[next];
                 const size_t next_count=static_cast<size_t>(components)*s.halo*(s.upper[(next+1)%3]+1)*(s.upper[(next+2)%3]+1);
-                air5_flux_pack<<<(next_count+255)/256,256,0,t.air5_flux_pack_stream>>>(fields,box,next,first,next_count,next_slot.device,next_slot.device+next_slot.capacity);
+                air5_flux_pack<<<(next_count+255)/256,256,0,t.air5_flux_pack_stream>>>(fields,box,next,first,next_count,next_slot.device[0],next_slot.device[1]);
                 status=static_cast<int>(cudaGetLastError());
                 while(status==0) {
                     const auto progress=cudaStreamQuery(t.air5_flux_pack_stream);

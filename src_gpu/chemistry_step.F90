@@ -1,6 +1,6 @@
 module chemistry_device_step
   use iso_c_binding, only: c_ptr,c_int,c_int64_t,c_double
-  use mpi, only: MPI_Allreduce,MPI_Abort,MPI_INTEGER,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_MAX,MPI_SUM
+  use mpi, only: MPI_Allreduce,MPI_Abort,MPI_INTEGER,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_MAX,MPI_SUM,MPI_Wtime
   use device_state, only: device_q,device_shock_sensor,device_air5_diffusion_ratio,device_air5_diffusion_energy_ratio, &
     device_air5_convection_fluid_ratio,device_air5_convection_base,device_invalid_argument,c_device_real_kind
   use halo_transport, only: device_exchange_axis
@@ -29,6 +29,7 @@ module chemistry_device_step
     logical :: capturing,viscous,layered,zero_lower_y,collect,filtering,conservative_filter,compensated
     logical :: symmetric_convection=.false.
     logical :: characteristic_top=.false.
+    logical :: phase_timing=.false.
     real(c_double) :: top_rate=0.0_c_double,top_reference_sound=0.0_c_double
   end type
   type,public :: air5_rk_diagnostics
@@ -36,6 +37,7 @@ module chemistry_device_step
     type(air5_diffusion_report) :: diffusion
     integer(c_int) :: convection_active(10),diffusion_active
     real(c_double) :: convection_minimum(10),diffusion_minimum
+    real(c_double) :: viscous_halo_seconds
   end type
   ! All ranks call the boundary phase; a failure status is already collective.
   abstract interface
@@ -77,6 +79,7 @@ contains
     logical :: initial_stage
 
     comm=options%comm
+    diagnostics%viscous_halo_seconds=0.0_c_double
     initial_stage=stage==1
     status=air5_prepare_rk_stage(handle,options%upper,options%halo,stage,prepared,options%filtering, &
       options%conservative_filter,options%floor,options%wall_axis,options%wall_family,options%preserve, &
@@ -117,7 +120,8 @@ contains
     if(options%viscous)then
       status=air5_add_viscous_rhs(handle,options%ntypes,int(size(first,2),c_int),first,last,options%floor, &
         a(stage),b(stage),c(stage)*options%dt,initial_stage,options%zero_lower_y,options%layered,options%collect,comm, &
-        diagnostics%diffusion_active,diagnostics%diffusion_minimum,diagnostics%diffusion)
+        diagnostics%diffusion_active,diagnostics%diffusion_minimum,diagnostics%diffusion, &
+        options%phase_timing,diagnostics%viscous_halo_seconds)
       if(status/=0)return
     endif
     do region=1,size(first,2)
@@ -328,7 +332,7 @@ contains
   ! The input RHS contains the already limited convection, including the
   ! optional dynamic-top convection. No RK state is committed here.
   integer(c_int) function air5_add_viscous_rhs(handle,ntypes,regions,first,last,floor,a,b,cdt, &
-      first_stage,zero_lower_y,layered,collect,comm,limited,minimum,report) result(status)
+      first_stage,zero_lower_y,layered,collect,comm,limited,minimum,report,phase_timing,halo_seconds) result(status)
     type(c_ptr),intent(in) :: handle
     integer(c_int),intent(in) :: ntypes(3),regions,first(3,regions),last(3,regions),comm
     real(c_double),intent(in) :: floor(5),a,b,cdt
@@ -336,8 +340,15 @@ contains
     integer(c_int),intent(out) :: limited
     real(c_double),intent(out) :: minimum
     type(air5_diffusion_report),intent(out) :: report
+    logical,intent(in),optional :: phase_timing
+    real(c_double),intent(out),optional :: halo_seconds
     integer(c_int) :: low(3),high(3)
+    real(c_double) :: started
+    logical :: measure
 
+    measure=.false.
+    if(present(phase_timing)) measure=phase_timing
+    if(present(halo_seconds)) halo_seconds=0.0_c_double
     limited=0_c_int;minimum=huge(minimum)
     report=air5_diffusion_report(0_c_int,[0_c_int,0_c_int,0_c_int,0_c_int],0_c_int, &
       transfer(minimum,report%minimum_bits),[0.0_c_double,0.0_c_double,0.0_c_double,0.0_c_double,0.0_c_double])
@@ -347,7 +358,9 @@ contains
     call check_api(air5_diffusive_flux(handle),comm,'viscous flux')
     status=collect_status(handle,comm)
     if(status/=0_c_int)return
+    if(measure) started=MPI_Wtime()
     call check_api(air5_flux_exchange(handle),comm,'viscous flux halo')
+    if(measure.and.present(halo_seconds)) halo_seconds=MPI_Wtime()-started
     status=air5_limit_viscous_rhs(handle,ntypes,regions,first,last,floor,a,b,cdt, &
       first_stage,layered,collect,comm,limited,minimum,report)
   end function

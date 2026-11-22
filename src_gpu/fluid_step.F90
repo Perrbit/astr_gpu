@@ -166,7 +166,7 @@ contains
 
   integer(c_int) function fluid_advance_prepared_stage(handle,stage,dt,c2,c6,reynolds,prandtl,c5,tc,tc1, &
       viscous,exchange,begin_exchange,end_exchange,gradient_operator,convection_operator,divergence_operator, &
-      integrated_viscous_operator,source_operator,sensor_operator,post_update_operator,packed_viscous) result(status)
+      integrated_viscous_operator,source_operator,sensor_operator,post_update_operator,packed_viscous_axis) result(status)
     type(c_ptr),value :: handle
     integer,intent(in) :: stage
     real(real_kind),intent(in) :: dt,c2,c6,reynolds,prandtl,c5,tc,tc1
@@ -178,9 +178,8 @@ contains
     procedure(device_operator),optional :: source_operator
     procedure(device_operator),optional :: sensor_operator
     procedure(device_operator),optional :: post_update_operator
-    logical,intent(in),optional :: packed_viscous
-    logical :: packed
-    integer(c_int) :: axis
+    integer(c_int),intent(in),optional :: packed_viscous_axis
+    integer(c_int) :: axis,overlap_axis
     real(real_kind),parameter :: a(3)=[1._real_kind,.75_real_kind,1._real_kind/3._real_kind], &
       b(3)=[0._real_kind,.25_real_kind,2._real_kind/3._real_kind], &
       c(3)=[1._real_kind,.25_real_kind,2._real_kind/3._real_kind]
@@ -188,8 +187,8 @@ contains
       status=-1
       return
     endif
-    packed=.false.
-    if(present(packed_viscous)) packed=packed_viscous
+    overlap_axis=-1_c_int
+    if(present(packed_viscous_axis)) overlap_axis=packed_viscous_axis
     if(stage==1) then
       status=fluid_rk_save(handle)
       if(status/=0) return
@@ -211,16 +210,16 @@ contains
       if(.not.present(integrated_viscous_operator)) then
         status=fluid_viscous_flux(handle,reynolds,prandtl,c5,tc,tc1)
         if(status/=0) return
-        if(packed) then
-          status=device_viscous_exchange_begin(handle,0_c_int)
+        if(overlap_axis>=0) then
+          status=device_viscous_exchange_begin(handle,overlap_axis)
         else
           status=begin_exchange(handle,device_stress,0_c_int,0_c_int)
         endif
         if(status/=0) return
       endif
     endif
-    ! Convection writes RHS only; stress exchange consumes the independent
-    ! viscous-flux field. MPI progresses in end while convection runs.
+    ! Convection and the already-packed viscous flux use disjoint fields.
+    ! The selected axis finishes before the next exchange reuses the slots.
     if(present(convection_operator)) then
       status=convection_operator(handle)
     else
@@ -231,10 +230,11 @@ contains
       if(present(integrated_viscous_operator)) then
         status=integrated_viscous_operator(handle)
       else
-      if(packed) then
-        status=device_viscous_exchange_end(handle,0_c_int)
+      if(overlap_axis>=0) then
+        status=device_viscous_exchange_end(handle,overlap_axis)
         if(status/=0) return
-        do axis=1,2
+        do axis=0,2
+          if(axis==overlap_axis) cycle
           status=device_viscous_exchange_begin(handle,axis)
           if(status/=0) return
           status=device_viscous_exchange_end(handle,axis)

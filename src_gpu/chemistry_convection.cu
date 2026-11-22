@@ -7,15 +7,20 @@ namespace astr {
 struct Air5ConvectionPlan {
     struct Floors {double value[5];} floor{};
     AstrAir5TransportFailure *failure=nullptr;
-    double *planes=nullptr;
+    double *planes[4]{};
     size_t capacity=0;
 };
 int release_air5_convection(Air5ConvectionPlan *plan)
 {
     if(!plan)return 0;
-    const int first=static_cast<int>(cudaFree(plan->failure));
-    const int second=static_cast<int>(cudaFree(plan->planes));delete plan;
-    return first?first:second;
+    int status=static_cast<int>(cudaFree(plan->failure));
+    for(double *plane:plan->planes) {
+        if(!plane)continue;
+        const int freed=static_cast<int>(cudaFree(plane));
+        if(!status)status=freed;
+    }
+    delete plan;
+    return status;
 }
 }
 namespace {
@@ -160,7 +165,7 @@ __global__ void top_normal_kernel(FaceFields fields,AstrDeviceView base,AstrDevi
     if(!state_admissible(state,floor.value)) {atomicMax(failure,205);return;}
     for(int c=0;c<11;++c)at(rhs,p,c+1)=-flux[c];
 }
-__global__ void plane_kernel(AstrDeviceView faces,double *planes,size_t capacity,Shape shape,int axis,bool unpack,
+__global__ void plane_kernel(AstrDeviceView faces,double *first_plane,double *last_plane,Shape shape,int axis,bool unpack,
     bool receive_plus,bool receive_minus,int uaxis,int vaxis,size_t count)
 {
     const size_t id=static_cast<size_t>(blockIdx.x)*blockDim.x+threadIdx.x;if(id>=count)return;
@@ -169,10 +174,10 @@ __global__ void plane_kernel(AstrDeviceView faces,double *planes,size_t capacity
     for(int d=0;d<3;++d)last[d]=first[d];
     if(unpack) {
         first[axis]=shape.upper[axis];last[axis]=-1;
-        if(receive_plus)at(faces,first,c)=planes[id+2*capacity];
-        if(receive_minus)at(faces,last,c)=planes[id+3*capacity];
+        if(receive_plus)at(faces,first,c)=first_plane[id];
+        if(receive_minus)at(faces,last,c)=last_plane[id];
     } else {
-        last[axis]=shape.upper[axis]-1;planes[id]=at(faces,first,c);planes[id+capacity]=at(faces,last,c);
+        last[axis]=shape.upper[axis]-1;first_plane[id]=at(faces,first,c);last_plane[id]=at(faces,last,c);
     }
 }
 int shape_for(astr::State &s,const int *types,int top,Shape &shape)
@@ -213,7 +218,12 @@ extern "C" int astr_device_air5_symmetric_prepare(void *handle,const double floo
         const size_t count=12*static_cast<size_t>(s.upper[(a+1)%3]+1)*(s.upper[(a+2)%3]+1);
         if(count>plan.capacity)plan.capacity=count;
     }
-    return static_cast<int>(cudaMalloc(&plan.planes,4*plan.capacity*sizeof(double)));
+    // Cross-node device MPI needs allocation base pointers for the four face slots.
+    for(double *&plane:plan.planes) {
+        status=static_cast<int>(cudaMalloc(&plane,plan.capacity*sizeof(double)));
+        if(status)return status;
+    }
+    return 0;
 }
 extern "C" int astr_device_air5_symmetric_base(void *handle,const int types[3],double a,double b,double cdt,int first,int top)
 {
@@ -271,23 +281,25 @@ extern "C" int astr_device_air5_symmetric_plane(void *handle,int axis,int unpack
     if(!handle || unpack<0 || unpack>1 || plus<0 || plus>1 || minus<0 || minus>1)return ASTR_DEVICE_INVALID_ARGUMENT;
     auto &s=*static_cast<astr::State *>(handle);Shape shape{};int u,v;size_t count;
     const int status=plane_shape(s,axis-1,shape,u,v,count);if(status)return status;
-    plane_kernel<<<(count+threads-1)/threads,threads,0,s.stream>>>(s.fields[ASTR_DEVICE_INTERFACE_FLUX].view,s.air5_convection->planes,
-        s.air5_convection->capacity,shape,axis-1,unpack!=0,plus!=0,minus!=0,u,v,count);
+    const int slot=unpack?2:0;
+    auto &plan=*s.air5_convection;
+    plane_kernel<<<(count+threads-1)/threads,threads,0,s.stream>>>(s.fields[ASTR_DEVICE_INTERFACE_FLUX].view,
+        plan.planes[slot],plan.planes[slot+1],shape,axis-1,unpack!=0,plus!=0,minus!=0,u,v,count);
     return astr::finish_launch(s);
 }
 extern "C" int astr_device_air5_symmetric_buffers(void *handle,void *buffers[4],size_t *capacity)
 {
     if(!handle || !buffers || !capacity)return ASTR_DEVICE_INVALID_ARGUMENT;auto &s=*static_cast<astr::State *>(handle);
     if(!s.air5_convection)return ASTR_DEVICE_NOT_ALLOCATED;
-    auto &plan=*s.air5_convection;for(int slot=0;slot<4;++slot)buffers[slot]=plan.planes+slot*plan.capacity;
+    auto &plan=*s.air5_convection;for(int slot=0;slot<4;++slot)buffers[slot]=plan.planes[slot];
     *capacity=plan.capacity;return 0;
 }
 extern "C" int astr_device_air5_symmetric_copy_local_planes(void *handle,int axis)
 {
     if(!handle)return ASTR_DEVICE_INVALID_ARGUMENT;auto &s=*static_cast<astr::State *>(handle);Shape shape{};int u,v;size_t count;
     int status=plane_shape(s,axis-1,shape,u,v,count);if(status)return status;auto &plan=*s.air5_convection;
-    status=static_cast<int>(cudaMemcpyAsync(plan.planes+2*plan.capacity,plan.planes,count*sizeof(double),cudaMemcpyDeviceToDevice,s.stream));if(status)return status;
-    return static_cast<int>(cudaMemcpyAsync(plan.planes+3*plan.capacity,plan.planes+plan.capacity,count*sizeof(double),cudaMemcpyDeviceToDevice,s.stream));
+    status=static_cast<int>(cudaMemcpyAsync(plan.planes[2],plan.planes[0],count*sizeof(double),cudaMemcpyDeviceToDevice,s.stream));if(status)return status;
+    return static_cast<int>(cudaMemcpyAsync(plan.planes[3],plan.planes[1],count*sizeof(double),cudaMemcpyDeviceToDevice,s.stream));
 }
 extern "C" int astr_device_air5_symmetric_failure(void *handle,AstrAir5TransportFailure *failure)
 {

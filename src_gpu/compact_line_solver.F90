@@ -1,5 +1,5 @@
 module compact_line_cpp
-  use iso_c_binding, only: c_ptr,c_int,c_int64_t,c_size_t,c_null_ptr,c_associated,c_loc
+  use iso_c_binding, only: c_ptr,c_double,c_int,c_int64_t,c_size_t,c_null_ptr,c_associated,c_loc
   use mpi
   use ieee_arithmetic, only: ieee_is_finite
   use astr_precision_mpi, only: mpi_real_type
@@ -13,6 +13,8 @@ module compact_line_cpp
   public :: compact_distributed_cpp_plan,prepare_distributed_compact_cpp,solve_distributed_compact_cpp
   public :: restore_distributed_compact_cpp,release_distributed_compact_cpp,compact_distributed_transfer_cpp
   public :: compact_distributed_views_cpp,compact_distributed_metrics_cpp
+  public :: compact_distributed_phase_enable_cpp,compact_distributed_phase_seconds_cpp
+  public :: compact_distributed_local_cpp,compact_distributed_begin_cpp,compact_distributed_finish_cpp
   public :: compact_stencil_cpp,compact_field_rhs_cpp,compact_field_commit_cpp
   public :: compact_keep_prepare_cpp,compact_keep_rhs_cpp,compact_keep_commit_cpp
   public :: compact_field_commit_wall_band_cpp
@@ -133,6 +135,21 @@ module compact_line_cpp
       type(c_ptr),value :: handle
       integer(c_int),value :: nrhs
     end function
+    integer(c_int) function compact_distributed_local_cpp(handle,nrhs) bind(C,name='astr_compact_distributed_local')
+      import c_ptr,c_int
+      type(c_ptr),value :: handle
+      integer(c_int),value :: nrhs
+    end function
+    integer(c_int) function compact_distributed_begin_cpp(handle,nrhs) bind(C,name='astr_compact_distributed_begin')
+      import c_ptr,c_int
+      type(c_ptr),value :: handle
+      integer(c_int),value :: nrhs
+    end function
+    integer(c_int) function compact_distributed_finish_cpp(handle,nrhs) bind(C,name='astr_compact_distributed_finish')
+      import c_ptr,c_int
+      type(c_ptr),value :: handle
+      integer(c_int),value :: nrhs
+    end function
     integer(c_int) function restore_distributed(handle,nrhs) bind(C,name='astr_compact_distributed_restore')
       import c_ptr,c_int
       type(c_ptr),value :: handle
@@ -154,6 +171,15 @@ module compact_line_cpp
       integer(c_int64_t),intent(out) :: values(2)
       integer(c_int),value :: reset
     end function
+    integer(c_int) function distributed_phase_enable(handle) bind(C,name='astr_compact_distributed_phase_enable')
+      import c_ptr,c_int
+      type(c_ptr),value :: handle
+    end function
+    subroutine compact_distributed_phase_seconds_cpp(handle,values) bind(C,name='astr_compact_distributed_phase_seconds')
+      import c_ptr,c_double
+      type(c_ptr),value :: handle
+      real(c_double),intent(out) :: values(5)
+    end subroutine
     integer(c_int) function destroy_distributed(handle) bind(C,name='astr_compact_distributed_destroy')
       import c_ptr,c_int
       type(c_ptr),intent(inout) :: handle
@@ -354,6 +380,11 @@ contains
     integer(c_int64_t),intent(out) :: values(2)
     logical,intent(in) :: reset
     call check(distributed_metrics(plan%handle,values,int(merge(1,0,reset),c_int)),'distributed metrics')
+  end subroutine
+
+  subroutine compact_distributed_phase_enable_cpp(plan)
+    type(compact_distributed_cpp_plan),intent(in) :: plan
+    call check(distributed_phase_enable(plan%handle),'enable phase timing')
   end subroutine
 
   subroutine release_distributed_compact_cpp(plan)

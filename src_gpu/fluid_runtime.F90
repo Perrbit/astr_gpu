@@ -70,6 +70,8 @@ module fluid_runtime
   real(real_kind),save :: crashfix_pressure_floor=0.e0_real_kind
   logical,save :: mixed_viscous_flux=.false.,mixed_interface_flux=.false.,mixed_characteristic_flux=.false.,mixed_derivative=.false.
   logical,save :: packed_viscous_halo=.false.,halo_axis_timing=.false.
+  logical,save :: device_memory_steps=.false.
+  integer(c_int),save :: viscous_overlap_axis=0_c_int
   real(real_kind),allocatable,save :: lower_wall_velocity(:,:)
 #ifdef ASTR_BUILD_TESTING
   integer(c_int),save :: exchange_sequence=0
@@ -160,6 +162,7 @@ contains
     use conservative_boundary_runtime, only: conservative_boundary
     use benchmark_runtime, only: benchmark_gpu_rk_timing_enabled
     integer :: local_rank,ierr,choice,low,high,env_status,filter_components,workspace_choice
+    integer :: halo_choice(2),halo_min(2),halo_max(2)
     integer(c_size_t) :: sigma_bytes,heat_bytes
     integer(c_int) :: transport_mode,halo_timing,halo_components
     logical :: nodal_fluxes,characteristic_periodic,characteristic_plate,characteristic_xphysical,derivative_periodic,derivative_plate
@@ -167,16 +170,28 @@ contains
     character(32) :: sync,value,precision,candidate
     call get_environment_variable('ASTR_CPP_VISCOUS_HALO',value,status=env_status)
     if(env_status==1) value='separate'
-    choice=-1
-    if(value=='separate') choice=0
-    if(value=='packed') choice=1
-    call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
-    call check(ierr,'viscous halo mode minimum')
-    call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
-    call check(ierr,'viscous halo mode maximum')
-    call require((env_status==0.or.env_status==1).and.low>=0.and.low==high, &
+    halo_choice=-1
+    if(env_status==0.or.env_status==1) then
+      if(value=='separate') halo_choice(1)=0
+      if(value=='packed') halo_choice(1)=1
+    endif
+    call get_environment_variable('ASTR_CPP_VISCOUS_OVERLAP_AXIS',value,status=env_status)
+    if(env_status==1) value='x'
+    if(env_status==0.or.env_status==1) then
+      if(value=='x') halo_choice(2)=0
+      if(value=='z') halo_choice(2)=2
+    endif
+    call MPI_Allreduce(halo_choice,halo_min,2,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call check(ierr,'viscous halo options minimum')
+    call MPI_Allreduce(halo_choice,halo_max,2,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call check(ierr,'viscous halo options maximum')
+    call require(halo_min(1)>=0.and.halo_min(1)==halo_max(1), &
       'ASTR_CPP_VISCOUS_HALO requires consistent separate or packed')
-    packed_viscous_halo=choice==1
+    call require(halo_min(2)>=0.and.halo_min(2)==halo_max(2), &
+      'ASTR_CPP_VISCOUS_OVERLAP_AXIS requires consistent x or z')
+    packed_viscous_halo=halo_choice(1)==1
+    viscous_overlap_axis=int(halo_choice(2),c_int)
+    call require(viscous_overlap_axis==0.or.packed_viscous_halo,'z overlap requires ASTR_CPP_VISCOUS_HALO=packed')
     call get_environment_variable('ASTR_CPP_HALO_AXIS_TIMING',value,status=env_status)
     if(env_status==1) value='0'
     call require((env_status==0.or.env_status==1).and.(value=='0'.or.value=='1'), &
@@ -184,11 +199,17 @@ contains
     halo_axis_timing=value=='1'
     call require(.not.halo_axis_timing.or.benchmark_gpu_rk_timing_enabled(), &
       'ASTR_CPP_HALO_AXIS_TIMING requires ASTR_GPU_RK_TIMING=1')
+    call get_environment_variable('ASTR_CPP_DEVICE_MEMORY_STEPS',value,status=env_status)
+    if(env_status==1) value='0'
+    call require((env_status==0.or.env_status==1).and.(value=='0'.or.value=='1'), &
+      'ASTR_CPP_DEVICE_MEMORY_STEPS requires 0 or 1')
+    device_memory_steps=value=='1'
 #ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb)then
       call require(.not.packed_viscous_halo.and..not.halo_axis_timing,'use the AIR5 private halo controls for reacting flow')
       call create_solver_context(transport_mode,local_rank,sync)
       call initialize_air5_cpp(context,transport_mode)
+      if(device_memory_steps) call report_device_memory('initialized')
       write(*,'(a,i0,2a,a,i0,2a)') 'ASTR_GPU_CPP rank=',mpirank,' backend=',ASTR_GPU_CPP_NAME, &
         ' device=',local_rank,' sync=',trim(sync)
       return
@@ -353,6 +374,8 @@ contains
       convection_form=='standard'.and.viscous_form=='standard'.and..not.mixed_viscous_flux, &
       'packed viscous halo requires periodic device MPI with standard 643e/643e and native-precision fluxes')
     if(lio) write(*,'(a,a)') 'ASTR_GPU_CPP viscous_halo=',merge('packed  ','separate',packed_viscous_halo)
+    if(packed_viscous_halo.and.lio) write(*,'(a,a)') &
+      'ASTR_GPU_CPP viscous_overlap_axis=',merge('z','x',viscous_overlap_axis==2)
     ! TGV scalar enstrophy/dissipation consume gradients even for inviscid runs.
     call check(fluid_prepare(context,1_c_int),'prepare primitive and gradient fields')
     if(mixed_derivative) then
@@ -446,7 +469,7 @@ contains
     ! The steploop initializes/restores crinod after flowinit; do not import
     ! that host history before its lifecycle has begun.
     call check(fluid_check(context),'initial finite positive physical state')
-    if(benchmark_gpu_rk_timing_enabled()) call report_device_memory('initialized')
+    if(benchmark_gpu_rk_timing_enabled().or.device_memory_steps) call report_device_memory('initialized')
     write(*,'(a,i0,2a,a,i0,2a)') 'ASTR_GPU_CPP rank=',mpirank,' backend=',ASTR_GPU_CPP_NAME, &
       ' device=',local_rank,' sync=',trim(sync)
     write(*,'(a,i0,3(a,3(i0,1x)),a,i0,3(a,3(i0,1x)))') 'ASTR_GPU_CPP_LAYOUT rank=',mpirank, &
@@ -674,6 +697,12 @@ contains
     call check(device_memory_info(context,free_bytes,total_bytes),'device memory observation')
     write(*,'(a,1x,a,3(1x,i0))') 'ASTR_CPP_DEVICE_MEMORY',trim(phase),mpirank,free_bytes,total_bytes
   end subroutine
+  subroutine report_step_device_memory()
+    character(32) :: phase
+    if(.not.device_memory_steps) return
+    write(phase,'(a,i0)') 'step',nstep
+    call report_device_memory(phase)
+  end subroutine
   subroutine cpp_check_state()
 #ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb)then
@@ -889,6 +918,7 @@ contains
     if(lcomb)then
       host_primitives_current=.false.
       call advance_air5_cpp(context)
+      call report_step_device_memory()
       return
     endif
 #endif
@@ -961,7 +991,8 @@ contains
         call check(fluid_advance_prepared_stage(context,rkstep,deltat,const2,const6,reynolds,prandtl, &
           const5,tempconst,tempconst1,diffterm,cpp_exchange_axis,device_exchange_begin,cpp_exchange_end, &
           gradient_selected,convection_selected,viscous_selected,source_operator=source_selected, &
-          post_update_operator=post_update_selected,packed_viscous=packed_viscous_halo),'advance RK stage')
+          post_update_operator=post_update_selected, &
+          packed_viscous_axis=merge(viscous_overlap_axis,-1_c_int,packed_viscous_halo)),'advance RK stage')
       endif
 #ifdef ASTR_BUILD_TESTING
       call snapshot_updated_stage()
@@ -987,6 +1018,8 @@ contains
         enddo
       endif
     endif
+    call report_compact_phases_cpp()
+    call report_step_device_memory()
   end subroutine
   integer(c_int) function prepare_staged_profile(handle) result(status)
     use bc, only: twall,bctype
@@ -1781,7 +1814,7 @@ contains
       call write_q_validation_snapshot('cpp_final',nstep,1)
     endif
 #endif
-    if(benchmark_gpu_rk_timing_enabled()) call report_device_memory('final')
+    if(benchmark_gpu_rk_timing_enabled().or.device_memory_steps) call report_device_memory('final')
     call require(c_associated(context),'missing C++ device context at finalize')
     call release_compact_flow_cpp()
     call release_dynamic_inflow_cpp()
