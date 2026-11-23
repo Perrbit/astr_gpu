@@ -54,6 +54,7 @@ flowchart LR
 | [构建、运行与重启](build-run-restart.md) | 如何构建、运行和恢复计算 | 新成员 |
 | [变更影响指南](change-impact-guide.md) | 新增算例、边界或 kernel 要改哪里 | 维护者 |
 | [验证与故障诊断](validation-and-troubleshooting.md) | 什么证据足以接受一次改动 | 全部 |
+| [超算部署与多节点排障](cluster-deployment-and-mpi-troubleshooting.md) | A800/DCU 从构建、启动到 MPI、I/O 和数值失败怎么区分与复现 | 部署者、维护者 |
 | [生成源码清单](generated/source-inventory.md) | 当前 tracked source 与词法关系是什么 | 维护者 |
 
 ## 待实施方案
