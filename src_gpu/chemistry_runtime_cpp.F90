@@ -279,6 +279,9 @@ contains
       call log_phase('chemistry_refresh',half,MPI_Wtime()-applied)
       write(*,'(a,9(1x,i0))') 'ASTR_AIR5_RANK_CHEMISTRY',mpirank,nstep,half, &
         local%total,local%skipped,local%max_counts
+#ifdef ASTR_AIR5_WORKLOAD_PROBE
+      write(*,'(a,7(1x,i0))') 'ASTR_AIR5_WORKLOAD',mpirank,nstep,half,local%sum_counts
+#endif
     endif
     if(lio.and.report_step())then
       write(*,'(a,i0,a,5(es12.4,1x),a,4(i0,1x))') 'AIR5_CHEMISTRY half=',half, &

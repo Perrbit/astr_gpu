@@ -107,6 +107,11 @@ __global__ void half_step_kernel(AstrDeviceView q,AstrDeviceView rho,AstrDeviceV
     if(collect) {
         const int values[4]={counts.accepted,counts.rejected,counts.rhs,counts.jacobian};
         for(int c=0;c<4;++c) atomicMax(report->max_counts+c,values[c]);
+#ifdef ASTR_AIR5_WORKLOAD_PROBE
+        for(int c=0;c<4;++c)
+            atomicAdd(reinterpret_cast<unsigned long long *>(report->sum_counts+c),
+                      static_cast<unsigned long long>(values[c]));
+#endif
         double minimum=final_state[0];for(int c=1;c<5;++c) minimum=fmin(minimum,final_state[c]);
         minimum_bits(report->minimum_bits,minimum);minimum_bits(report->minimum_bits+1,temperature);
         minimum_bits(report->minimum_bits+2,vibration);

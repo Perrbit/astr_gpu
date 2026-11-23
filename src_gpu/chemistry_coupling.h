@@ -13,6 +13,9 @@ typedef struct AstrAir5ChemistryReport {
     int64_t skipped,total;
     int64_t minimum_bits[3],maximum_bits[2];
     double failure_q[11],failure_carry[6];
+#ifdef ASTR_AIR5_WORKLOAD_PROBE
+    int64_t sum_counts[4];
+#endif
 } AstrAir5ChemistryReport;
 /* Prepare once after air5_prepare. Carry/history are allocated only if enabled.
  * begin resets one half-step; region may be called for interior and dynamic top.

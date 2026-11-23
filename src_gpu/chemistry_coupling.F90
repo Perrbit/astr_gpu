@@ -11,6 +11,9 @@ module chemistry_device_coupling
     integer(c_int) :: status,max_counts(4),failure(6)
     integer(c_int64_t) :: skipped,total,minimum_bits(3),maximum_bits(2)
     real(c_double) :: failure_q(11),failure_carry(6)
+#ifdef ASTR_AIR5_WORKLOAD_PROBE
+    integer(c_int64_t) :: sum_counts(4)
+#endif
   end type
   type,public :: air5_chemistry_global_report
     logical :: collected
@@ -70,6 +73,9 @@ contains
 
     local%status=0;local%max_counts=0;local%failure=0;local%skipped=0;local%total=0
     local%minimum_bits=0;local%maximum_bits=0;local%failure_q=0;local%failure_carry=0
+#ifdef ASTR_AIR5_WORKLOAD_PROBE
+    local%sum_counts=0
+#endif
     global%collected=.false.;global%status=0;global%max_counts=0
     global%skipped=0;global%total=0;global%minimums=0;global%maximums=0
     call check_phase_api(air5_chemistry_begin(handle),comm)

@@ -133,7 +133,9 @@ static int contracts(const char *input_path,const char *output_path)
 int main(int argc,char **argv)
 {
     if(argc==4 && std::strcmp(argv[1],"contracts")==0) return contracts(argv[2],argv[3]);
-    if(argc!=8 || std::strcmp(argv[1],"batch")!=0) return 2;
+    if((argc!=8 && argc!=9) || std::strcmp(argv[1],"batch")!=0) return 2;
+    const int block=argc==9?std::atoi(argv[8]):32;
+    if(block!=32 && block!=128) return 2;
     const int segments=std::atoi(argv[6]);
     const bool history_enabled=std::strcmp(argv[7],"reset")!=0;
     const int width=std::strcmp(argv[7],"history-from-input")==0?18:17;
@@ -153,7 +155,7 @@ int main(int argc,char **argv)
     check(cudaMalloc(&xd,input.size()*sizeof(double)));check(cudaMalloc(&od,output.size()*sizeof(double)));
     check(cudaMalloc(&cd,counts.size()*sizeof(int)));
     check(cudaMemcpy(xd,input.data(),input.size()*sizeof(double),cudaMemcpyHostToDevice));
-    advance_batch<<<(n+31)/32,32>>>(n,xd,od,cd,duration,mode,rtol,atol_factor,segments,history_enabled,source_only,threshold);
+    advance_batch<<<(n+block-1)/block,block>>>(n,xd,od,cd,duration,mode,rtol,atol_factor,segments,history_enabled,source_only,threshold);
     check(cudaGetLastError());check(cudaDeviceSynchronize());
     check(cudaMemcpy(output.data(),od,output.size()*sizeof(double),cudaMemcpyDeviceToHost));
     check(cudaMemcpy(counts.data(),cd,counts.size()*sizeof(int),cudaMemcpyDeviceToHost));

@@ -76,11 +76,17 @@ AstrAir5ChemistryReport regions(Fields &f,int collect)
     if(status || report.status || report.total!=62) std::exit(3);
     return report;
 }
+#ifdef ASTR_AIR5_WORKLOAD_PROBE
+constexpr int point_words=36;
+#else
+constexpr int point_words=32;
+#endif
+
 __global__ void point_reference(const double *input,AstrAir5ChemistryOptions options,double *out)
 {
     const int id=blockIdx.x*blockDim.x+threadIdx.x;
     if(id>=cells) return;
-    input+=18*id;out+=32*id;
+    input+=18*id;out+=point_words*id;
     double final_state[6],carry[6],atol[6],history=input[17],suggested;
     for(int c=0;c<6;++c) {carry[c]=input[11+c];atol[c]=options.atol_factor*(c<5?input[0]:fmax(fabs(input[10]),1.));}
     astr::air5::Ros2Counts counts;bool skipped;
@@ -92,6 +98,9 @@ __global__ void point_reference(const double *input,AstrAir5ChemistryOptions opt
     for(int c=0;c<6;++c) out[11+c]=carry[c];out[17]=history;
     int decode=astr::air5::conservative_to_primitive(out,options.preserve_all!=0,out[18],out+19,out[22],out+23,out[28],out[29]);
     out[31]=decode;
+#ifdef ASTR_AIR5_WORKLOAD_PROBE
+    out[32]=counts.accepted;out[33]=counts.rejected;out[34]=counts.rhs;out[35]=counts.jacobian;
+#endif
 }
 }
 
@@ -108,7 +117,8 @@ int main(int argc,char **argv)
         for(int c=0;c<17;++c) nodal[18*i+c]=input[c]*density_scale(i);
         nodal[18*i+17]=history_seed(i);
     }
-    double *id,*answer;check(cudaMalloc(&id,nodal.size()*sizeof(double)));check(cudaMalloc(&answer,32*cells*sizeof(double)));
+    double *id,*answer;check(cudaMalloc(&id,nodal.size()*sizeof(double)));
+    check(cudaMalloc(&answer,point_words*cells*sizeof(double)));
     check(cudaMemcpy(id,nodal.data(),nodal.size()*sizeof(double),cudaMemcpyHostToDevice));
     std::vector<double> primary_q,primary_c,primary_h;
     for(int test=0;test<8;++test) {
@@ -124,26 +134,38 @@ int main(int argc,char **argv)
         const auto before_c=options.compensated?download(f,ASTR_DEVICE_AIR5_CARRY,f.carry):std::vector<double>{};
         const auto before_h=options.history_enabled?download(f,ASTR_DEVICE_AIR5_HISTORY,f.history):std::vector<double>{};
         point_reference<<<(cells+31)/32,32>>>(id,options,answer);check(cudaGetLastError());
-        std::vector<double> reference(32*cells);check(cudaMemcpy(reference.data(),answer,reference.size()*sizeof(double),cudaMemcpyDeviceToHost));
-        for(int i=0;i<cells;++i) if(reference[32*i+30]!=0 || reference[32*i+31]!=0) return 4;
+        std::vector<double> reference(point_words*cells);
+        check(cudaMemcpy(reference.data(),answer,reference.size()*sizeof(double),cudaMemcpyDeviceToHost));
+        for(int i=0;i<cells;++i) if(reference[point_words*i+30]!=0 || reference[point_words*i+31]!=0) return 4;
         const auto report=regions(f,collect);
+#ifdef ASTR_AIR5_WORKLOAD_PROBE
+        int64_t totals[4]={};
+        if(collect)
+            for(int k=0;k<=km;++k) for(int j=0;j<=jm;++j) for(int i=0;i<=im;++i) if(active(i,j,k))
+                for(int c=0;c<4;++c) totals[c]+=static_cast<int64_t>(reference[point_words*node(i,j,k)+32+c]);
+        for(int c=0;c<4;++c) if(report.sum_counts[c]!=totals[c]) {
+            std::fprintf(stderr,"workload count test=%d column=%d actual=%lld expected=%lld\n",test,c,
+                static_cast<long long>(report.sum_counts[c]),static_cast<long long>(totals[c]));
+            return 17;
+        }
+#endif
         const auto q=download(f,ASTR_DEVICE_Q,f.q);
         const auto c=options.compensated?download(f,ASTR_DEVICE_AIR5_CARRY,f.carry):std::vector<double>{};
         const auto h=options.history_enabled?download(f,ASTR_DEVICE_AIR5_HISTORY,f.history):std::vector<double>{};
         for(int k=-halo;k<=km+halo;++k) for(int j=-halo;j<=jm+halo;++j) for(int i=-halo;i<=im+halo;++i)
             for(int v=1;v<=11;++v) {
                 const size_t a=index(f.q,i,j,k,v);
-                const double expected=active(i,j,k)?reference[32*node(i,j,k)+v-1]:before_q[a];
+                const double expected=active(i,j,k)?reference[point_words*node(i,j,k)+v-1]:before_q[a];
                 if(std::memcmp(&q[a],&expected,sizeof(double))) return 5;
             }
         for(int k=0;k<=km;++k) for(int j=0;j<=jm;++j) for(int i=0;i<=im;++i) {
             if(options.compensated) for(int v=1;v<=11;++v) {
                 const size_t a=index(f.carry,i,j,k,v);
-                const double expected=active(i,j,k) && v>=6?reference[32*node(i,j,k)+11+v-6]:before_c[a];
+                const double expected=active(i,j,k) && v>=6?reference[point_words*node(i,j,k)+11+v-6]:before_c[a];
                 if(std::memcmp(&c[a],&expected,sizeof(double))) return 6;
             }
             if(options.history_enabled) {
-                const size_t a=index(f.history,i,j,k);const double expected=active(i,j,k)?reference[32*node(i,j,k)+17]:before_h[a];
+                const size_t a=index(f.history,i,j,k);const double expected=active(i,j,k)?reference[point_words*node(i,j,k)+17]:before_h[a];
                 if(std::memcmp(&h[a],&expected,sizeof(double))) return 7;
             }
         }
@@ -154,7 +176,7 @@ int main(int argc,char **argv)
             const auto values=download(f,fields[a],views[a]);
             for(int k=-halo;k<=km+halo;++k) for(int j=-halo;j<=jm+halo;++j) for(int i=-halo;i<=im+halo;++i)
                 for(int v=1;v<=views[a].extent[3];++v) {
-                    const double expected=active(i,j,k)?reference[32*node(i,j,k)+starts[a]+v-1]:-777.;
+                    const double expected=active(i,j,k)?reference[point_words*node(i,j,k)+starts[a]+v-1]:-777.;
                     if(values[index(views[a],i,j,k,v)]!=expected) return 8;
                 }
         }
@@ -162,7 +184,7 @@ int main(int argc,char **argv)
         if(collect) {
             double mins[3]={DBL_MAX,DBL_MAX,DBL_MAX},maxs[2]={0,0};
             for(int k=0;k<=km;++k) for(int j=0;j<=jm;++j) for(int i=0;i<=im;++i) if(active(i,j,k)) {
-                const double *r=reference.data()+32*node(i,j,k);
+                const double *r=reference.data()+point_words*node(i,j,k);
                 double s=r[5];for(int c=6;c<=9;++c) s=fmin(s,r[c]);
                 mins[0]=fmin(mins[0],s);mins[1]=fmin(mins[1],r[22]);mins[2]=fmin(mins[2],r[28]);
                 maxs[0]=fmax(maxs[0],r[22]);maxs[1]=fmax(maxs[1],r[28]);

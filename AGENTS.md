@@ -24,6 +24,18 @@ under `/home/dell/workspace/astr_gpu`.
   Any Zhongke Suanlian Cloud work must remain below
   `/data/user/hd56000/weiph`.
 
+### Sugon DCU Platform
+
+- Both `ssh cancon` and `ssh wuzh02` are Sugon DCU platform logins. Keep remote
+  project work and all writes, including temporary files and caches, under the
+  remote login user's `~/weiph/`. Do not follow symlinks that extend this write
+  boundary. Public system software and hardware may be inspected read-only;
+  do not inspect personal files outside the work directory.
+- Before executing or providing any Slurm operation, including read-only job
+  queries and indirect calls through scripts, explain its intent, target, and
+  scope and obtain explicit approval. Login or file inspection approval is
+  not Slurm approval. Existing approval covers only the operations specified.
+
 ## Scientific And Numerical Boundaries
 
 - If a physical definition, normalization, boundary condition, or experimental

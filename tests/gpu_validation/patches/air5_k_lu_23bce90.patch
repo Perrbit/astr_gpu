@@ -1,0 +1,63 @@
+--- a/src_gpu/chemistry_kinetics_math.cuh
++++ b/src_gpu/chemistry_kinetics_math.cuh
+@@ -253,13 +253,13 @@
+     return index;
+ }
+
+-__device__ inline int lu_factor_6(const double matrix[36],double lu[36],int pivots[6])
++static __device__ __noinline__ int lu_factor_6_in_place(double lu[36],int pivots[6])
+ {
+     double scale[6];
+     for(int row=0;row<6;++row) {
+         pivots[row]=row;double row_max=0;
+         for(int col=0;col<6;++col) {
+-            const double value=matrix[row+6*col];lu[row+6*col]=value;
++            const double value=lu[row+6*col];
+             if(!finite(value)) return nonfinite;
+             row_max=fmax(row_max,fabs(value));
+         }
+@@ -289,7 +289,7 @@
+     for(int row=0;row<6;++row) for(int col=0;col<6;++col) if(!finite(lu[row+6*col])) return linear_failure;
+     return ok;
+ }
+-__device__ inline int lu_solve_6(const double lu[36],const int pivots[6],const double rhs[6],double solution[6])
++static __device__ __noinline__ int lu_solve_6(const double lu[36],const int pivots[6],const double rhs[6],double solution[6])
+ {
+     for(int row=0;row<6;++row) {
+         solution[row]=0;
+--- a/src_gpu/chemistry_ros2_math.cuh
++++ b/src_gpu/chemistry_ros2_math.cuh
+@@ -34,17 +34,17 @@
+     if(compensation) for(int v=0;v<6;++v) if(!finite(compensation[v])) return nonfinite;
+     if(!finite(step)||step<=0) return invalid_timestep;
+     if(mode==frozen) return validate_ros2_candidate(rho,momentum,q5,state);
+-    double source[6],jacobian[36],progress[12],matrix[36],lu[36],stage[6],stage_source[6],k1[6],k2[6],rhs[6],carry[6];
++    double source[6],jacobian[36],progress[12],lu[36],stage[6],stage_source[6],k1[6],k2[6],rhs[6],carry[6];
+     int pivots[6];
+     int status=instantaneous_source<true>(rho,momentum,q5,state,source,jacobian,progress,mode);
+     rhs_evaluations=1;jacobian_evaluations=1;
+     if(status!=ok) return status;
+     retryable=true;
+     for(int row=0;row<6;++row) {
+-        for(int col=0;col<6;++col) matrix[row+6*col]=-step*ros2_gamma*jacobian[row+6*col];
+-        matrix[row+6*row]+=1.;rhs[row]=step*ros2_gamma*source[row];
++        for(int col=0;col<6;++col) lu[row+6*col]=-step*ros2_gamma*jacobian[row+6*col];
++        lu[row+6*row]+=1.;rhs[row]=step*ros2_gamma*source[row];
+     }
+-    status=lu_factor_6(matrix,lu,pivots);
++    status=lu_factor_6_in_place(lu,pivots);
+     if(status!=ok) return status;
+     status=lu_solve_6(lu,pivots,rhs,k1);
+     if(status!=ok) return status;
+--- a/tests/gpu_backend/air5_kinetics_probe.cu
++++ b/tests/gpu_backend/air5_kinetics_probe.cu
+@@ -33,7 +33,8 @@
+     for(int j=0;j<2;++j) { out[76+j]=d.energy[j];out[78+j]=d.temperatures[j]; }
+     if(st[2]==0) out[89]=activity_index(x[0],x+5,1.e-10,d,out+80);
+     int pivots[6]={-1,-1,-1,-1,-1,-1};
+-    st[3]=lu_factor_6(x+11,out+90,pivots);
++    for(int j=0;j<36;++j) out[90+j]=x[11+j];
++    st[3]=lu_factor_6_in_place(out+90,pivots);
+     for(int j=0;j<6;++j) st[5+j]=pivots[j]+1;
+     if(st[3]==0) st[4]=lu_solve_6(out+90,pivots,x+47,out+126);
+ }
