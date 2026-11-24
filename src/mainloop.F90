@@ -726,6 +726,7 @@ module mainloop
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
       (convection_form=='keep'.or.viscous_form=='me6_opti'.or.(conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
+      (conschm=='643c'.and.difschm=='643e').or. &
       ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
     air5_reacting_case=.false.

@@ -26,7 +26,8 @@ module fluid_runtime
   use inflow_timeseries_cpp
   use crashfix_operator_cpp
   use crashfix_runtime_cpp, only: repair_crashfix_cpp,repair_reconciled_cpp
-  use keep_sbp63_runtime, only: keep_sbp63_enabled,keep_sbp63_wall_temperature
+  use keep_sbp63_runtime, only: keep_sbp63_enabled,keep_sbp63_wall_temperature, &
+    keep_w1_enabled,keep_w1_inverse,keep_w1_configure_grid,keep_w1_end_widths
   use me6_flow_cpp, only: prepare_me6_cpp,me6_diffusion_cpp,report_me6_cpp
 #ifdef ASTR_AIR5_CHEMISTRY
   use chemistry_runtime_cpp, only: initialize_air5_cpp,advance_air5_cpp,check_air5_cpp_state,transfer_air5_aux_cpp
@@ -73,6 +74,22 @@ module fluid_runtime
   logical,save :: device_memory_steps=.false.
   integer(c_int),save :: viscous_overlap_axis=0_c_int
   real(real_kind),allocatable,save :: lower_wall_velocity(:,:)
+  interface
+    integer(c_int) function w1_prepare_cpp(handle) bind(C,name='astr_keep_w1_prepare')
+      import c_int,c_ptr
+      type(c_ptr),value :: handle
+    end function
+    integer(c_int) function w1_diffusion_cpp(handle,first_y,total_y,split,inverse,wall,re,pr,c5,tc,tc1,send_width,recv_width) &
+        bind(C,name='astr_keep_w1_diffusion')
+      import c_int,c_ptr,c_double
+      type(c_ptr),value :: handle
+      integer(c_int),value :: first_y,total_y
+      integer(c_int),intent(in) :: split(3)
+      real(c_double),intent(in) :: inverse(3),wall(2)
+      real(c_double),value :: re,pr,c5,tc,tc1
+      integer(c_int),intent(in) :: send_width(2),recv_width(2)
+    end function
+  end interface
 #ifdef ASTR_BUILD_TESTING
   integer(c_int),save :: exchange_sequence=0
 #endif
@@ -267,7 +284,7 @@ contains
     physical_low=int(merge(1,0,bctype([1,3,5])/=1.and.[ig0,jg0,kg0]==0),c_int)
     physical_high=int(merge(1,0,bctype([2,4,6])/=1.and.[ig0+im,jg0+jm,kg0+km]==[ia,ja,ka]),c_int)
     physical_boundaries=.not.all(bctype==1)
-    nodal_fluxes=diffterm.and.(viscous_form=='standard'.or.physical_boundaries)
+    nodal_fluxes=diffterm.and.(viscous_form=='standard'.or.physical_boundaries).and..not.keep_w1_enabled
     axis_types=3
     where(physical_low/=0) axis_types=1
     where(physical_high/=0) axis_types=2
@@ -398,6 +415,10 @@ contains
     else
       call check(fluid_rhs_prepare(context,int(merge(1,0,nodal_fluxes),c_int)),'prepare RHS fields')
     endif
+    if(keep_w1_enabled) then
+      call keep_w1_configure_grid()
+      call check(w1_prepare_cpp(context),'prepare W1 coefficient/flux workspace')
+    endif
     if(upwind_convection) then
       if(mixed_interface_flux.or.mixed_characteristic_flux) then
         if(mixed_characteristic_flux) then
@@ -424,6 +445,7 @@ contains
         bytes(product(int(filter_view%extent,c_size_t)))
     endif
     halo_components=int(merge(9,merge(6,5,nodal_fluxes),packed_viscous_halo),c_int)
+    if(keep_w1_enabled) halo_components=14_c_int
     halo_timing=int(merge(1,0,benchmark_gpu_rk_timing_enabled()),c_int)
     if(halo_axis_timing) halo_timing=2_c_int
     call check(device_transport_prepare(context,int(MPI_COMM_WORLD,c_int), &
@@ -969,6 +991,11 @@ contains
           const5,tempconst,tempconst1,diffterm,cpp_exchange_axis,device_exchange_begin,cpp_exchange_end, &
           gradient_selected,convection_selected,viscous_selected,source_operator=source_selected, &
           post_update_operator=post_update_selected),'advance evolved-density high-wall stage')
+      elseif(keep_w1_enabled) then
+        call check(fluid_advance_prepared_stage(context,rkstep,deltat,const2,const6,reynolds,prandtl, &
+          const5,tempconst,tempconst1,diffterm,cpp_exchange_axis,device_exchange_begin,cpp_exchange_end, &
+          gradient_selected,convection_selected,integrated_viscous_operator=w1_selected,source_operator=source_selected, &
+          post_update_operator=post_update_selected),'advance W1 paired-wall RK stage')
       elseif(viscous_form=='me6_opti') then
         if(upwind_sensor) then
           call check(fluid_advance_prepared_stage(context,rkstep,deltat,const2,const6,reynolds,prandtl, &
@@ -1526,6 +1553,18 @@ contains
     if(status==0.and.top_viscous_source.and.physical_high(2)/=0) status=nscbc_top_viscous_source(handle,gamma,mach)
 #ifdef ASTR_BUILD_TESTING
     if(status==0.and..not.evolved_wall.and..not.top_incident) call snapshot_operator_rhs(handle,'full')
+#endif
+  end function
+  integer(c_int) function w1_selected(handle) result(status)
+    type(c_ptr),value :: handle
+    integer(c_int) :: send_width(2),recv_width(2)
+    call keep_w1_end_widths(send_width,recv_width)
+    status=w1_diffusion_cpp(handle,int(jg0,c_int),int(ja,c_int),int(merge(1,0,[isize,jsize,ksize]>1),c_int), &
+      keep_w1_inverse,real(keep_sbp63_wall_temperature,c_double), &
+      real(reynolds,c_double),real(prandtl,c_double),real(const5,c_double),real(tempconst,c_double), &
+      real(tempconst1,c_double),send_width,recv_width)
+#ifdef ASTR_BUILD_TESTING
+    if(status==0) call snapshot_operator_rhs(handle,'full')
 #endif
   end function
   integer(c_int) function me6_selected(handle) result(status)

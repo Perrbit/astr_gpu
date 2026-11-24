@@ -93,7 +93,8 @@ module comsolver
   
     if (mod(nscheme / 100, 2) == 0) then
       ! Central convection scheme
-      if (trim(conschm) /= trim(difschm).and.convection_form/='keep'.and.viscous_form/='me6_opti') then
+      if (trim(conschm) /= trim(difschm).and.convection_form/='keep'.and.viscous_form/='me6_opti'.and. &
+          .not.(conschm=='643c'.and.difschm=='643e')) then
         print *, ' !! WARNING !! Central schemes for convection and diffusion are inconsistent.'
         print *, ' !! WARNING !! Consider using the same scheme to avoid unexpected behavior.'
         print *, ' ** conschm:', conschm

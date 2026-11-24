@@ -2,7 +2,7 @@ program me6_probe_cpp
   use iso_c_binding, only: c_ptr,c_int,c_size_t,c_int64_t
   use astr_precision, only: real_kind,real_bytes,real_to_word
   use ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
-  use me6opti_operator, only: me6_mapped_direction,me6_coefficients
+  use me6opti_operator, only: me6_mapped_direction,me6_coefficients,me6_scalar_direction
   use device_state
   use fluid_explicit, only: fluid_prepare,fluid_rhs_prepare,prepare=>fluid_me6_prepare,diffuse=>fluid_me6_diffusion, &
     fluid_me6_metrics
@@ -19,11 +19,12 @@ program me6_probe_cpp
   integer :: i,j,k,a,b,h,side,p,column,half,sample,debug,status
   character(1024) :: argument
   call get_command_argument(1,argument)
-  if(len_trim(argument)>0) then
-    if(trim(argument)/='periodic') error stop 'ME6 probe mode must be periodic or empty'
+  if(trim(argument)=='periodic') then
     call periodic_patch()
     stop
   endif
+  if(len_trim(argument)>0.and.trim(argument)/='paper'.and.trim(argument)/='paper-cell') &
+    error stop 'ME6 probe mode must be periodic, paper, paper-cell or empty'
   do h=1,3
   do side=1,2
     column=2*(h-1)+side;half=(2*side-3)*(2*h-1)
@@ -32,6 +33,10 @@ program me6_probe_cpp
     enddo
   enddo
   enddo
+  if(trim(argument)=='paper'.or.trim(argument)=='paper-cell') then
+    call paper_tests(trim(argument)=='paper-cell')
+    stop
+  endif
   do sample=1,4
     spacing=[.13e0_real_kind,.17e0_real_kind,.11e0_real_kind];wave=[1.e0_real_kind,2.e0_real_kind,-1.e0_real_kind]
     mapping=0;inverse=0
@@ -108,6 +113,101 @@ program me6_probe_cpp
   write(*,'(a,1x,es24.16e3)') 'CPP_ME6_PASS',maximum
   write(*,'(a,1x,i0)') 'CPP_ME6_ELEMENT_BYTES',real_bytes
 contains
+  subroutine paper_tests(cell_centered)
+    logical,intent(in) :: cell_centered
+    integer :: n,level,kind,intervals,previous_intervals
+    real(real_kind) :: errors(2),prior(2),parity,order(2),ratio
+    real(real_kind),parameter :: published(5,2)=reshape([ &
+      1.51e-3_real_kind,2.56e-5_real_kind,4.07e-7_real_kind,6.38e-9_real_kind,9.30e-11_real_kind, &
+      2.43e-2_real_kind,4.13e-4_real_kind,6.65e-6_real_kind,1.05e-7_real_kind,1.65e-9_real_kind],[5,2])
+    if(real_bytes/=8) error stop 'ME6 paper probe uses FP64'
+    write(*,'(a,l1)') 'ME6_PAPER cell-centered=',cell_centered
+    do kind=1,2
+      do level=1,5
+        n=20*2**(level-1)
+        intervals=merge(n,n-1,cell_centered)
+        call paper_patch(n,kind==2,cell_centered,errors,parity)
+        order=0.e0_real_kind
+        if(level>1) then
+          ratio=real(intervals,real_kind)/real(previous_intervals,real_kind)
+          order=log(prior/errors)/log(ratio)
+        endif
+        write(*,'(a,2(1x,i0),6(1x,es24.16e3))') 'ME6_PAPER',kind,n,published(level,kind),errors,order,parity
+        prior=errors
+        previous_intervals=intervals
+      enddo
+    enddo
+  end subroutine
+
+  subroutine paper_patch(n,mixed,cell_centered,errors,parity)
+    integer,intent(in) :: n
+    logical,intent(in) :: mixed,cell_centered
+    real(real_kind),intent(out) :: errors(2),parity
+    integer :: ix,iy,jmax,kk,axis,dir
+    integer(c_int) :: dims(3)
+    type(c_ptr) :: context
+    real(real_kind) :: s,delta,vol,offset
+    real(real_kind),allocatable :: u(:,:,:,:),temperature(:,:,:),viscosity(:,:,:),g(:,:,:,:,:),jdet(:,:,:), &
+      rhs(:,:,:,:),expected(:,:),on_cpu(:,:),on_device(:,:)
+    delta=1.e0_real_kind/real(merge(n,n-1,cell_centered),real_kind)
+    offset=0.e0_real_kind
+    if(cell_centered) offset=merge(1.e0_real_kind,.5e0_real_kind,mixed)
+    jmax=merge(n-1,0,mixed)
+    dims=int([n-1,jmax,0],c_int)
+    vol=delta**3
+    allocate(u(-hm:n-1+hm,-hm:jmax+hm,-hm:hm,3),temperature(-hm:n-1+hm,-hm:jmax+hm,-hm:hm), &
+      viscosity(-hm:n-1+hm,-hm:jmax+hm,-hm:hm),source=0.e0_real_kind)
+    allocate(g(-hm:n-1+hm,-hm:jmax+hm,-hm:hm,3,3),jdet(-hm:n-1+hm,-hm:jmax+hm,-hm:hm),source=0.e0_real_kind)
+    allocate(rhs(0:n-1,0:jmax,0:0,5),expected(0:n-1,0:jmax),on_cpu(0:n-1,0:jmax),on_device(0:n-1,0:jmax))
+    do kk=-hm,hm
+    do iy=-hm,jmax+hm
+    do ix=-hm,n-1+hm
+      s=(real(ix+merge(iy,0,mixed),real_kind)+offset)*delta
+      u(ix,iy,kk,2)=sin(10*s)
+      viscosity(ix,iy,kk)=.1e0_real_kind*exp(2*s)
+    enddo
+    enddo
+    enddo
+    temperature=viscosity**2
+    jdet=vol
+    do axis=1,3
+      g(:,:,:,axis,axis)=1.e0_real_kind/delta
+    enddo
+    dir=merge(2,1,mixed)
+    do iy=0,jmax
+    do ix=0,n-1
+      s=(real(ix+merge(iy,0,mixed),real_kind)+offset)*delta
+      expected(ix,iy)=viscosity(ix,iy,0)*(20*cos(10*s)-100*sin(10*s))
+      on_cpu(ix,iy)=me6_scalar_direction(1,dir,[ix,iy,0],hm,u(:,:,:,2),viscosity,[delta,delta,delta])
+    enddo
+    enddo
+    call check(device_state_create(0_c_int,dims(1),dims(2),dims(3),hm,1_c_int,context),'paper create')
+    call check(fluid_prepare(context,0_c_int),'paper primitives')
+    call check(fluid_rhs_prepare(context,0_c_int),'paper RHS')
+    call check(prepare(context,0_c_int,[0_c_int,0_c_int,0_c_int],[0_c_int,0_c_int,0_c_int], &
+      [1_c_int,1_c_int,1_c_int],[0_c_int,0_c_int,0_c_int],-hm+[0_c_int,0_c_int,0_c_int],dims+hm, &
+      [0_c_int,0_c_int,0_c_int],dims,0_c_int,ci,cd,cp),'paper setup')
+    call check(device_state_upload(context,device_velocity,u,bytes(size(u))),'paper velocity')
+    call check(device_state_upload(context,device_temperature,temperature,bytes(size(temperature))),'paper temperature')
+    call check(device_state_upload(context,device_metric,g,bytes(size(g))),'paper metric')
+    call check(device_state_upload(context,device_jacobian,jdet,bytes(size(jdet))),'paper Jacobian')
+    rhs=0
+    call check(device_state_upload(context,device_rhs,rhs,bytes(size(rhs))),'paper RHS origin')
+    ! With tc=0 and Re=tc1=1 the device constitutive law gives mu=sqrt(T).
+    call check(diffuse(context,1.e0_real_kind,1.e0_real_kind,1.e0_real_kind,0.e0_real_kind,1.e0_real_kind),'paper diffusion')
+    call check(device_state_download(context,device_rhs,rhs,bytes(size(rhs))),'paper RHS observation')
+    call check(device_state_destroy(context),'paper destroy')
+    if(mixed) then
+      ! Here Dx(mu*Dy u2) = Dy(mu*Dx u2) by x/y symmetry. The x momentum
+      ! component is their sum weighted by -2/3 and 1, respectively.
+      on_device=3*rhs(:,:,0,2)/vol
+    else
+      on_device=rhs(:,:,0,3)/vol
+    endif
+    parity=maxval(abs(on_cpu-on_device))/max(1.e0_real_kind,maxval(abs(on_cpu)))
+    if(.not.all(ieee_is_finite(on_device)).or.parity>2.e-10_real_kind) error stop 'ME6 paper CPU/GPU scalar parity'
+    errors=[sum(abs(on_cpu-expected)),sum(abs(on_device-expected))]/real(size(expected),real_kind)
+  end subroutine
   subroutine periodic_patch()
     use mpi
     use astr_precision_mpi, only: mpi_real_type

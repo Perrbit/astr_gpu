@@ -2771,7 +2771,7 @@ module solver
   ! Writen by Fang Jian, 2009-06-03.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   function central_convection_derivative(asolver,f,dim) result(df)
-    use commvar, only: hm,conschm
+    use commvar, only: hm,conschm,difschm
     use commtype, only: compact_scheme
     use derivative, only: fds,diff6ec
     use numerical_forms, only: viscous_form
@@ -2780,7 +2780,7 @@ module solver
     integer,intent(in) :: dim
     real(real_kind),intent(in) :: f(-hm:dim+hm)
     real(real_kind) :: df(0:dim)
-    if(viscous_form=='me6_opti'.and.conschm=='643c') then
+    if(conschm=='643c'.and.(difschm=='643e'.or.viscous_form=='me6_opti')) then
       ! The global line partition, including physical endpoints, owns the coupling.
       df=global_compact_periodic_derivative_cpu(asolver,f,dim)
     elseif(viscous_form=='me6_opti'.and.conschm=='643e') then
@@ -3049,7 +3049,7 @@ module solver
   ! Add scalar transport equation by Fang Jian, 2022-01-12.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   subroutine diffrsdcal6(timerept,physical_boundary_rhs,wall_band_only)
-    use keep_sbp63_runtime, only: keep_sbp63_enabled,keep_sbp63_diffusion_cpu
+    use keep_sbp63_runtime, only: keep_sbp63_enabled,keep_sbp63_diffusion_cpu,keep_w1_enabled,keep_w1_diffusion_cpu
     !
     use commvar,   only : im,jm,km,numq,npdci,npdcj,npdck,difschm,     &
                           conschm,ndims,num_species,num_modequ,        &
@@ -3096,6 +3096,10 @@ module solver
     real(clock_kind) :: time_beg
     real(clock_kind),save :: subtime=0.e0_clock_kind
     !
+    if(keep_w1_enabled) then
+      call keep_w1_diffusion_cpu()
+      return
+    endif
     is=is_base; ie=ie_base; js=js_base; je=je_base; ks=ks_base; ke=ke_base
     restrict_wall_band=.false.
     if(present(wall_band_only)) restrict_wall_band=wall_band_only

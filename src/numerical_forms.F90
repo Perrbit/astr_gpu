@@ -3,6 +3,7 @@ module numerical_forms
   character(len=16) :: convection_form='standard'
   character(len=16) :: viscous_form='standard'
   character(len=16) :: filter_scheme=''
+  character(len=16) :: filter_scope='xyz'
 contains
   pure logical function inviscid_incident_boundary_layout(boundaries) result(selected)
     integer,intent(in) :: boundaries(:)
@@ -82,6 +83,11 @@ contains
   logical function compact_filter_selected(convection,diffusion) result(selected)
     character(*),intent(in) :: convection,diffusion
     selected=effective_filter_scheme(convection,diffusion,.true.)=='compact10'
+  end function
+
+  pure logical function compact_filter_axis_selected(axis) result(selected)
+    integer,intent(in) :: axis
+    selected=filter_scope=='xyz'.or.(filter_scope=='y'.and.axis==2)
   end function
 
   function keep_configuration_error(scheme,diffusion,species,reacting,boundaries,turbulence) result(message)

@@ -21,6 +21,10 @@ int astr_compact_field_commit(void *parent, void *line, const AstrCompactStencil
 int astr_compact_field_commit_wall_band(void *parent, void *line, const AstrCompactStencil *stencil, int nrhs);
 int astr_compact_rhs_clear(void *parent);
 int astr_compact_configure_sync(void *parent, int explicit_sync);
+typedef struct AstrWall5FilterPlan {
+    astr_numerical_real rows[5][11], inverse[5], alpha;
+} AstrWall5FilterPlan;
+int astr_compact_filter_wall5(void *parent, const AstrWall5FilterPlan *plan, int walls);
 
 #ifdef __cplusplus
 }

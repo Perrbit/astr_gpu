@@ -104,6 +104,49 @@ int finish(astr::State &s)
     if(status!=cudaSuccess) return static_cast<int>(status);
     return s.compact_sync || s.debug_sync ? static_cast<int>(cudaStreamSynchronize(s.stream)) : 0;
 }
+
+__device__ void wall5_line(AstrDeviceView q,AstrWall5FilterPlan const &plan,
+                           int i,int k,int m,int wall,int direction,Real (&out)[5])
+{
+    Real input[11];
+    #pragma unroll
+    for(int j=0;j<11;++j) input[j]=at(q,i,wall+direction*j,k,m);
+    #pragma unroll
+    for(int j=0;j<5;++j) {
+        Real rhs=0;
+        #pragma unroll
+        for(int r=0;r<11;++r) rhs+=plan.rows[j][r]*input[r];
+        out[j]=(rhs-(j>0 ? plan.alpha*out[j-1] : Real(0)))*plan.inverse[j];
+    }
+    #pragma unroll
+    for(int j=3;j>=0;--j) out[j]-=plan.alpha*plan.inverse[j]*out[j+1];
+}
+
+__global__ void wall5_kernel(AstrDeviceView q,AstrWall5FilterPlan plan,int walls,int nx,int ny,int nz)
+{
+    const int line=blockIdx.x*blockDim.x+threadIdx.x;
+    if(line>=nx*nz*5) return;
+    const int i=line%nx,k=(line/nx)%nz,m=line/(nx*nz)+1;
+    Real lower[5],upper[5];
+    // Both sides see the original line, even on meshes where their input stencils overlap.
+    if(walls&1) wall5_line(q,plan,i,k,m,0,1,lower);
+    if(walls&2) wall5_line(q,plan,i,k,m,ny,-1,upper);
+    #pragma unroll
+    for(int j=1;j<=5;++j) {
+        if(walls&1) at(q,i,j,k,m)=lower[j-1];
+        if(walls&2) at(q,i,ny-j,k,m)=upper[j-1];
+    }
+}
+}
+
+extern "C" int astr_compact_filter_wall5(void *parent,const AstrWall5FilterPlan *plan,int walls)
+{
+    astr::State &s=*static_cast<astr::State *>(parent);
+    const int nx=s.upper[0]+1,nz=s.upper[2]+1;
+    constexpr int threads=128;
+    wall5_kernel<<<(nx*nz*5+threads-1)/threads,threads,0,s.stream>>>(s.fields[ASTR_DEVICE_Q].view,*plan,
+        walls,nx,s.upper[1],nz);
+    return finish(s);
 }
 
 extern "C" int astr_compact_field_rhs(void *parent,void *line,const AstrCompactStencil *stencil,int nrhs)

@@ -24,7 +24,7 @@ add_library(astr_device_state STATIC EXCLUDE_FROM_ALL
   crashfix_operator.cu crashfix_operator.F90
   upwind_operator.cu upwind_operator.F90
   mp_positivity_operator.cu mp_positivity_operator.F90
-  compact_line_solver.cu compact_operator.cu keep_operator.cu me6opti_operator.cu
+  compact_line_solver.cu compact_operator.cu keep_operator.cu me6opti_operator.cu keep_w1_operator.cu
   boundary_state.cu boundary_state.F90 insitu_sampling.cu insitu_sampling.F90 insitu_index.cu insitu_index.F90
   insitu_moments.cu insitu_moments.F90 insitu_wall.cu insitu_wall.F90)
 set(ASTR_DEVICE_STATE_MODULES "${CMAKE_CURRENT_BINARY_DIR}/state_modules")

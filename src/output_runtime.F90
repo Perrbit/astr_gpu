@@ -2000,12 +2000,12 @@ contains
   end subroutine
 
   subroutine compact_control_file(unit,writing,status,source_bytes)
-    use keep_sbp63_runtime, only: keep_sbp63_enabled
+    use keep_sbp63_runtime, only: keep_sbp63_enabled,keep_w1_enabled
 #ifdef ASTR_BUILD_TESTING
     use keep_sbp63_runtime, only: keep_sbp63_mms_enabled
 #endif
     use commvar, only: alfa_filter,bfacmpld,shkcrt
-    use numerical_forms, only: convection_form,viscous_form,filter_scheme,effective_filter_scheme
+    use numerical_forms, only: convection_form,viscous_form,filter_scheme,filter_scope,effective_filter_scheme
     integer,intent(in) :: unit
     logical,intent(in) :: writing
     integer,intent(out) :: status
@@ -2034,7 +2034,11 @@ contains
     endif
     if(convection_form=='keep'.and.any(bctype/=1)) then
       if(keep_sbp63_enabled) then
-        operator_id=trim(operator_id)//'/s63sat-v1'
+        if(keep_w1_enabled) then
+          operator_id=trim(operator_id)//'/s63pair-v1'
+        else
+          operator_id=trim(operator_id)//'/s63sat-v1'
+        endif
       elseif(profile_low_order_nscbc_enabled()) then
         if(conschm=='643e') operator_id=trim(operator_id)//'/o24'
         if(conschm=='643c') operator_id=trim(operator_id)//'/o34'
@@ -2066,6 +2070,9 @@ contains
       int(merge(1,0,ljhomo),int64),int(merge(1,0,lkhomo),int64),int(bctype,int64)]
     ! Mixed KEEP schemes now refresh all physical primitive caches after filtering.
     if(convection_form=='keep'.and.lfilter.and.conschm(4:4)/=difschm(4:4)) settings(1)=2_int64
+    ! Keep the existing xyz identity; bits 8 and 9 identify the first directional versions.
+    if(lfilter.and.filter_scope=='y') settings(1)=ibset(settings(1),8)
+    if(lfilter.and.filter_scope=='y-wall5') settings(1)=ibset(settings(1),9)
     parameters=0.e0_real_kind
     if(lfilter) parameters(1)=alfa_filter
     if(recon_schem==5) parameters(2)=bfacmpld

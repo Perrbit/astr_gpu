@@ -3,9 +3,11 @@ module compact_flow_cpp
   use astr_precision, only: real_kind
   use mpi
   use commvar, only: im,jm,km,conschm,difschm,lfilter,alfa_filter,gamma
-  use compact_runtime, only: configure_global_compact,compact_partitions,compact_line_comms
+  use compact_runtime, only: configure_global_compact,compact_partitions,compact_line_comms, &
+    wall5_filter_plan,make_wall5_filter_plan,wall5_filter_layout
   use compact_operator, only: compact_derivative_core,compact_filter_core
   use compact_line_solver, only: compact_matrix
+  use numerical_forms, only: compact_filter_axis_selected,filter_scope
   use compact_line_cpp
   implicit none
   private
@@ -20,7 +22,15 @@ module compact_flow_cpp
   logical,save :: phase_timing=.false.
   type(compact_distributed_cpp_plan),save :: derivatives(2,3),filters(2,3)
   type(compact_stencil_cpp),save :: stencils(3)
+  type(wall5_filter_plan),save :: wall5_plan
+  integer,save :: wall5_walls=0,wall5_peers=0,wall5_receivers=0
   interface
+    integer(c_int) function filter_wall5(parent,plan,walls) bind(C,name='astr_compact_filter_wall5')
+      import c_ptr,c_int,wall5_filter_plan
+      type(c_ptr),value :: parent
+      type(wall5_filter_plan),intent(in) :: plan
+      integer(c_int),value :: walls
+    end function
     integer(c_int) function clear_rhs(parent) bind(C,name='astr_compact_rhs_clear')
       import c_ptr,c_int
       type(c_ptr),value :: parent
@@ -103,6 +113,10 @@ contains
     if(status/=0) error stop 'C++ compact synchronization configuration'
     filter_components=components
     phase_timing=choice(5)==1
+    if(cpp_compact_filter.and.filter_scope=='y-wall5') then
+      call wall5_filter_layout(wall5_walls,wall5_peers,wall5_receivers)
+      if(wall5_walls/=0) wall5_plan=make_wall5_filter_plan()
+    endif
     dims=[im,jm,km]
     do axis=1,3
       lines=product(dims+1)/(dims(axis)+1)
@@ -120,7 +134,7 @@ contains
           call prepare_distributed_compact_cpp(parent,matrix,edge,compact_partitions(axis), &
             compact_line_comms(axis),batch,int(choice(1),c_int),derivatives(2,axis))
       endif
-      if(cpp_compact_filter) then
+      if(cpp_compact_filter.and.compact_filter_axis_selected(axis)) then
         call compact_filter_core(compact_partitions(axis),alfa_filter,matrix,edge)
         batch=min(filter_components*lines,choice(2))
         call prepare_distributed_compact_cpp(parent,matrix,edge,compact_partitions(axis), &
@@ -166,7 +180,7 @@ contains
     if(.not.phase_timing) return
     do axis=1,3
       if(cpp_compact_derivative) call report_axis_phases(derivatives(:,axis),axis,'derivative')
-      if(cpp_compact_filter) call report_axis_phases(filters(:,axis),axis,'filter')
+      if(cpp_compact_filter.and.compact_filter_axis_selected(axis)) call report_axis_phases(filters(:,axis),axis,'filter')
     enddo
   contains
     subroutine report_axis_phases(plans,axis,op)
@@ -319,18 +333,49 @@ contains
 
   integer(c_int) function compact_filter_cpp(parent) result(status)
     use device_state, only: device_q
-    use halo_transport, only: device_exchange_axis
+    use halo_transport, only: device_exchange_axis,device_exchange_owned_plane
     type(c_ptr),value :: parent
     integer :: axis,offset
-    do axis=1,3
-      status=device_exchange_axis(parent,device_q,int(axis-1,c_int),0_c_int)
+#ifdef ASTR_BUILD_TESTING
+    status=snapshot_filter_state(parent,'pre_filter')
+    if(status/=0) return
+#endif
+    if(filter_scope=='y-wall5') then
+      status=device_exchange_axis(parent,device_q,1_c_int,0_c_int)
       if(status/=0) return
-      do offset=1,5,filter_components
-        status=apply(parent,filters(:,axis),axis,4,filter_components,offset)
+      if(wall5_walls/=0) status=filter_wall5(parent,wall5_plan,int(wall5_walls,c_int))
+      if(status/=0) return
+      if(wall5_peers/=0) status=device_exchange_owned_plane(parent,device_q,1_c_int, &
+        int(wall5_peers,c_int),int(wall5_receivers,c_int))
+    else
+      do axis=1,3
+        if(.not.compact_filter_axis_selected(axis)) cycle
+        status=device_exchange_axis(parent,device_q,int(axis-1,c_int),0_c_int)
         if(status/=0) return
+        do offset=1,5,filter_components
+          status=apply(parent,filters(:,axis),axis,4,filter_components,offset)
+          if(status/=0) return
+        enddo
       enddo
-    enddo
+    endif
+#ifdef ASTR_BUILD_TESTING
+    if(status==0) status=snapshot_filter_state(parent,'post_filter')
+#endif
   end function
+
+#ifdef ASTR_BUILD_TESTING
+  integer(c_int) function snapshot_filter_state(parent,label) result(status)
+    use commarray, only: q
+    use device_state, only: device_q,device_state_download
+    use validation_io, only: rhs_validation_requested,write_q_validation_snapshot
+    type(c_ptr),value :: parent
+    character(*),intent(in) :: label
+    status=0
+    if(.not.rhs_validation_requested()) return
+    status=device_state_download(parent,device_q,q,size(q,kind=c_size_t)*int(storage_size(0.e0_real_kind)/8,c_size_t))
+    if(status==0) call write_q_validation_snapshot(label)
+  end function
+#endif
 
   subroutine release_compact_flow_cpp()
     integer :: axis,slot

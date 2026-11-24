@@ -1,10 +1,23 @@
 enable_language(CUDA)
+add_executable(astr_backend_keep_w1_normal EXCLUDE_FROM_ALL keep_w1_normal_probe.cpp
+  ../../src_gpu/keep_w1_normal_probe.cu)
+target_include_directories(astr_backend_keep_w1_normal PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+set_target_properties(astr_backend_keep_w1_normal PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED YES
+  CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES)
+target_compile_options(astr_backend_keep_w1_normal PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+add_executable(astr_backend_me6_wall10 EXCLUDE_FROM_ALL me6_wall10_probe.cu)
+set_target_properties(astr_backend_me6_wall10 PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES)
+target_compile_options(astr_backend_me6_wall10 PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
 add_executable(astr_backend_air5_primitives_regions EXCLUDE_FROM_ALL air5_primitives_regions_probe.cu)
 set_target_properties(astr_backend_air5_primitives_regions PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES
   CUDA_RESOLVE_DEVICE_SYMBOLS ON LINKER_LANGUAGE CUDA)
 target_link_libraries(astr_backend_air5_primitives_regions PRIVATE astr_device_state)
 target_compile_options(astr_backend_air5_primitives_regions PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false;${ASTR_AIR5_FP_OPTIONS}>")
 if(NOT ASTR_NUMERICAL_PRECISION STREQUAL "fp32")
+  add_executable(astr_backend_keep_w1_end EXCLUDE_FROM_ALL keep_w1_end_probe.cu)
+  set_target_properties(astr_backend_keep_w1_end PROPERTIES CUDA_STANDARD 14 CUDA_STANDARD_REQUIRED YES
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON LINKER_LANGUAGE CUDA)
+  target_link_libraries(astr_backend_keep_w1_end PRIVATE astr_device_state)
   add_executable(astr_backend_air5_convection_budget EXCLUDE_FROM_ALL air5_convection_budget_probe.F90 air5_convection_budget_mask.cu
     ${CMAKE_SOURCE_DIR}/src/chemistry_air5_data.F90)
   set_target_properties(astr_backend_air5_convection_budget PROPERTIES POSITION_INDEPENDENT_CODE YES CUDA_RESOLVE_DEVICE_SYMBOLS ON

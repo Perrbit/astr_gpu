@@ -72,6 +72,7 @@ set(ASTR_SOURCES
   keep_operator.F90
   keep_sbp63.F90
   keep_sbp63_runtime.F90
+  keep_w1_cpu.cpp
   keep_geometry.F90
   me6opti_operator.F90
   me6opti_halo.F90

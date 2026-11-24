@@ -14,6 +14,8 @@ int astr_device_transport_prepare(void *handle,int communicator,const int lower[
 int astr_device_exchange_begin(void *handle,int field,int axis,int reconcile);
 int astr_device_exchange_end(void *handle,int field,int axis,int reconcile);
 int astr_device_exchange_axis(void *handle,int field,int axis,int reconcile);
+/* Side bits 0/1 select lower/upper neighbors and the subset taking the owner's plane. */
+int astr_device_exchange_owned_plane(void *handle,int field,int axis,int peers,int receivers);
 /* Disjoint stress/heat-flux faces in one message; no shared-node averaging. */
 int astr_device_viscous_exchange_begin(void *handle,int axis);
 int astr_device_viscous_exchange_end(void *handle,int axis);

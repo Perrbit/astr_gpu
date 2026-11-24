@@ -5,8 +5,8 @@ module compact_runtime
   use commvar, only: hm
   use compact_operator
   use derivative, only: finite_difference,fds,diff6ec
-  use numerical_forms, only: compact_filter_selected,filter_scheme,convection_form,viscous_form, &
-    simple_physical_boundary_axis,ldc_boundary_layout,x_open_boundary_layout
+  use numerical_forms, only: compact_filter_selected,filter_scheme,filter_scope,convection_form,viscous_form, &
+    simple_physical_boundary_axis,ldc_boundary_layout,x_open_boundary_layout,compact_filter_axis_selected
   use keep_operator, only: keep_split_plan,build_keep_split_plan,keep_split_variables, &
     keep_monomial,keep_split_accumulate
   implicit none
@@ -18,6 +18,10 @@ module compact_runtime
   public :: global_compact_gradient_enabled,geometry_central
   public :: global_compact_periodic_derivative_cpu
   public :: global_keep_convection_cpu
+  public :: wall5_filter_plan,make_wall5_filter_plan,wall5_filter_layout
+  type,bind(C) :: wall5_filter_plan
+    real(real_kind) :: rows(0:10,5),inverse(5),alpha
+  end type
   type,extends(finite_difference) :: global_compact_central
   contains
     procedure :: central=>global_compact_derivative_cpu
@@ -25,6 +29,7 @@ module compact_runtime
   logical,save :: enabled=.false.
   logical,save :: resources_ready=.false.
   logical,save :: geometry_phase=.false.
+  logical,save :: compact_channel_geometry=.false.
   type(compact_line_partition),save :: compact_partitions(3)
   integer,save :: compact_line_comms(3)=MPI_COMM_NULL
   type(compact_cpu_plan),save :: derivative_plans(3),filter_plans(3)
@@ -32,9 +37,34 @@ module compact_runtime
   type(keep_split_plan),save :: keep_split
 contains
   subroutine begin_compact_geometry()
-    use commvar, only: flowtype,conschm,difschm
+    use commvar, only: flowtype,conschm,difschm,im,jm,km,lihomo,ljhomo,lkhomo
+    use commarray, only: x
     use bc, only: bctype
     use parallel, only: lio
+    integer :: i,j,k,ierr,ignored
+    real(real_kind) :: local_error,global_error,scale
+    compact_channel_geometry=flowtype=='channel'.and.all(bctype==[1,1,41,41,1,1]).and. &
+      lihomo.and..not.ljhomo.and.lkhomo.and.convection_form=='standard'.and.viscous_form=='standard'.and. &
+      conschm=='643c'.and.difschm=='643e'
+    if(compact_channel_geometry) then
+      local_error=0.e0_real_kind
+      scale=max(1.e0_real_kind,maxval(abs(x(0:im,0:jm,0:km,:))))
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        local_error=max(local_error,maxval(abs(x(i,j,k,:)-[x(i,0,0,1),x(0,j,0,2),x(0,0,k,3)]))/scale)
+      enddo
+      enddo
+      enddo
+      call MPI_Allreduce(local_error,global_error,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+      if(global_error>128.e0_real_kind*epsilon(1.e0_real_kind)) &
+        error stop 'Standard 643c/643e compact channel geometry requires an axis-aligned tensor grid'
+      call configure_global_compact(bctype)
+      geometry_phase=.true.
+      if(lio) write(*,'(A)') 'COMPACT CHANNEL GEOMETRY: same global line derivative as compact KEEP'
+      return
+    endif
     if(convection_form=='keep') then
       call configure_global_compact(bctype)
       geometry_phase=.true.
@@ -61,7 +91,9 @@ contains
     real(real_kind),intent(in) :: f(-hm:dim+hm)
     real(real_kind) :: df(0:dim)
     type(global_compact_central) :: geometry_operator
-    if(convection_form/='keep') then
+    if(compact_channel_geometry) then
+      df=global_compact_derivative_cpu(geometry_operator,asolver,f,dim)
+    elseif(convection_form/='keep') then
       df=fds%central(asolver,f,dim)
     elseif(conschm=='643e') then
       df=diff6ec(f,dim,asolver%nbctype)
@@ -74,6 +106,7 @@ contains
 
   subroutine end_compact_geometry()
     geometry_phase=.false.
+    compact_channel_geometry=.false.
   end subroutine
 
   logical function global_compact_enabled() result(active)
@@ -100,12 +133,14 @@ contains
     use parallel, only: mpi_igroup,mpi_jgroup,mpi_kgroup,irk,jrk,krk,isize,jsize,ksize,ig0,jg0,kg0,lio
     integer,intent(in) :: boundaries(:)
     integer :: axis,ierr,groups(3),coords(3),ranks(3),dims(3),totals(3),first(3),i,j,k
-    logical :: periodic(3),tgv,plate,keep_wall,keep_open
+    logical :: periodic(3),tgv,plate,channel,keep_wall,keep_open
     if(resources_ready) return
     enabled=conschm=='643c'.or.difschm=='643c'
     if(.not.enabled.and..not.(lfilter.and.filter_scheme=='compact10')) return
-    tgv=conschm=='643c'.and.difschm=='643c'.and.trim(flowtype)=='tgv'.and. &
+    tgv=conschm=='643c'.and.(difschm=='643c'.or.difschm=='643e').and.trim(flowtype)=='tgv'.and. &
       lihomo.and.ljhomo.and.lkhomo.and.all(boundaries==1)
+    channel=trim(flowtype)=='channel'.and.all(boundaries==[1,1,41,41,1,1]).and. &
+      lihomo.and..not.ljhomo.and.lkhomo.and.difschm=='643e'.and.(conschm=='643c'.or.conschm=='643e')
     if(convection_form=='keep'.or.viscous_form=='me6_opti') tgv=all(boundaries==1)
     keep_wall=(convection_form=='keep'.or.viscous_form=='me6_opti').and. &
       (simple_physical_boundary_axis(boundaries)>0.or.x_open_boundary_layout(boundaries).or.profile_state_boundary_enabled().or. &
@@ -120,16 +155,19 @@ contains
         nscbc_farfield_incoming_only_enabled().and..not.nscbc_farfield_sbli_shock_enabled())
     endif
     if(enabled) then
-      if((.not.tgv.and..not.plate.and..not.keep_wall.and..not.keep_open).or.ndims/=3.or.numq/=5.or. &
+      if((.not.tgv.and..not.plate.and..not.channel.and..not.keep_wall.and..not.keep_open).or.ndims/=3.or.numq/=5.or. &
         num_species/=0.or.num_modequ/=0.or.trim(turbmode)/='none'.or.trim(rkscheme)/='rk3'.or. &
         .not.nondimen.or.lcomb.or.(lcracon.and..not.plate.and.convection_form/='keep')) &
-        error stop 'Global compact requires a periodic case, KEEP wall/open boundary, or CP6 profile plate'
+        error stop 'Global compact requires a periodic case, bc41 channel, KEEP wall/open boundary, or CP6 profile plate'
     else
-      if((any(boundaries/=1).and..not.keep_wall.and..not.keep_open).or.ndims/=3.or.numq/=5.or.num_species/=0.or.num_modequ/=0.or.lcomb) &
-        error stop 'Independent global compact filter requires a periodic field or KEEP wall/open boundary'
+      if((any(boundaries/=1).and..not.channel.and..not.keep_wall.and..not.keep_open).or. &
+        ndims/=3.or.numq/=5.or.num_species/=0.or.num_modequ/=0.or.lcomb) &
+        error stop 'Independent global compact filter requires a periodic field, bc41 channel or KEEP wall/open boundary'
     endif
     if(lrestart) error stop 'Legacy compact restart is disabled; use output restore_directory'
     if(hm<2.or.(lfilter.and.hm<5)) error stop 'Insufficient halo for global compact RHS'
+    if(lfilter.and.filter_scope=='y-wall5'.and.ja/jsize<hm) &
+      error stop 'Wall-five filter requires a full y halo within every MPI interval range'
     if(plate) then
       do k=0,km
       do j=0,jm
@@ -171,6 +209,7 @@ contains
     if(lio) then
       if(tgv) write(*,'(A)') 'COMPACT GLOBAL: periodic unique-node derivative/filter; CPU direct / GPU two-level PCR'
       if(keep_wall) write(*,'(A)') 'COMPACT GLOBAL: low-order physical ends; MPI interfaces remain globally coupled'
+      if(channel.and..not.keep_wall) write(*,'(A)') 'COMPACT GLOBAL: bc41 channel; MPI interfaces remain globally coupled'
       if(keep_open) write(*,'(A)') 'COMPACT GLOBAL: KEEP physical open ends; MPI interfaces remain globally coupled'
       if(plate) write(*,'(A)') 'COMPACT GLOBAL: physical-end plate derivative; CPU direct / GPU two-level PCR'
       if(.not.enabled) write(*,'(A)') 'COMPACT GLOBAL: independent filter; existing geometry/derivative unchanged'
@@ -321,8 +360,13 @@ contains
     real(real_kind),intent(in) :: coefficients(0:5)
     real(real_kind),allocatable :: f(:,:),rhs(:,:),solution(:,:),values(:,:)
     integer :: dims(3),axis,dim,lines,line,i,j,k,p,offset
+    if(filter_scope=='y-wall5') then
+      call apply_wall5_filter_cpu(q)
+      return
+    endif
     dims=[im,jm,km]
     do axis=1,3
+      if(.not.compact_filter_axis_selected(axis)) cycle
       if(filter_plans(axis)%n==0) call prepare_cpu_direction(axis,.true.)
       dim=dims(axis)
       lines=(im+1)*(jm+1)*(km+1)/(dim+1)
@@ -360,6 +404,99 @@ contains
       enddo
       deallocate(f,rhs,solution,values)
     enddo
+  end subroutine
+
+  function make_wall5_filter_plan() result(plan)
+    use commvar, only: alfa_filter
+    use filter, only: coefb,coef6i,coef8i,coef10i
+    type(wall5_filter_plan) :: plan
+    real(real_kind) :: alpha,diagonal
+    integer :: j,d
+    alpha=alfa_filter
+    plan%alpha=alpha
+    plan%rows=0.e0_real_kind
+    plan%rows(0:6,1)=coefb(1,0:6)-alpha*coefb(0,0:6)
+    plan%rows(0:6,2)=coefb(2,0:6)
+    do j=3,5
+      do d=-j,j
+        select case(j)
+        case(3); plan%rows(j+d,j)=coef6i(abs(d))
+        case(4); plan%rows(j+d,j)=coef8i(abs(d))
+        case(5); plan%rows(j+d,j)=coef10i(abs(d))
+        end select
+      enddo
+      plan%rows(j,j)=2.e0_real_kind*plan%rows(j,j)
+    enddo
+    plan%rows(6,5)=plan%rows(6,5)-alpha
+    diagonal=1.e0_real_kind-0.98e0_real_kind*alpha
+    plan%inverse(1)=1.e0_real_kind/diagonal
+    do j=2,5
+      plan%inverse(j)=1.e0_real_kind/(1.e0_real_kind-alpha*alpha*plan%inverse(j-1))
+    enddo
+  end function
+
+  subroutine wall5_filter_layout(walls,peers,receivers)
+    integer,intent(out) :: walls,peers,receivers
+    integer :: first,last,total,span
+    first=compact_partitions(2)%first
+    total=compact_partitions(2)%intervals
+    span=compact_partitions(2)%local_intervals
+    last=first+span
+    walls=merge(1,0,first==0)+merge(2,0,last==total)
+    receivers=merge(1,0,first==5)+merge(2,0,last==total-5)
+    peers=ior(receivers,merge(1,0,last==total.and.span==5)+merge(2,0,first==0.and.span==5))
+  end subroutine
+
+  subroutine apply_wall5_filter_cpu(q)
+    use commvar, only: im,jm,km,numq
+    use parallel, only: dataswap
+    real(real_kind),intent(inout) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq)
+    type(wall5_filter_plan) :: plan
+    real(real_kind) :: lower(5),upper(5)
+    real(real_kind),allocatable :: send(:,:,:),received(:,:,:)
+    integer :: walls,peers,receivers,i,k,m,j,side,peer,ierr,count,ignored
+    call wall5_filter_layout(walls,peers,receivers)
+    call dataswap(q,direction=2)
+    if(walls/=0) then
+      plan=make_wall5_filter_plan()
+      do m=1,numq
+      do k=0,km
+      do i=0,im
+        if(btest(walls,0)) lower=matmul(q(i,0:10,k,m),plan%rows)
+        if(btest(walls,1)) upper=matmul(q(i,jm:jm-10:-1,k,m),plan%rows)
+        if(btest(walls,0)) q(i,1:5,k,m)=solve(lower)
+        if(btest(walls,1)) q(i,jm-1:jm-5:-1,k,m)=solve(upper)
+      enddo
+      enddo
+      enddo
+    endif
+    if(peers==0) return
+    allocate(send(0:im,0:km,numq),received(0:im,0:km,numq))
+    count=size(send)
+    do side=0,1
+      if(.not.btest(peers,side)) cycle
+      peer=compact_partitions(2)%rank+2*side-1
+      j=side*jm
+      if(.not.btest(receivers,side)) send=q(0:im,j,0:km,:)
+      call MPI_Sendrecv(send,count,mpi_real_type,merge(MPI_PROC_NULL,peer,btest(receivers,side)),5, &
+        received,count,mpi_real_type,merge(peer,MPI_PROC_NULL,btest(receivers,side)),5, &
+        compact_line_comms(2),MPI_STATUS_IGNORE,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(compact_line_comms(2),ierr,ignored)
+      if(btest(receivers,side)) q(0:im,j,0:km,:)=received
+    enddo
+  contains
+    function solve(rhs) result(values)
+      real(real_kind),intent(in) :: rhs(5)
+      real(real_kind) :: values(5)
+      integer :: row
+      values(1)=rhs(1)*plan%inverse(1)
+      do row=2,5
+        values(row)=(rhs(row)-plan%alpha*values(row-1))*plan%inverse(row)
+      enddo
+      do row=4,1,-1
+        values(row)=values(row)-plan%alpha*plan%inverse(row)*values(row+1)
+      enddo
+    end function
   end subroutine
 
   subroutine release_global_compact()

@@ -187,8 +187,8 @@ module bc
     high_order_wall_axis=2
     call get_case_option('high_order_wall_mode',mode,status=status)
     if(status==1.or.trim(mode)=='off'.or.trim(mode)=='') return
-    if(status==0.and.trim(mode)=='keep_sbp63') then
-      call configure_keep_sbp63(bctype,twall(3:4))
+    if(status==0.and.(trim(mode)=='keep_sbp63'.or.trim(mode)=='keep_sbp63_pair')) then
+      call configure_keep_sbp63(bctype,twall(3:4),trim(mode)=='keep_sbp63_pair')
       return
     endif
     if(status/=0.or.trim(mode)/='hermite7') error stop 'Unknown ASTR_HIGH_ORDER_WALL_MODE'

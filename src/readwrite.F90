@@ -486,7 +486,8 @@ module readwrite
     use bc,      only : bctype,twall,xslip,turbinf,xrhjump,angshk,pout
     use ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
     use case_model_options, only: reset_model_options,read_model_group,publish_model_options,write_model_option_receipt
-    use numerical_forms, only: convection_form,keep_configuration_error,filter_scheme,viscous_form, &
+    use numerical_forms, only: convection_form,keep_configuration_error,filter_scheme,filter_scope, &
+      compact_filter_selected,viscous_form, &
       me6_configuration_error,profile_nscbc_boundary_layout,ldc_boundary_layout,profile_state_boundary_layout
     use mpi, only: MPI_COMM_WORLD
     !
@@ -515,7 +516,7 @@ module readwrite
     namelist /physics/ nondimen,diffterm,lcomb,num_species,turbmode,ref_tem,ref_vel,ref_len,ref_den,reynolds,mach
 #endif
     namelist /numerics/ conschm,difschm,rkscheme,recon_schem,lchardecomp,bfacmpld,shkcrt,lfilter,alfa_filter,kcutoff, &
-      convection_form,filter_scheme,viscous_form
+      convection_form,filter_scheme,filter_scope,viscous_form
     namelist /boundary/ bctype,twall,xslip,turbinf,pout,xrhjump,angshk
     namelist /initialization/ lrestart,ninit,limmbou,ibmode,solidfile
     namelist /sponge/ spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km,spg_def
@@ -576,6 +577,7 @@ module readwrite
       convection_form='standard'
       viscous_form='standard'
       filter_scheme=''
+      filter_scope='xyz'
       bfacmpld=0.3e0_real_kind;shkcrt=0.05e0_real_kind;lfilter=.false.;alfa_filter=missing;kcutoff=-1
       bctype=-huge(0);twall=0.e0_real_kind;xslip=missing;turbinf='';pout=1.e0_real_kind
       xrhjump=missing;angshk=missing
@@ -677,6 +679,19 @@ module readwrite
       if(viscous_form=='me6_opti'.and.real_bytes/=8) call reject_case_input(inputfile,'ME6 is currently FP64 only')
       if(len_trim(filter_scheme)>0.and.filter_scheme/='explicit10'.and.filter_scheme/='compact10') &
         call reject_case_input(inputfile,'filter_scheme must be explicit10 or compact10')
+      if(filter_scope/='xyz'.and.filter_scope/='y'.and.filter_scope/='y-wall5') &
+        call reject_case_input(inputfile,'filter_scope must be xyz, y or y-wall5')
+      if(lfilter.and.filter_scope/='xyz') then
+        if(.not.compact_filter_selected(conschm,difschm).or.lcomb.or.num_species/=0) &
+          call reject_case_input(inputfile,'Directional filter_scope requires a nonreacting compact filter')
+#ifdef _CUDA
+        if(use_gpu) call reject_case_input(inputfile,'Directional filter_scope uses the CPU or C++ GPU compact filter')
+#endif
+        if(filter_scope=='y-wall5') then
+          if(flowtype/='channel'.or.any(bctype/=[1,1,41,41,1,1]).or.ja<11) &
+            call reject_case_input(inputfile,'filter_scope=y-wall5 needs two bc41 channel walls and at least 11 y intervals')
+        endif
+      endif
       if(.not.ieee_is_finite(alfa_filter)) alfa_filter=0.e0_real_kind
       if(.not.ieee_is_finite(xslip)) xslip=0.e0_real_kind
       if(.not.ieee_is_finite(xrhjump)) xrhjump=0.e0_real_kind
@@ -721,6 +736,7 @@ module readwrite
     if(mpirank==0.and.viscous_form=='me6_opti') write(*,'(A)') &
       'ASTR_VISCOUS_FORM=me6_opti; private sixth-order half gradients; difschm does not replace this viscous operator'
     call bcast(filter_scheme)
+    call bcast(filter_scope)
     if(mpirank==0.and.convection_form=='keep') write(*,'(A)') &
       'CONVECTION FORM: original arithmetic-average KEEP'
     call bcast(difschm)

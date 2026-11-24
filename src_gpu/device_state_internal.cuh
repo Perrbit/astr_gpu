@@ -69,6 +69,7 @@ struct State {
     bool viscous_ready = false;
     int upwind_storage = 0; // 0 build kind, 1 MP1 split rounding, 2 MP3 final physical-flux store.
     int compact_plans = 0;
+    void *keep_w1_table=nullptr;
     int sample_plans = 0;
     int moment_plans = 0;
     bool compact_sync = false;
