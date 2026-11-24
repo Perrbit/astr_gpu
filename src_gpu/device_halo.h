@@ -6,6 +6,7 @@ extern "C" {
 /* A local periodic axis, not a replacement for a distributed-axis exchange.
  * reconcile=1 averages the two physical endpoint planes first. Transverse
  * indices remain physical; call a final halo-only pass after all averaging. */
+enum { ASTR_HALO_AVERAGE_PLANE = 2 };
 int astr_device_periodic_axis(void *handle, int field, int axis, int reconcile);
 #ifdef __cplusplus
 }

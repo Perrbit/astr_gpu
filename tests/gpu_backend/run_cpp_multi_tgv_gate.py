@@ -85,7 +85,7 @@ def axis_region(values, layout, axis):
     return values[tuple(selection)+(slice(None),)]
 
 
-def check_halos(fields, layout, axis, reconcile, label, exact=True):
+def check_halos(fields, layout, axis, reconcile, label, exact=True, refresh=True):
     for rank, values in fields.items():
         own = layout[rank]
         h, = own['halo']
@@ -99,18 +99,19 @@ def check_halos(fields, layout, axis, reconcile, label, exact=True):
                 if a != axis and (own['origin'][a], own['upper'][a]) != (other['origin'][a], other['upper'][a]):
                     raise AssertionError('transverse neighbor coordinates differ')
             neighbor = axis_region(fields[peer], other, axis)
-            offsets = np.arange(1, h+1)
-            destination = h-offsets if side == 0 else h+n+offsets
-            source = oh+other['upper'][axis]-offsets if side == 0 else oh+offsets
-            actual = np.take(region, destination, axis=axis)
-            expected = np.take(neighbor, source, axis=axis)
             name = f'{label}/rank{rank}/axis{axis}/side{side}'
-            if not np.isfinite(actual).all() or not np.isfinite(expected).all():
-                raise AssertionError(name+': nonfinite consumed halo')
-            if exact:
-                bits_equal(actual, expected, name)
-            else:
-                compare(actual, expected)
+            if refresh:
+                offsets = np.arange(1, h+1)
+                destination = h-offsets if side == 0 else h+n+offsets
+                source = oh+other['upper'][axis]-offsets if side == 0 else oh+offsets
+                actual = np.take(region, destination, axis=axis)
+                expected = np.take(neighbor, source, axis=axis)
+                if not np.isfinite(actual).all() or not np.isfinite(expected).all():
+                    raise AssertionError(name+': nonfinite consumed halo')
+                if exact:
+                    bits_equal(actual, expected, name)
+                else:
+                    compare(actual, expected)
             if reconcile:
                 endpoint = h if side == 0 else h+n
                 other_endpoint = oh+other['upper'][axis] if side == 0 else oh
@@ -126,6 +127,8 @@ def analyze(directory, frozen):
         raise AssertionError('missing solver filter storage identity')
     scalar = modes[0] == 'scalar'
     packets = ([(0, 0, 0)]+[(13, 1, 0)]*5+[(0, 2, 0)]+PACKETS[3:]) if scalar else PACKETS
+    if 'ASTR_GPU_CPP stage_q_average=plane' in log:
+        packets = [(field, axis, 2 if reconcile == 1 else reconcile) for field, axis, reconcile in packets]
     components = COMPONENTS | {13: 1 if scalar else 5}
     footprint = re.findall(r'^ASTR_GPU_CPP filter_workspace_bytes=(\d+)$', log, re.MULTILINE)
     if footprint:
@@ -204,7 +207,8 @@ def analyze(directory, frozen):
                         keep &= (coordinates[a] >= 0) & (coordinates[a] <= meta['upper'][a])
                 if np.any(fields[rank][~keep].view(np.uint64) != 0):
                     raise AssertionError('observation padding is not positive zero')
-            check_halos(fields, layout, axis, bool(reconcile), f'field{field}/rk{stage}/exchange{sequence}')
+            check_halos(fields, layout, axis, bool(reconcile), f'field{field}/rk{stage}/exchange{sequence}',
+                        refresh=reconcile != 2)
             if sequence == len(packets)-6:
                 for rank, values in fields.items():
                     bits_equal(axis_region(values, layout[rank], axis), axis_region(qfields[rank], layout[rank], axis),

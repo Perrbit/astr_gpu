@@ -17,6 +17,12 @@ struct PhysicalEnds {
     int low[3], high[3], upper[3];
 };
 struct FluxBox { PhysicalEnds ends; int first[3],last[3],inner_first[3],inner_last[3]; bool wall_band=false; };
+struct BoxOrigin { int x,y,z; };
+
+size_t box_count(const int first[3],const int last[3])
+{
+    return static_cast<size_t>(last[0]-first[0]+1)*(last[1]-first[1]+1)*(last[2]-first[2]+1);
+}
 
 size_t physical_count(const State &state)
 {
@@ -68,21 +74,25 @@ void initialize_exterior_kernel(AstrDeviceView q,AstrDeviceView rho,AstrDeviceVi
     return;
 }
 
-template<bool physical>
+template<bool physical,bool regional=false>
 __global__ __launch_bounds__(threads)
 void primitive_kernel(AstrDeviceView q, AstrDeviceView rho, AstrDeviceView vel,
                       AstrDeviceView prs, AstrDeviceView tmp, int nx, int ny,
-                      size_t count, int halo, int im, int jm, int km, Real c2, Real c6, int *failure,PhysicalEnds ends)
+                      size_t count, int halo, int im, int jm, int km, Real c2, Real c6, int *failure,PhysicalEnds ends,
+                      BoxOrigin start={})
 {
     const size_t id = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (id < count) {
         int i, j, k;
         point(id, nx, ny, i, j, k);
-        i -= halo; j -= halo; k -= halo;
-        if(physical && ((i<0 && ends.low[0]) || (i>im && ends.high[0]) ||
-           (j<0 && ends.low[1]) || (j>jm && ends.high[1]) || (k<0 && ends.low[2]) || (k>km && ends.high[2]))) return;
-        const int outside = (i < 0 || i > im)+(j < 0 || j > jm)+(k < 0 || k > km);
-        if (outside > 1) return;
+        if(regional) { i+=start.x; j+=start.y; k+=start.z; }
+        else {
+            i -= halo; j -= halo; k -= halo;
+            if(physical && ((i<0 && ends.low[0]) || (i>im && ends.high[0]) ||
+               (j<0 && ends.low[1]) || (j>jm && ends.high[1]) || (k<0 && ends.low[2]) || (k>km && ends.high[2]))) return;
+            const int outside = (i < 0 || i > im)+(j < 0 || j > jm)+(k < 0 || k > km);
+            if (outside > 1) return;
+        }
         const Real den = at(q, i, j, k, 1);
         const Real u = at(q, i, j, k, 2) / den;
         const Real v = at(q, i, j, k, 3) / den;
@@ -162,15 +172,17 @@ __device__ Real derivative6_basic(const AstrDeviceView &field,int i,int j,int k,
     return step*((Real(2)/Real(3))*(v[3]-v[1])-(Real(1)/Real(12))*(v[4]-v[0]));
 }
 
-template<bool physical,bool thermal=true>
+template<bool physical,bool thermal=true,bool regional=false>
 __global__ __launch_bounds__(threads)
 void gradient_kernel(AstrDeviceView vel, AstrDeviceView tmp, AstrDeviceView metric,
-                     AstrDeviceView dvel, AstrDeviceView dtmp, int nx, int ny, size_t count,PhysicalEnds ends)
+                     AstrDeviceView dvel, AstrDeviceView dtmp, int nx, int ny, size_t count,PhysicalEnds ends,
+                     BoxOrigin start={})
 {
     const size_t id = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (id < count) {
         int i, j, k;
         point(id, nx, ny, i, j, k);
+        if(regional) { i+=start.x; j+=start.y; k+=start.z; }
         for (int a = 1; a <= 3; ++a) {
             const Real dx = physical ? derivative6_basic(vel,i,j,k,a,0,ends) : derivative6(vel,i,j,k,a,0);
             const Real dy = physical ? derivative6_basic(vel,i,j,k,a,1,ends) : derivative6(vel,i,j,k,a,1);
@@ -357,15 +369,17 @@ __device__ Real periodic_convective_pair(const AstrDeviceView &q, const AstrDevi
     return plus-minus;
 }
 
+template<bool regional=false>
 __global__ __launch_bounds__(threads)
 void periodic_convection_kernel(AstrDeviceView q, AstrDeviceView vel, AstrDeviceView prs,
-    AstrDeviceView metric, AstrDeviceView jac, AstrDeviceView rhs, int nx, int ny, size_t count, int axis)
+    AstrDeviceView metric, AstrDeviceView jac, AstrDeviceView rhs, int nx, int ny, size_t count, int axis,BoxOrigin start={})
 {
     const int lane = threadIdx.x+blockDim.x*(threadIdx.y+blockDim.y*threadIdx.z);
     const size_t id = static_cast<size_t>(blockIdx.x)*threads+lane;
     if (id>=count) return;
     int i,j,k;
     point(id,nx,ny,i,j,k);
+    if(regional) { i+=start.x; j+=start.y; k+=start.z; }
     const int di=axis==0,dj=axis==1,dk=axis==2;
     const int direction=axis+1;
     // Limit live flux temporaries across the five conserved components.
@@ -435,19 +449,21 @@ __global__ void sbp63_diffusion_kernel(AstrDeviceView velocity,AstrDeviceView te
     for(int c=0;c<5;++c) at(rhs,i,j,k,c+1)+=result[c];
 }
 
-template<bool viscous,bool physical=false>
+template<bool viscous,bool physical=false,bool regional=false>
 __global__ __launch_bounds__(threads)
 void divergence_kernel(AstrDeviceView q, AstrDeviceView vel, AstrDeviceView prs,
                        AstrDeviceView metric, AstrDeviceView jac, AstrDeviceView stress,
-                       AstrDeviceView heat, AstrDeviceView rhs, int nx, int ny, size_t count, int axis,FluxBox box)
+                       AstrDeviceView heat, AstrDeviceView rhs, int nx, int ny, size_t count, int axis,FluxBox box,
+                       BoxOrigin start={})
 {
     const int lane = threadIdx.x+blockDim.x*(threadIdx.y+blockDim.y*threadIdx.z);
     const size_t id = static_cast<size_t>(blockIdx.x)*threads+lane;
     if (id < count) {
         int i,j,k;
         point(id,nx,ny,i,j,k);
+        if(regional) { i+=start.x; j+=start.y; k+=start.z; }
         const int node[3]={i,j,k};
-        if(physical) {
+        if(physical && !regional) {
             // CPU convection uses the common body box; diffusion owns each axis separately.
             if(viscous) {
                 if(node[axis]<box.first[axis] || node[axis]>box.last[axis]) return;
@@ -700,7 +716,7 @@ template<bool viscous> int divergence(State &s)
         const dim3 block = axis == 0 ? dim3(512,1,1) : (axis == 1 ? dim3(32,16,1) : dim3(64,1,8));
 #ifdef ASTR_GPUFUSION_PERIODIC_CONVECTION
         if (!viscous)
-            periodic_convection_kernel<<<(count+threads-1)/threads,block,0,s.stream>>>(
+            periodic_convection_kernel<><<<(count+threads-1)/threads,block,0,s.stream>>>(
                 s.fields[0].view,s.fields[4].view,s.fields[5].view,s.fields[7].view,
                 s.fields[ASTR_DEVICE_JACOBIAN].view,s.fields[1].view,
                 s.upper[0]+1,s.upper[1]+1,count,axis);
@@ -1469,6 +1485,75 @@ extern "C" int astr_device_fluid_gradient_basic_boundary(void *handle,const int 
         s.fields[4].view,s.fields[6].view,s.fields[7].view,s.fields[8].view,s.fields[9].view,
         s.upper[0]+1,s.upper[1]+1,count,ends);
     return astr::finish_launch(s);
+}
+
+extern "C" int astr_device_fluid_primitives_box(void *handle,Real c2,Real c6,const int first[3],const int last[3])
+{
+    State &s=*static_cast<State *>(handle);
+    const size_t count=box_count(first,last);
+    primitive_kernel<false,true><<<(count+threads-1)/threads,threads,0,s.stream>>>(
+        s.fields[0].view,s.fields[3].view,s.fields[4].view,s.fields[5].view,s.fields[6].view,
+        last[0]-first[0]+1,last[1]-first[1]+1,count,0,0,0,0,c2,c6,s.fluid_failure,PhysicalEnds{},
+        BoxOrigin{first[0],first[1],first[2]});
+    return astr::finish_launch(s);
+}
+
+template<bool physical>
+static int gradient_box(State &s,PhysicalEnds ends,const int first[3],const int last[3])
+{
+    const size_t count=box_count(first,last);
+    gradient_kernel<physical,true,true><<<(count+threads-1)/threads,threads,0,s.stream>>>(
+        s.fields[4].view,s.fields[6].view,s.fields[7].view,s.fields[8].view,s.fields[9].view,
+        last[0]-first[0]+1,last[1]-first[1]+1,count,ends,BoxOrigin{first[0],first[1],first[2]});
+    return astr::finish_launch(s);
+}
+
+extern "C" int astr_device_fluid_gradient_box(void *handle,int physical,const int low[3],const int high[3],
+                                             const int first[3],const int last[3])
+{
+    State &s=*static_cast<State *>(handle);
+    PhysicalEnds ends{};
+    const int status=basic_gradient(s,low,high,ends);
+    if(status) return status;
+    return physical ? gradient_box<true>(s,ends,first,last) : gradient_box<false>(s,ends,first,last);
+}
+
+template<bool viscous,bool physical>
+static int divergence_box(State &s,int axis,const int low[3],const int high[3],const int first[3],const int last[3])
+{
+    const size_t count=box_count(first,last);
+    const int nx=last[0]-first[0]+1,ny=last[1]-first[1]+1;
+    const BoxOrigin start{first[0],first[1],first[2]};
+    const dim3 block=axis==0 ? dim3(512,1,1) : (axis==1 ? dim3(32,16,1) : dim3(64,1,8));
+#ifdef ASTR_GPUFUSION_PERIODIC_CONVECTION
+    if(!viscous && !physical)
+        periodic_convection_kernel<true><<<(count+threads-1)/threads,block,0,s.stream>>>(
+            s.fields[0].view,s.fields[4].view,s.fields[5].view,s.fields[7].view,
+            s.fields[ASTR_DEVICE_JACOBIAN].view,s.fields[1].view,nx,ny,count,axis,start);
+    else
+#endif
+    {
+        FluxBox box{};
+        for(int a=0;a<3;++a) {
+            box.ends.low[a]=low[a];box.ends.high[a]=high[a];box.ends.upper[a]=s.upper[a];
+        }
+        divergence_kernel<viscous,physical,true><<<(count+threads-1)/threads,block,0,s.stream>>>(
+            s.fields[0].view,s.fields[4].view,s.fields[5].view,s.fields[7].view,
+            s.fields[ASTR_DEVICE_JACOBIAN].view,s.fields[ASTR_DEVICE_STRESS].view,s.fields[ASTR_DEVICE_HEAT_FLUX].view,
+            s.fields[1].view,nx,ny,count,axis,box,start);
+    }
+    return astr::finish_launch(s);
+}
+
+extern "C" int astr_device_fluid_divergence_box(void *handle,int viscous,int physical,int axis,
+    const int low[3],const int high[3],const int first[3],const int last[3])
+{
+    State &s=*static_cast<State *>(handle);
+    if(viscous)
+        return physical ? divergence_box<true,true>(s,axis,low,high,first,last)
+                        : divergence_box<true,false>(s,axis,low,high,first,last);
+    return physical ? divergence_box<false,true>(s,axis,low,high,first,last)
+                    : divergence_box<false,false>(s,axis,low,high,first,last);
 }
 
 extern "C" int astr_device_air5_mean_refresh_velocity(void *handle,const int low[3],const int high[3])

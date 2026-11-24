@@ -413,16 +413,21 @@ __device__ void packet_point(size_t id,int width,int first,int n1,int n2,int axi
 }
 
 __global__ __launch_bounds__(threads)
-void pack(AstrDeviceView view,int axis,int upper,int width,int first,int n1,int n2,size_t count,Packet *low,Packet *high)
+void pack(AstrDeviceView view,int axis,int upper,int width,int first,int n1,int n2,size_t count,
+          Packet *low,Packet *high,bool send_low,bool send_high)
 {
     const size_t id=static_cast<size_t>(blockIdx.x)*threads+threadIdx.x;
     if (id<count) {
         int p[3]={0,0,0},c,d,h;
         packet_point(id,width,first,n1,n2,axis,view,p,c,d,h);
-        p[axis]=h;
-        low[id]=astr::load_value(view,p[0],p[1],p[2],c,d);
-        p[axis]=upper-h;
-        high[id]=astr::load_value(view,p[0],p[1],p[2],c,d);
+        if(send_low) {
+            p[axis]=h;
+            low[id]=astr::load_value(view,p[0],p[1],p[2],c,d);
+        }
+        if(send_high) {
+            p[axis]=upper-h;
+            high[id]=astr::load_value(view,p[0],p[1],p[2],c,d);
+        }
     }
     return;
 }
@@ -449,7 +454,7 @@ void unpack(AstrDeviceView view,int axis,int upper,int width,int first,int n1,in
     return;
 }
 
-// Below 2: existing halo-only/average operations. Owner-copy encodes the selected
+// Owner-copy encodes the selected
 // interface sides and the subset that receives the authoritative value.
 constexpr int owner_copy_flag=16;
 int halo_peer(const astr::HaloTransport &transport,int axis,int side,int operation)
@@ -516,7 +521,7 @@ static int exchange_begin(void *handle,int field,int secondary,int axis,int reco
     astr::HaloTransport &t=*s.transport;
     if (t.active) return ASTR_DEVICE_INVALID_ARGUMENT;
     const bool owner_copy=(reconcile&owner_copy_flag)!=0;
-    if(owner_copy ? (secondary>=0 || t.periodic[axis]) : (reconcile!=0 && reconcile!=1))
+    if(owner_copy ? (secondary>=0 || t.periodic[axis]) : (reconcile<0 || reconcile>ASTR_HALO_AVERAGE_PLANE))
         return ASTR_DEVICE_INVALID_ARGUMENT;
     const AstrDeviceView view=s.fields[field].view;
     if (!view.data) return ASTR_DEVICE_NOT_ALLOCATED;
@@ -534,19 +539,20 @@ static int exchange_begin(void *handle,int field,int secondary,int axis,int reco
         components(view)+components(other)>t.max_components)
         return ASTR_DEVICE_INVALID_ARGUMENT;
     const int n1=s.upper[(axis+1)%3]+1,n2=s.upper[(axis+2)%3]+1;
-    const int width=owner_copy ? 1 : s.halo+(reconcile ? 1 : 0),first=reconcile ? 0 : 1;
+    const int width=owner_copy || reconcile==ASTR_HALO_AVERAGE_PLANE ? 1 : s.halo+(reconcile ? 1 : 0);
+    const int first=reconcile ? 0 : 1;
     const int lower=halo_peer(t,axis,0,reconcile),upper=halo_peer(t,axis,1,reconcile);
     const size_t face=static_cast<size_t>(width)*n1*n2;
     const size_t first_count=face*components(view),second_count=face*components(other);
     const size_t count=first_count+second_count,bytes=count*sizeof(Packet);
     const double started=t.timing ? MPI_Wtime() : 0;
     pack<<<(first_count+threads-1)/threads,threads,0,s.stream>>>(view,axis,s.upper[axis],width,first,n1,n2,first_count,
-        t.send_device[0],t.send_device[1]);
+        t.send_device[0],t.send_device[1],lower!=MPI_PROC_NULL,upper!=MPI_PROC_NULL);
     int status=astr::finish_launch(s);
     if (status!=0) return status;
     if (secondary>=0) {
         pack<<<(second_count+threads-1)/threads,threads,0,s.stream>>>(other,axis,s.upper[axis],width,first,n1,n2,
-            second_count,t.send_device[0]+first_count,t.send_device[1]+first_count);
+            second_count,t.send_device[0]+first_count,t.send_device[1]+first_count,lower!=MPI_PROC_NULL,upper!=MPI_PROC_NULL);
         status=astr::finish_launch(s);
         if (status!=0) return status;
     }
@@ -598,7 +604,8 @@ static int exchange_end(void *handle,int field,int secondary,int axis,int reconc
     const AstrDeviceView other=secondary>=0?s.fields[secondary].view:AstrDeviceView{};
     const int n1=s.upper[(axis+1)%3]+1,n2=s.upper[(axis+2)%3]+1;
     const bool owner_copy=(reconcile&owner_copy_flag)!=0;
-    const int width=owner_copy ? 1 : s.halo+(reconcile ? 1 : 0),first=reconcile ? 0 : 1;
+    const int width=owner_copy || reconcile==ASTR_HALO_AVERAGE_PLANE ? 1 : s.halo+(reconcile ? 1 : 0);
+    const int first=reconcile ? 0 : 1;
     const int lower=halo_peer(t,axis,0,reconcile),upper=halo_peer(t,axis,1,reconcile);
     const size_t face=static_cast<size_t>(width)*n1*n2;
     const size_t first_count=face*components(view),second_count=face*components(other);

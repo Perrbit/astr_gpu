@@ -71,6 +71,7 @@ module fluid_runtime
   real(real_kind),save :: crashfix_pressure_floor=0.e0_real_kind
   logical,save :: mixed_viscous_flux=.false.,mixed_interface_flux=.false.,mixed_characteristic_flux=.false.,mixed_derivative=.false.
   logical,save :: packed_viscous_halo=.false.,halo_axis_timing=.false.
+  logical,save :: standard_explicit_stage=.false.
   logical,save :: device_memory_steps=.false.
   integer(c_int),save :: viscous_overlap_axis=0_c_int
   real(real_kind),allocatable,save :: lower_wall_velocity(:,:)
@@ -370,6 +371,12 @@ contains
       'MP positivity requires five-variable MP7-LD RK3, periodic z, no filter or mixed workspace')
     if(lcracon) call require(cpp_crashfix_supported(), &
       'C++ crashfix needs five-variable central643e/KEEP643c/MP7-LD743e; mixed supports FP64 viscous_flux only')
+    standard_explicit_stage=real_bytes==8.and.workspace_choice==0.and.ndims==3.and.diffterm.and. &
+      conschm=='643e'.and.difschm=='643e'.and.convection_form=='standard'.and.viscous_form=='standard'.and. &
+      .not.compact_filter_selected(conschm,difschm).and..not.lcracon.and..not.evolved_wall.and..not.keep_sbp63_enabled.and. &
+      .not.x_characteristic_boundaries.and..not.profile_staged_outlet.and..not.profile_characteristic_outlet.and. &
+      .not.any(bctype==52).and..not.wall_forcing_enabled.and..not.dynamic_inflow_requested_cpp()
+    if(standard_explicit_stage.and.lio) write(*,'(a)') 'ASTR_GPU_CPP stage_q_average=plane'
     filter_components=0
     if(lfilter) then
       value=''
@@ -386,13 +393,18 @@ contains
       if(lio) write(*,'(2a)') 'ASTR_GPU_CPP filter_workspace=',trim(value)
     endif
     call create_solver_context(transport_mode,local_rank,sync)
-    if(packed_viscous_halo) call require(transport_mode==halo_device.and..not.physical_boundaries.and. &
+    if(packed_viscous_halo.and..not.standard_explicit_stage) call require(transport_mode==halo_device.and..not.physical_boundaries.and. &
       all([lihomo,ljhomo,lkhomo]).and.diffterm.and.conschm=='643e'.and.difschm=='643e'.and. &
       convection_form=='standard'.and.viscous_form=='standard'.and..not.mixed_viscous_flux, &
       'packed viscous halo requires periodic device MPI with standard 643e/643e and native-precision fluxes')
-    if(lio) write(*,'(a,a)') 'ASTR_GPU_CPP viscous_halo=',merge('packed  ','separate',packed_viscous_halo)
-    if(packed_viscous_halo.and.lio) write(*,'(a,a)') &
-      'ASTR_GPU_CPP viscous_overlap_axis=',merge('z','x',viscous_overlap_axis==2)
+    if(lio) then
+      write(*,'(a,a)') 'ASTR_GPU_CPP viscous_halo=',merge('packed  ','separate',packed_viscous_halo.or.standard_explicit_stage)
+      if(standard_explicit_stage) then
+        write(*,'(a)') 'ASTR_GPU_CPP viscous_overlap_axis=xyz'
+      elseif(packed_viscous_halo) then
+        write(*,'(a,a)') 'ASTR_GPU_CPP viscous_overlap_axis=',merge('z','x',viscous_overlap_axis==2)
+      endif
+    endif
     ! TGV scalar enstrophy/dissipation consume gradients even for inviscid runs.
     call check(fluid_prepare(context,1_c_int),'prepare primitive and gradient fields')
     if(mixed_derivative) then
@@ -444,7 +456,7 @@ contains
       if(lio) write(*,'(a,i0)') 'ASTR_GPU_CPP filter_workspace_bytes=', &
         bytes(product(int(filter_view%extent,c_size_t)))
     endif
-    halo_components=int(merge(9,merge(6,5,nodal_fluxes),packed_viscous_halo),c_int)
+    halo_components=int(merge(9,merge(6,5,nodal_fluxes),packed_viscous_halo.or.standard_explicit_stage),c_int)
     if(keep_w1_enabled) halo_components=14_c_int
     halo_timing=int(merge(1,0,benchmark_gpu_rk_timing_enabled()),c_int)
     if(halo_axis_timing) halo_timing=2_c_int
@@ -958,7 +970,15 @@ contains
 #ifdef ASTR_BUILD_TESTING
       exchange_sequence=0
 #endif
-      if(x_characteristic_boundaries) then
+      if(standard_explicit_stage) then
+        if(physical_boundaries) then
+          call check(fluid_prepare_stage(context,const2,const6,lfilter,cpp_exchange_axis,filter_selected,basic_boundaries, &
+            regional_preparation=standard_prepare_rhs),'prepare standard physical RK regions')
+        else
+          call check(fluid_prepare_stage(context,const2,const6,lfilter,cpp_exchange_axis, &
+            regional_preparation=standard_prepare_rhs),'prepare standard periodic RK regions')
+        endif
+      elseif(x_characteristic_boundaries) then
         call check(prepare_x_characteristic_stage(context),'prepare x-NSCBC RK stage')
       elseif(profile_staged_outlet) then
         call check(prepare_staged_profile(handle=context),'prepare staged profile NSCBC RK stage')
@@ -986,7 +1006,12 @@ contains
         call publish_flow_statistics(statistics_started)
         if(timing) statistics_seconds=MPI_Wtime()-statistics_begin
       endif
-      if(evolved_wall) then
+      if(standard_explicit_stage) then
+        call check(fluid_advance_prepared_stage(context,rkstep,deltat,const2,const6,reynolds,prandtl, &
+          const5,tempconst,tempconst1,diffterm,cpp_exchange_axis,device_exchange_begin,cpp_exchange_end, &
+          source_operator=source_selected,post_update_operator=post_update_selected, &
+          prepared_viscous_operator=standard_viscous_rhs),'advance standard regional RK stage')
+      elseif(evolved_wall) then
         call check(fluid_advance_prepared_stage(context,rkstep,deltat,const2,const6,reynolds,prandtl, &
           const5,tempconst,tempconst1,diffterm,cpp_exchange_axis,device_exchange_begin,cpp_exchange_end, &
           gradient_selected,convection_selected,viscous_selected,source_operator=source_selected, &
@@ -1048,6 +1073,206 @@ contains
     call report_compact_phases_cpp()
     call report_step_device_memory()
   end subroutine
+
+  subroutine standard_box_shell(upper,inner_first,inner_last,first,last,nbox)
+    integer(c_int),intent(in) :: upper(3),inner_first(3),inner_last(3)
+    integer(c_int),intent(out) :: first(3,6),last(3,6)
+    integer,intent(out) :: nbox
+    integer(c_int) :: lo(3),hi(3)
+    integer :: a
+    lo=0;hi=upper;nbox=0
+    if(any(inner_first>inner_last)) then
+      nbox=1;first(:,1)=lo;last(:,1)=hi
+      return
+    endif
+    ! Each pair of slabs owns the edges not already assigned to earlier axes.
+    do a=1,3
+      if(lo(a)<inner_first(a)) then
+        nbox=nbox+1;first(:,nbox)=lo;last(:,nbox)=hi
+        last(a,nbox)=inner_first(a)-1;lo(a)=inner_first(a)
+      endif
+      if(hi(a)>inner_last(a)) then
+        nbox=nbox+1;first(:,nbox)=lo;last(:,nbox)=hi
+        first(a,nbox)=inner_last(a)+1;hi(a)=inner_last(a)
+      endif
+    enddo
+  end subroutine
+
+  integer(c_int) function standard_prepare_rhs(handle) result(status)
+    type(c_ptr),value :: handle
+    integer(c_int) :: domain(3),core_lo(3),core_hi(3),lo(3),hi(3),first(3,6),last(3,6),a
+    integer :: windows,window,planes,b,nbox
+    logical :: distributed(3),phys_ready
+    domain=int([im,jm,km],c_int)
+    distributed=[isize,jsize,ksize]>1
+    windows=count(distributed);window=0
+    core_lo=0;core_hi=domain
+    if(windows>0) then
+      ! Exclude every not-yet-ready face, including local periodic wraps.
+      core_lo=merge(3_c_int,0_c_int,physical_low==0)
+      core_hi=domain-merge(3_c_int,0_c_int,physical_high==0)
+    endif
+    phys_ready=.false.
+    status=fluid_rhs_clear(handle)
+    if(status/=0) return
+    do a=1,3
+      status=device_exchange_begin(handle,device_q,a-1,0_c_int)
+      if(status/=0) return
+      if(distributed(a)) then
+        if(.not.phys_ready) then
+          status=rebuild_physical()
+          if(status/=0) return
+          phys_ready=.true.
+        endif
+        if(all(core_lo<=core_hi)) then
+          lo=core_lo;hi=core_hi;planes=core_hi(3)-core_lo(3)+1
+          lo(3)=core_lo(3)+planes*window/windows
+          hi(3)=core_lo(3)+planes*(window+1)/windows-1
+          status=accumulate_box(lo,hi)
+          if(status/=0) return
+        endif
+        window=window+1
+      endif
+      status=cpp_exchange_end(handle,device_q,a-1,0_c_int)
+      if(status/=0) return
+    enddo
+    if(.not.phys_ready) then
+      status=rebuild_physical()
+      if(status/=0) return
+    endif
+    do a=1,3
+      if(physical_low(a)==0) then
+        lo=0;hi=domain;lo(a)=-hm;hi(a)=-1
+        status=fluid_primitives_box(handle,const2,const6,lo,hi)
+        if(status/=0) return
+      endif
+      if(physical_high(a)==0) then
+        lo=0;hi=domain;lo(a)=domain(a)+1;hi(a)=domain(a)+hm
+        status=fluid_primitives_box(handle,const2,const6,lo,hi)
+        if(status/=0) return
+      endif
+    enddo
+    if(windows==0) then
+      status=accumulate_box(core_lo,core_hi)
+    else
+      call standard_box_shell(domain,core_lo,core_hi,first,last,nbox)
+      do b=1,nbox
+        status=accumulate_box(first(:,b),last(:,b))
+        if(status/=0) return
+      enddo
+    endif
+#ifdef ASTR_BUILD_TESTING
+    if(status==0) call snapshot_operator_rhs(handle,'conv')
+#endif
+  contains
+    integer(c_int) function rebuild_physical() result(code)
+      integer(c_int) :: dirty_lo(3,6),dirty_hi(3,6)
+      integer :: slab,nslab
+      if(lfilter.and..not.physical_boundaries) then
+        code=fluid_primitives(handle,const2,const6)
+        return
+      endif
+      ! In the filtered wall path the complete interior was rebuilt before BCs.
+      ! Otherwise the interior cache comes from initialization or the last RK update.
+      call standard_box_shell(domain,[1_c_int,1_c_int,1_c_int],domain-1,dirty_lo,dirty_hi,nslab)
+      code=0
+      do slab=1,nslab
+        code=fluid_primitives_box(handle,const2,const6,dirty_lo(:,slab),dirty_hi(:,slab))
+        if(code/=0) return
+      enddo
+    end function
+
+    integer(c_int) function accumulate_box(box_lo,box_hi) result(code)
+      integer(c_int),intent(in) :: box_lo(3),box_hi(3)
+      integer(c_int) :: adv_lo(3),adv_hi(3),axis,physical
+      code=0
+      if(any(box_lo>box_hi)) return
+      physical=merge(1_c_int,0_c_int,physical_boundaries)
+      code=fluid_gradient_box(handle,physical,physical_low,physical_high,box_lo,box_hi)
+      if(code/=0) return
+      adv_lo=box_lo;adv_hi=box_hi
+      if(physical_boundaries) then
+        adv_lo=max(adv_lo,body_first);adv_hi=min(adv_hi,body_last)
+      endif
+      if(any(adv_lo>adv_hi)) return
+      do axis=0,2
+        code=fluid_divergence_box(handle,0_c_int,physical,axis,physical_low,physical_high,adv_lo,adv_hi)
+        if(code/=0) return
+      enddo
+    end function
+  end function
+
+  integer(c_int) function standard_viscous_rhs(handle) result(status)
+    type(c_ptr),value :: handle
+    integer(c_int) :: domain(3),a,physical,lo(3),hi(3),mid_lo(3),mid_hi(3)
+    logical :: distributed(3)
+    domain=int([im,jm,km],c_int)
+    physical=merge(1_c_int,0_c_int,physical_boundaries)
+    distributed=[isize,jsize,ksize]>1
+    status=fluid_viscous_flux(handle,reynolds,prandtl,const5,tempconst,tempconst1)
+    if(status/=0) return
+    do a=1,3
+      status=device_viscous_exchange_begin(handle,a-1)
+      if(status/=0) return
+      ! The next pack only reads fluxes. Post it before queuing the previous
+      ! rim, which only accumulates RHS, but finish that rim before this axis.
+      if(a>1) then
+        status=accumulate_rim(a-1)
+        if(status/=0) return
+      endif
+      call bounds(a,lo,hi,mid_lo,mid_hi)
+      if(all(mid_lo<=mid_hi)) then
+        status=fluid_divergence_box(handle,1_c_int,physical,a-1,physical_low,physical_high,mid_lo,mid_hi)
+        if(status/=0) return
+      endif
+      status=device_viscous_exchange_end(handle,a-1)
+      if(status/=0) return
+#ifdef ASTR_BUILD_TESTING
+      call snapshot_exchange(handle,device_stress,a-1,0_c_int)
+      call snapshot_exchange(handle,device_heat_flux,a-1,0_c_int)
+#endif
+    enddo
+    status=accumulate_rim(3_c_int)
+#ifdef ASTR_BUILD_TESTING
+    if(status==0) call snapshot_operator_rhs(handle,'full')
+#endif
+  contains
+    subroutine bounds(axis,first,last,interior_first,interior_last)
+      integer(c_int),intent(in) :: axis
+      integer(c_int),intent(out) :: first(3),last(3),interior_first(3),interior_last(3)
+      first=0;last=domain
+      if(physical_boundaries) then
+        first(axis)=body_first(axis);last(axis)=body_last(axis)
+      endif
+      interior_first=first;interior_last=last
+      if(distributed(axis)) then
+        if(physical_low(axis)==0) interior_first(axis)=max(first(axis),3_c_int)
+        if(physical_high(axis)==0) interior_last(axis)=min(last(axis),domain(axis)-3)
+      endif
+    end subroutine
+
+    integer(c_int) function accumulate_rim(axis) result(code)
+      integer(c_int),intent(in) :: axis
+      integer(c_int) :: first(3),last(3),interior_first(3),interior_last(3),rim(3)
+      call bounds(axis,first,last,interior_first,interior_last)
+      code=0
+      if(any(first>last)) return
+      if(any(interior_first>interior_last)) then
+        code=fluid_divergence_box(handle,1_c_int,physical,axis-1,physical_low,physical_high,first,last)
+        return
+      endif
+      if(first(axis)<interior_first(axis)) then
+        rim=last;rim(axis)=interior_first(axis)-1
+        code=fluid_divergence_box(handle,1_c_int,physical,axis-1,physical_low,physical_high,first,rim)
+        if(code/=0) return
+      endif
+      if(last(axis)>interior_last(axis)) then
+        rim=first;rim(axis)=interior_last(axis)+1
+        code=fluid_divergence_box(handle,1_c_int,physical,axis-1,physical_low,physical_high,rim,last)
+      endif
+    end function
+  end function
+
   integer(c_int) function prepare_staged_profile(handle) result(status)
     use bc, only: twall,bctype
     use commvar, only: xmin,ymin,ymax,pinf,vinf,winf
@@ -1802,7 +2027,7 @@ contains
     real(real_kind) :: local(13),global(13),nodes,length
     real(real_kind) :: flat_local(5),flat_global(5)
     integer :: ierr
-    call check(gradient_selected(context),'statistics gradient')
+    if(.not.standard_explicit_stage) call check(gradient_selected(context),'statistics gradient')
     if(mixed_derivative) call check(fluid_diagnostic_gradient(context,physical_low,physical_high), &
       'same-phase separate diagnostic gradients')
     call check(fluid_statistics(context,reynolds,tempconst,tempconst1,local),'field scalar statistics and extrema')

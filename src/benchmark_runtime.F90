@@ -7,6 +7,7 @@ module benchmark_runtime
             benchmark_cpu_rk_timing_enabled,benchmark_gpu_rk_timing_enabled, &
             begin_complete_step_timing,end_complete_step_timing, &
             configure_insitu_timing,insitu_clock,report_insitu_timing,benchmark_buffered_output_enabled,insitu_timing_active
+  public :: benchmark_window_due,benchmark_mark_window
   logical,save :: configured=.false.,field_io_disabled=.false.
   logical,save :: cpu_rk_timing_enabled_flag=.false.
   logical,save :: gpu_rk_timing_enabled_flag=.false.
@@ -16,7 +17,64 @@ module benchmark_runtime
   integer,save :: complete_step_rank=-1
   logical,save :: insitu_timing_enabled=.false.
   integer,save :: insitu_timing_rank=-1
+  integer,save :: window_steps(2)=0,window_rank=-1
+  real(8),save :: wall_window_start=0.d0
 contains
+  subroutine configure_wall_window(use_gpu)
+    logical,intent(in) :: use_gpu
+    integer :: options(2),low(2),high(2),status,ierr,ignored
+    character(64) :: value
+    options=0
+    call get_environment_variable('ASTR_BENCHMARK_WALL_WINDOW',value,status=status)
+    if(status==0.and.len_trim(value)>0) then
+      read(value,*,iostat=status) options
+      if(status/=0.or.options(1)<0.or.options(2)<=0) options=-1
+#ifdef ASTR_GPU_CPP
+      if(.not.use_gpu) options=-1
+#else
+      options=-1
+#endif
+    elseif(status/=0.and.status/=1) then
+      options=-1
+    endif
+    call MPI_Allreduce(options,low,2,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+    call MPI_Allreduce(options,high,2,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+    if(any(low<0).or.any(low/=high)) then
+      print *, 'ASTR_BENCHMARK_WALL_WINDOW requires matching warmup,timed steps and C++ GPU execution'
+      call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+    endif
+    window_steps=low
+    if(window_steps(2)>0) then
+      call MPI_Comm_rank(MPI_COMM_WORLD,window_rank,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+    endif
+  end subroutine
+
+  pure logical function benchmark_window_due(step)
+    integer(int64),intent(in) :: step
+    benchmark_window_due=window_steps(2)>0.and. &
+      (step==window_steps(1).or.step==int(window_steps(1),int64)+window_steps(2))
+  end function
+
+  subroutine benchmark_mark_window(step)
+    integer(int64),intent(in) :: step
+    integer :: ierr,ignored
+    real(8) :: now,elapsed
+    call MPI_Barrier(MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+    if(window_rank/=0) return
+    now=MPI_Wtime()
+    if(step==window_steps(1)) then
+      wall_window_start=now
+    else
+      elapsed=now-wall_window_start
+      write(*,'(a,2(1x,i0),2(1x,es24.16e3))') 'ASTR_BENCHMARK_WALL_WINDOW', &
+        window_steps,elapsed,elapsed/window_steps(2)
+    endif
+  end subroutine
+
   subroutine configure_insitu_timing()
     integer :: choice,lowest,highest,ierr,ignored
     choice=switch_choice('ASTR_INSITU_TIMING')
@@ -83,6 +141,7 @@ contains
     integer :: ierr,rank,ignored
     logical :: supported_flow
     if(configured) return
+    call configure_wall_window(use_gpu)
     complete_timing=switch_choice('ASTR_COMPLETE_STEP_TIMING')
     call mpi_allreduce(complete_timing,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
@@ -144,9 +203,10 @@ contains
       ((trim(flowtype)=='tgv'.or.trim(flowtype)=='air5tgv'.or.trim(flowtype)=='shuosher').and. &
        lihomo.and.ljhomo.and.lkhomo.and.periodic_boundary_case)
     if(field_io_disabled .and. (ndims/=3 .or. .not.supported_flow .or. &
-       (use_gpu.and.rk_timing/=1))) then
+       (use_gpu.and.rk_timing/=1.and.window_steps(2)==0))) then
       print *, 'ASTR_GPU_BENCHMARK_NO_FIELD_IO requires 3-D flat plate or periodic TGV/AIR5 TGV/Shu-Osher'
-      if(use_gpu.and.rk_timing/=1) print *, 'GPU no-field-I/O benchmarks require ASTR_GPU_RK_TIMING'
+      if(use_gpu.and.rk_timing/=1.and.window_steps(2)==0) &
+        print *, 'GPU no-field-I/O benchmarks require an RK or wall window timer'
       call mpi_abort(MPI_COMM_WORLD,1,ignored)
     endif
     configured=.true.

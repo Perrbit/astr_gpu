@@ -2,7 +2,7 @@ module fluid_step
   use iso_c_binding, only: c_int,c_ptr
   use device_state, only: real_kind=>c_device_real_kind,device_q,device_filter_work,device_stress,device_heat_flux
   use fluid_explicit
-  use halo_transport, only: device_viscous_exchange_begin,device_viscous_exchange_end
+  use halo_transport, only: device_viscous_exchange_begin,device_viscous_exchange_end,halo_average_plane
   implicit none
   private
   public :: fluid_advance_stage,fluid_prepare_stage,fluid_advance_prepared_stage
@@ -24,7 +24,7 @@ module fluid_step
   end interface
 contains
   integer(c_int) function fluid_prepare_stage(handle,c2,c6,filtering,exchange,filter_operator, &
-      boundary_operator,primitive_operator,filtered_recovery_operator,input_recovery_operator) result(status)
+      boundary_operator,primitive_operator,filtered_recovery_operator,input_recovery_operator,regional_preparation) result(status)
     type(c_ptr),value :: handle
     real(real_kind),intent(in) :: c2,c6
     logical,intent(in) :: filtering
@@ -32,7 +32,8 @@ contains
     procedure(device_operator),optional :: filter_operator
     procedure(device_operator),optional :: boundary_operator,primitive_operator
     procedure(recovery_operator),optional :: filtered_recovery_operator,input_recovery_operator
-    integer(c_int) :: axis
+    procedure(device_operator),optional :: regional_preparation
+    integer(c_int) :: axis,average
     if(filtering) then
       if(present(filter_operator)) then
         status=filter_operator(handle)
@@ -60,10 +61,16 @@ contains
         if(status/=0) return
       endif
     endif
+    average=1_c_int
+    if(present(regional_preparation)) average=halo_average_plane
     do axis=0,2
-      status=exchange(handle,device_q,axis,1_c_int)
+      status=exchange(handle,device_q,axis,average)
       if(status/=0) return
     enddo
+    if(present(regional_preparation)) then
+      status=regional_preparation(handle)
+      return
+    endif
     do axis=0,2
       status=exchange(handle,device_q,axis,0_c_int)
       if(status/=0) return
@@ -166,7 +173,8 @@ contains
 
   integer(c_int) function fluid_advance_prepared_stage(handle,stage,dt,c2,c6,reynolds,prandtl,c5,tc,tc1, &
       viscous,exchange,begin_exchange,end_exchange,gradient_operator,convection_operator,divergence_operator, &
-      integrated_viscous_operator,source_operator,sensor_operator,post_update_operator,packed_viscous_axis) result(status)
+      integrated_viscous_operator,source_operator,sensor_operator,post_update_operator,packed_viscous_axis, &
+      prepared_viscous_operator) result(status)
     type(c_ptr),value :: handle
     integer,intent(in) :: stage
     real(real_kind),intent(in) :: dt,c2,c6,reynolds,prandtl,c5,tc,tc1
@@ -174,7 +182,7 @@ contains
     procedure(exchange_axis) :: exchange
     procedure(exchange_axis) :: begin_exchange,end_exchange
     procedure(device_operator),optional :: gradient_operator,convection_operator,divergence_operator
-    procedure(device_operator),optional :: integrated_viscous_operator
+    procedure(device_operator),optional :: integrated_viscous_operator,prepared_viscous_operator
     procedure(device_operator),optional :: source_operator
     procedure(device_operator),optional :: sensor_operator
     procedure(device_operator),optional :: post_update_operator
@@ -193,6 +201,27 @@ contains
       status=fluid_rk_save(handle)
       if(status/=0) return
     endif
+    if(present(prepared_viscous_operator)) then
+      status=prepared_viscous_operator(handle)
+    else
+      status=assemble_rhs()
+    endif
+    if(status/=0) return
+    if(present(source_operator)) then
+      status=source_operator(handle)
+      if(status/=0) return
+    endif
+    status=fluid_rk_update(handle,dt,a(stage),b(stage),c(stage))
+    if(status/=0) return
+    if(present(post_update_operator)) then
+      status=post_update_operator(handle)
+      if(status/=0) return
+    endif
+    status=fluid_primitives(handle,c2,c6)
+    if(status/=0) return
+    status=fluid_check(handle)
+  contains
+  integer(c_int) function assemble_rhs() result(status)
     if(viscous) then
       if(present(gradient_operator)) then
         status=gradient_operator(handle)
@@ -260,18 +289,6 @@ contains
       endif
       if(status/=0) return
     endif
-    if(present(source_operator)) then
-      status=source_operator(handle)
-      if(status/=0) return
-    endif
-    status=fluid_rk_update(handle,dt,a(stage),b(stage),c(stage))
-    if(status/=0) return
-    if(present(post_update_operator)) then
-      status=post_update_operator(handle)
-      if(status/=0) return
-    endif
-    status=fluid_primitives(handle,c2,c6)
-    if(status/=0) return
-    status=fluid_check(handle)
+  end function
   end function
 end module

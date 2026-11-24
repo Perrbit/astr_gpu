@@ -23,9 +23,11 @@ void periodic_kernel(AstrDeviceView field, int axis, int upper, int halo,
             v[first] = mean;
             v[first+upper*stride] = mean;
         }
-        for (int h = 1; h <= halo; ++h) {
-            v[first-h*stride] = v[first+(upper-h)*stride];
-            v[first+(upper+h)*stride] = v[first+h*stride];
+        if (reconcile != ASTR_HALO_AVERAGE_PLANE) {
+            for (int h = 1; h <= halo; ++h) {
+                v[first-h*stride] = v[first+(upper-h)*stride];
+                v[first+(upper+h)*stride] = v[first+h*stride];
+            }
         }
     }
     return;

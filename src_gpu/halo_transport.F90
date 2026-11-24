@@ -4,10 +4,11 @@ module halo_transport
   private
   public :: device_transport_prepare,device_exchange_axis,device_exchange_begin,device_exchange_end
   public :: device_exchange_owned_plane
-  public :: halo_pinned,halo_device
+  public :: halo_pinned,halo_device,halo_average_plane
   public :: device_transport_metrics
   public :: device_viscous_exchange_begin,device_viscous_exchange_end,device_transport_axis_metrics
   integer(c_int),parameter :: halo_pinned=0,halo_device=1
+  integer(c_int),parameter :: halo_average_plane=2
   interface
     integer(c_int) function device_exchange_owned_plane(handle,field,axis,peers,receivers) &
         bind(C,name='astr_device_exchange_owned_plane')

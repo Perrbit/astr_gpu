@@ -48,6 +48,14 @@ int astr_device_fluid_conservative(void *handle, astr_numerical_real thermal_coe
 int astr_device_fluid_gradient(void *handle);
 /* Existing 643e low-order physical-end closure; MPI interfaces remain centered. */
 int astr_device_fluid_gradient_basic_boundary(void *handle, const int low[3], const int high[3]);
+/* Standard RK work regions: inclusive nonempty boxes. Primitive boxes may be
+ * a single face halo; gradient and divergence boxes contain owned nodes only. */
+int astr_device_fluid_primitives_box(void *handle,astr_numerical_real c2,astr_numerical_real c6,
+    const int first[3],const int last[3]);
+int astr_device_fluid_gradient_box(void *handle,int physical,const int low[3],const int high[3],
+    const int first[3],const int last[3]);
+int astr_device_fluid_divergence_box(void *handle,int viscous,int physical,int axis,const int low[3],const int high[3],
+    const int first[3],const int last[3]);
 /* Existing MP2 diagnostic candidate: independent FP64 evaluation and final
  * FP32 stores. Does not change solver gradients or RHS. Prepare is reusable;
  * the caller refreshes same-phase primitives/halos before evaluating. */

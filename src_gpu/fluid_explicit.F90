@@ -5,6 +5,7 @@ module fluid_explicit
   private
   public :: fluid_prepare,fluid_primitives,fluid_conservative,fluid_gradient,fluid_check,fluid_cfl
   public :: fluid_gradient_basic_boundary
+  public :: fluid_primitives_box,fluid_gradient_box,fluid_divergence_box
   public :: fluid_gradient_high_wall
   public :: fluid_gradient_high_open
   public :: fluid_viscous_high_open
@@ -30,6 +31,25 @@ module fluid_explicit
   public :: fluid_filter_component_axis,fluid_filter_component_commit
   public :: fluid_viscous_wall_band,fluid_me6_prepare,fluid_me6_diffusion,fluid_me6_metrics
   interface
+    integer(c_int) function fluid_primitives_box(handle,c2,c6,first,last) bind(C,name='astr_device_fluid_primitives_box')
+      import c_int,c_ptr,c_device_real_kind
+      type(c_ptr),value :: handle
+      real(c_device_real_kind),value :: c2,c6
+      integer(c_int),intent(in) :: first(3),last(3)
+    end function
+    integer(c_int) function fluid_gradient_box(handle,physical,low,high,first,last) bind(C,name='astr_device_fluid_gradient_box')
+      import c_int,c_ptr
+      type(c_ptr),value :: handle
+      integer(c_int),value :: physical
+      integer(c_int),intent(in) :: low(3),high(3),first(3),last(3)
+    end function
+    integer(c_int) function fluid_divergence_box(handle,viscous,physical,axis,low,high,first,last) &
+        bind(C,name='astr_device_fluid_divergence_box')
+      import c_int,c_ptr
+      type(c_ptr),value :: handle
+      integer(c_int),value :: viscous,physical,axis
+      integer(c_int),intent(in) :: low(3),high(3),first(3),last(3)
+    end function
     integer(c_int) function fluid_viscous_high_open(handle,low,high) bind(C,name='astr_device_fluid_viscous_high_open')
       import c_int,c_ptr
       type(c_ptr),value :: handle

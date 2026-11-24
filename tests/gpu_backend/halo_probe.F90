@@ -20,7 +20,7 @@ program halo_probe
   character(40) :: value
   type(c_ptr) :: state
   type(device_view) :: before,after
-  integer(c_int64_t) :: wire(5)
+  integer(c_int64_t) :: wire(5),wire_before(5),stage_bytes
   real(real_kind),allocatable :: initial(:,:,:,:),expected(:,:,:,:),actual(:,:,:,:)
   integer :: i,j,k,c
   call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',value,status=status)
@@ -98,11 +98,37 @@ program halo_probe
           call fail('physical/shared/halo/corner bits differ')
       enddo
     enddo
+    call check(device_state_upload(state,device_q,initial,int(size(initial),c_size_t)*real_bytes),'restore initial q')
+    call wire_counts(wire_before)
+    do a=0,2
+      call check(device_exchange_axis(state,device_q,int(a,c_int),halo_average_plane),'average shared plane only')
+    enddo
+    call check(device_state_download(state,device_q,actual,int(size(actual),c_size_t)*real_bytes),'plane-only q')
+    if(any(real_to_word(actual(0:9,0:7,0:6,:))/=real_to_word(expected(0:9,0:7,0:6,:)))) &
+      call fail('plane-only physical q differs')
+    do k=-hm,6+hm
+    do j=-hm,7+hm
+    do i=-hm,9+hm
+      if(i>=0.and.i<=9.and.j>=0.and.j<=7.and.k>=0.and.k<=6) cycle
+      if(any(real_to_word(actual(i,j,k,:))/=real_to_word(initial(i,j,k,:)))) call fail('plane-only exchange wrote halo')
+    enddo
+    enddo
+    enddo
+    do a=0,2
+      call check(device_exchange_axis(state,device_q,int(a,c_int),0_c_int),'full refresh after average')
+    enddo
+    call check(device_state_download(state,device_q,actual,int(size(actual),c_size_t)*real_bytes),'refreshed q')
+    if(any(real_to_word(actual)/=real_to_word(expected))) call fail('plane average plus refresh differs from old stage')
+    stage_bytes=0_c_int64_t
+    if(nranks>1) stage_bytes=int(hm+1,c_int64_t)*5*real_bytes*product(dims_local+1)/(dims_local(axis+1)+1)* &
+      count([low(axis+1),high(axis+1)]/=MPI_PROC_NULL)
+    call wire_counts(wire)
+    if(any(wire(3:4)-wire_before(3:4)/=stage_bytes)) call fail('plane average and refresh MPI byte count')
     call check(device_state_view(state,device_q,after),'final q view')
     if(.not.c_associated(before%data,after%data)) call fail('q buffer replaced during exchanges')
     call check(device_state_destroy(state),'destroy before MPI finalize')
     write(*,'(a,4(i0,1x),a)') 'HALO PASS rank/axis/hm/debug=',rank,axis,hm,debug, &
-      ' all phase bits exact; q pointer stable; begin/end lifecycle checked'
+      ' all phase bits exact; plane average/refresh bytes exact; q pointer stable; begin/end lifecycle checked'
     deallocate(initial,expected,actual)
   enddo
   enddo

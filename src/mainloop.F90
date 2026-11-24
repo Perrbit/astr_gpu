@@ -68,7 +68,8 @@ module mainloop
     use cfl_gpu, only: collect_cfl_gpu,collect_timestep_rates_gpu
 #endif
 #ifdef ASTR_GPU_CPP
-    use fluid_runtime, only: collect_cfl_cpp,collect_timestep_rates_cpp
+    use fluid_runtime, only: collect_cfl_cpp,collect_timestep_rates_cpp,cpp_device_context
+    use device_state, only: device_state_synchronize
 #endif
     use ibmethod, only: ibforce
     use userdefine,only: udf_eom_set
@@ -77,6 +78,9 @@ module mainloop
     use userdefine, only: udf_setup_before_comp
     use benchmark_runtime, only: begin_complete_step_timing,end_complete_step_timing, &
                                 insitu_clock,report_insitu_timing
+#ifdef ASTR_GPU_CPP
+    use benchmark_runtime, only: benchmark_window_due,benchmark_mark_window
+#endif
     use insitu_session, only: sample_insitu_step,finish_insitu,begin_insitu
     use insitu_catalog_m12, only: finish_catalog_m12_diagnostics
 #ifdef COMB
@@ -163,6 +167,9 @@ module mainloop
     call initial_output_runtime(loop_counter,rkfirst_pending)
 
     window_started=insitu_clock()
+#ifdef ASTR_GPU_CPP
+    if(benchmark_window_due(0_int64)) call mark_wall_window(0_int64)
+#endif
     do while(.not.run_is_finished(int(nstep,int64),time))
 
       iteration_started=insitu_clock()
@@ -328,6 +335,9 @@ module mainloop
       call completed_output_runtime(completed_step_dt,loop_counter,rkfirst_pending)
       call report_insitu_timing('completed_output_inclusive',phase_started,nstep)
       call report_insitu_timing('completed_step_inclusive',iteration_started,nstep)
+#ifdef ASTR_GPU_CPP
+      if(benchmark_window_due(int(nstep,int64)-nstep0)) call mark_wall_window(int(nstep,int64)-nstep0)
+#endif
       !
     enddo
     call report_insitu_timing('completed_window',window_started,nstep)
@@ -362,6 +372,15 @@ module mainloop
     ! call errest
     !
   contains
+#ifdef ASTR_GPU_CPP
+    subroutine mark_wall_window(step)
+      integer(int64),intent(in) :: step
+      integer :: status,ignored
+      status=device_state_synchronize(cpp_device_context())
+      if(status/=0) call MPI_Abort(MPI_COMM_WORLD,status,ignored)
+      call benchmark_mark_window(step)
+    end subroutine
+#endif
     subroutine select_next_dt()
 #ifdef ASTR_GPU_CPP
       if(use_gpu) then
