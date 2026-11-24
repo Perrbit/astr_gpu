@@ -45,11 +45,14 @@ def prepare(output):
     (output / "campaign.json").write_text(json.dumps(config, indent=2) + "\n")
 
 
-def check_progress(log, config, variant):
+def check_viscous_schedule(log, variant):
     expected = "z" if variant == "baseline" else "xyz"
     axes = re.findall(r"^ASTR_GPU_CPP viscous_overlap_axis=(\w+)$", log, re.M)
     if axes != [expected]:
         raise ValueError(f"unexpected executed viscous schedule for {variant}: {axes}")
+
+
+def check_fixed_step_progress(log, config):
     if any(re.search(rf"^{prefix} ", log, re.M) for prefix in ("ASTR_GPU_RANK_RK_TIMING", "ASTR_CPP_HALO_TIMING",
                                                                   "ASTR_COMPLETE_STEP_TIMING")):
         raise ValueError("per-step profiling was enabled in the wall window")
@@ -62,8 +65,13 @@ def check_progress(log, config, variant):
         raise ValueError("wrong fixed-step clock or incomplete run")
 
 
-def reduce_run(log, config, variant):
-    check_progress(log, config, variant)
+def check_progress(log, config, variant):
+    check_viscous_schedule(log, variant)
+    check_fixed_step_progress(log, config)
+
+
+def reduce_wall_window(log, config):
+    check_fixed_step_progress(log, config)
     records = WINDOW.findall(log)
     if len(records) != 1:
         raise ValueError("expected exactly one rank-zero wall window record")
@@ -74,6 +82,11 @@ def reduce_run(log, config, variant):
     if not isfinite(elapsed) or elapsed <= 0 or not isclose(per_step, elapsed / int(timed), rel_tol=1e-13):
         raise ValueError("invalid timing record")
     return dict(window_seconds=elapsed, seconds_per_step=per_step)
+
+
+def reduce_run(log, config, variant):
+    check_viscous_schedule(log, variant)
+    return reduce_wall_window(log, config)
 
 
 def summarize(output):

@@ -6,6 +6,7 @@ M4 见 §13：标准显式路径已接入联合排程，代表工况数值检查
 周期 TGV 的同分配对照中，完整步平均墙钟较冻结 `packed_z` 基线下降 6.77%。
 本文不构成代码修改、平台提交或作业查询授权。
 既有单节点优化与证据见 [ASTR GPU 性能优化计划](ASTR_GPU_PERFORMANCE_OPTIMIZATION_PLAN.md)。
+后续显式和紧致强弱扩展采用[统一墙钟重测计划](ASTR_DCU_WALLCLOCK_SCALING_RETEST_PLAN.md)。
 
 ## 1. 首阶段范围（已确认）
 
