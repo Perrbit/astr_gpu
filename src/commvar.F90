@@ -19,6 +19,7 @@ module commvar
   private :: real_kind,clock_kind,int64
   !
   integer :: ia,ja,ka,im,jm,km,is,ie,js,je,ks,ke
+  integer :: benchmark_tgv_tiles(3)=[1,1,1]
   integer :: hm
   integer :: numq,num_species,ndims,ninit,num_modequ
   character(len=1) :: iomode

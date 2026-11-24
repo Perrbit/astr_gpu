@@ -69,6 +69,7 @@ endif()
 set(ASTR_SOURCES
   astr_precision.F90
   astr_precision_mpi.F90
+  grid_count_math.F90
   keep_operator.F90
   keep_sbp63.F90
   keep_sbp63_runtime.F90

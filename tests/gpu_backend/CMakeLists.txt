@@ -1,4 +1,11 @@
 enable_language(CUDA)
+add_executable(astr_backend_weak_scaling_count EXCLUDE_FROM_ALL
+  weak_scaling_grid_count_probe.F90 ../../src/grid_count_math.F90)
+set(ASTR_WEAK_SCALING_COUNT_MODULES "${CMAKE_CURRENT_BINARY_DIR}/weak_scaling_count_modules")
+file(MAKE_DIRECTORY "${ASTR_WEAK_SCALING_COUNT_MODULES}")
+set_target_properties(astr_backend_weak_scaling_count PROPERTIES
+  Fortran_MODULE_DIRECTORY "${ASTR_WEAK_SCALING_COUNT_MODULES}")
+target_include_directories(astr_backend_weak_scaling_count PRIVATE "${ASTR_WEAK_SCALING_COUNT_MODULES}")
 add_executable(astr_backend_keep_w1_normal EXCLUDE_FROM_ALL keep_w1_normal_probe.cpp
   ../../src_gpu/keep_w1_normal_probe.cu)
 target_include_directories(astr_backend_keep_w1_normal PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})

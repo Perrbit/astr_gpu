@@ -144,6 +144,7 @@ module geom
     use keep_geometry, only: periodic_keep_geometry_active,build_keep_periodic_area
     use bc,       only : geombc,xyzbc
     use ieee_arithmetic, only: ieee_is_nan
+    use grid_count_math, only: grid_count64
     !
     ! local data
     character(len=4) :: cscheme
@@ -154,6 +155,7 @@ module geom
     real(real_kind), allocatable :: dx(:,:,:,:,:)
     real(real_kind),allocatable :: phi(:),can(:,:,:,:)
     real(real_kind) :: can1av,can2av,can3av,can1var,can2var,can3var
+    real(real_kind) :: geometry_samples
     real(real_kind) :: var1,var2,var3,vec1(3)
     real(real_kind),allocatable :: xyzwall(:,:,:)
     !
@@ -619,6 +621,7 @@ module geom
     can1av=0.e0_real_kind
     can2av=0.e0_real_kind
     can3av=0.e0_real_kind
+    geometry_samples=real(grid_count64([ia,ja,merge(ka,1,ndims==3)]),real_kind)
     if(ndims==3) then
       do k=1,km
       do j=1,jm
@@ -634,9 +637,9 @@ module geom
       end do
       end do
       end do
-      can1av=psum(can1av)/real(ia*ja*ka,real_kind)
-      can2av=psum(can2av)/real(ia*ja*ka,real_kind)
-      can3av=psum(can3av)/real(ia*ja*ka,real_kind)
+      can1av=psum(can1av)/geometry_samples
+      can2av=psum(can2av)/geometry_samples
+      can3av=psum(can3av)/geometry_samples
     elseif(ndims==2) then
       k=0
       do j=1,jm
@@ -651,9 +654,9 @@ module geom
         !
       end do
       end do
-      can1av=psum(can1av)/real(ia*ja,real_kind)
-      can2av=psum(can2av)/real(ia*ja,real_kind)
-      can3av=psum(can3av)/real(ia*ja,real_kind)
+      can1av=psum(can1av)/geometry_samples
+      can2av=psum(can2av)/geometry_samples
+      can3av=psum(can3av)/geometry_samples
     endif
     !
     can1var=0.e0_real_kind
@@ -670,9 +673,9 @@ module geom
       end do
       end do
       end do
-      can1var=psum(can1var)/real(ia*ja*ka,real_kind)
-      can2var=psum(can2var)/real(ia*ja*ka,real_kind)
-      can3var=psum(can3var)/real(ia*ja*ka,real_kind)
+      can1var=psum(can1var)/geometry_samples
+      can2var=psum(can2var)/geometry_samples
+      can3var=psum(can3var)/geometry_samples
     elseif(ndims==2) then
       do j=1,jm
       do i=1,im
@@ -681,9 +684,9 @@ module geom
         can3var=can3var+(can(i,j,k,3)-can3av)**2
       end do
       end do
-      can1var=psum(can1var)/real(ia*ja,real_kind)
-      can2var=psum(can2var)/real(ia*ja,real_kind)
-      can3var=psum(can3var)/real(ia*ja,real_kind)
+      can1var=psum(can1var)/geometry_samples
+      can2var=psum(can2var)/geometry_samples
+      can3var=psum(can3var)/geometry_samples
     endif
     !
     !

@@ -25,7 +25,7 @@ module gridgeneration
   subroutine gridgen
     !
     use parallel, only : mpirank
-    use commvar,  only : flowtype,lreadgrid,nondimen,gridfile,ref_len,ka
+    use commvar,  only : flowtype,lreadgrid,nondimen,gridfile,ref_len,ka,benchmark_tgv_tiles
     use readwrite,only : readgrid,writegrid,xdmfwriter
     use userdefine,only: udf_grid
     use benchmark_runtime, only: benchmark_field_io_disabled
@@ -34,12 +34,19 @@ module gridgeneration
     use chemistry_hbl_geometry, only: read_air5_hbl_domain
     real(real_kind) :: hbl_lengths(3)
 #endif
+    real(real_kind) :: tgv_lengths(3)
     !
+    if(any(benchmark_tgv_tiles/=1)) then
+      if(.not.benchmark_field_io_disabled().or.lreadgrid.or. &
+         (trim(flowtype)/='tgv'.and.trim(flowtype)/='air5tgv')) &
+        error stop 'benchmark_tgv_tiles requires generated periodic TGV or AIR5 TGV without field I/O'
+    endif
     if(lreadgrid) then
       call readgrid(trim(output_resource_path('grid.h5',trim(gridfile))))
     else
-      if(flowtype(1:3)=='tgv') then
-        call gridcube(ref_len*2.e0_real_kind*pi,ref_len*2.e0_real_kind*pi,ref_len*2.e0_real_kind*pi)
+      if(flowtype(1:3)=='tgv'.or.trim(flowtype)=='air5tgv') then
+        tgv_lengths=(ref_len*2.e0_real_kind*pi)*real(benchmark_tgv_tiles,real_kind)
+        call gridcube(tgv_lengths(1),tgv_lengths(2),tgv_lengths(3))
       elseif(trim(flowtype)=='jet') then
         call gridjet
       elseif(trim(flowtype)=='hit') then
@@ -84,7 +91,6 @@ module gridgeneration
         endif
 #endif
       elseif(trim(flowtype)=='air5wave' .or. trim(flowtype)=='air5reactor' .or. &
-             trim(flowtype)=='air5tgv' .or. &
              trim(flowtype)=='air5shocktube' .or. &
              trim(flowtype)=='air5advection' .or. trim(flowtype)=='air5difflayer' .or. &
              trim(flowtype)=='air5evpulse') then

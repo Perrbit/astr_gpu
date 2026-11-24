@@ -10,6 +10,7 @@ module statistic
   use case_model_options, only: get_case_option
   use astr_precision, only: real_kind,clock_kind,real_to_word,word_to_real
   use mean_statistics_math, only: mean_point_moments,mean_endpoint_count,mean_moment_count
+  use grid_count_math, only: grid_count64
   !
   use constdef
   use commvar,  only : im,jm,km,ia,ja,ka,ndims,xmin,xmax,ymin,ymax,    &
@@ -23,6 +24,7 @@ module statistic
   implicit none
   private :: real_kind,clock_kind,real_to_word,word_to_real,int64
   private :: mean_point_moments,mean_endpoint_count,mean_moment_count
+  private :: grid_count64
   !
   type :: tsta
     real(real_kind) :: urms,machrms,macht,kolmoglength,kolmogvelocity,        &
@@ -1191,7 +1193,7 @@ module statistic
       enddo
       enddo
       !
-      vout=0.5e0_real_kind*psum(vout)/real(ia*ja*ka,kind=real_kind)
+      vout=0.5e0_real_kind*psum(vout)/real(grid_count64([ia,ja,ka]),kind=real_kind)
     endif
     !
     l_0=xmax/(2.e0_real_kind*pi)
@@ -1249,7 +1251,7 @@ module statistic
       enddo
       enddo
       !
-      vout=0.5e0_real_kind*psum(vout)/real(ia*ja*ka,kind=real_kind)
+      vout=0.5e0_real_kind*psum(vout)/real(grid_count64([ia,ja,ka]),kind=real_kind)
     endif
     !
     vout=vout/(roinf*uinf*uinf)
@@ -1313,7 +1315,7 @@ module statistic
     enddo
     enddo
     !
-    vout=psum(vout)/real(ia*ja*ka,kind=real_kind)
+    vout=psum(vout)/real(grid_count64([ia,ja,ka]),kind=real_kind)
     !
     return
     !

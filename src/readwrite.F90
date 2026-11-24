@@ -508,7 +508,7 @@ module readwrite
     integer :: n,fh,i,ios,group_index
     real(real_kind) :: missing
     namelist /case_options/ flowtype,use_gpu,ltimrpt,iomode
-    namelist /mesh/ ia,ja,ka,lihomo,ljhomo,lkhomo,lreadgrid,lfftk,gridfile
+    namelist /mesh/ ia,ja,ka,lihomo,ljhomo,lkhomo,lreadgrid,lfftk,gridfile,benchmark_tgv_tiles
 #ifdef COMB
     namelist /physics/ nondimen,diffterm,lcomb,num_species,turbmode,ref_tem,ref_vel,ref_len,ref_den, &
       reynolds,mach,odetype,chemfile
@@ -568,6 +568,7 @@ module readwrite
       missing=ieee_value(0.e0_real_kind,ieee_quiet_nan)
       flowtype='';use_gpu=.false.;ltimrpt=.false.;iomode='h'
       ia=-1;ja=-1;ka=-1
+      benchmark_tgv_tiles=1
       lihomo=.false.;ljhomo=.false.;lkhomo=.false.;lreadgrid=.false.;lfftk=.false.
       gridfile='datin/grid.h5'
       nondimen=.true.;diffterm=.true.;lcomb=.false.;num_species=0;turbmode='none'
@@ -611,6 +612,9 @@ module readwrite
       enddo
       if(len_trim(flowtype)==0) call reject_case_input(inputfile,'flowtype is required')
       if(min(ia,ja,ka)<0.or.max(ia,ja,ka)==0) call reject_case_input(inputfile,'ia/ja/ka must define the grid')
+      if(any(benchmark_tgv_tiles<1)) call reject_case_input(inputfile,'benchmark_tgv_tiles must be positive')
+      if(any(mod([ia,ja,ka],benchmark_tgv_tiles)/=0)) &
+        call reject_case_input(inputfile,'benchmark_tgv_tiles must divide the global intervals')
       if(.not.ieee_is_finite(ref_tem).or.ref_tem<=0.e0_real_kind) &
         call reject_case_input(inputfile,'positive finite ref_tem is required')
       if(nondimen) then
@@ -709,6 +713,7 @@ module readwrite
     call bcast(ia)
     call bcast(ja)
     call bcast(ka)
+    call bcast(benchmark_tgv_tiles)
     !
     call bcast(lihomo)
     call bcast(ljhomo)
@@ -3186,6 +3191,7 @@ module readwrite
     use commvar, only : nstep,maxstep,ctime,flowtype,conschm,          &
                         difschm,rkscheme,ia,ja,ka,preptime,nsrpt
     use parallel,only : mpirankmax
+    use grid_count_math, only: grid_count64
     !
     ! local data
     logical,save :: linit=.true.
@@ -3224,7 +3230,7 @@ module readwrite
         write(hand_rp,'(A,A)')'  diff scheme: ',trim(difschm)
         write(hand_rp,'(A,A)')'    rk scheme: ',trim(rkscheme)
         write(hand_rp,'(4(A,I0))')'    grid size: ',ia,' x ',ja,' x ', &
-                                           ka,' = ',(ia+1)*(ja+1)*(ka+1)
+                                           ka,' = ',grid_count64([ia+1,ja+1,ka+1])
         write(hand_rp,'(1(A,I0))')'     mpi size: ',mpirankmax+1
         write(hand_rp,'(2X,A,E13.6E2)')'time cost for preparation : ',preptime
         !

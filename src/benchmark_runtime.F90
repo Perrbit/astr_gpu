@@ -141,11 +141,12 @@ contains
     cpu_rk_timing_enabled_flag=cpu_rk_timing==1
     gpu_rk_timing_enabled_flag=rk_timing==1
     supported_flow=trim(flowtype)=='bl'.or. &
-      ((trim(flowtype)=='tgv'.or.trim(flowtype)=='shuosher').and. &
+      ((trim(flowtype)=='tgv'.or.trim(flowtype)=='air5tgv'.or.trim(flowtype)=='shuosher').and. &
        lihomo.and.ljhomo.and.lkhomo.and.periodic_boundary_case)
     if(field_io_disabled .and. (ndims/=3 .or. .not.supported_flow .or. &
        (use_gpu.and.rk_timing/=1))) then
-      print *, 'ASTR_GPU_BENCHMARK_NO_FIELD_IO requires 3-D flat plate or periodic TGV/Shu-Osher; GPU runs require RK timing'
+      print *, 'ASTR_GPU_BENCHMARK_NO_FIELD_IO requires 3-D flat plate or periodic TGV/AIR5 TGV/Shu-Osher'
+      if(use_gpu.and.rk_timing/=1) print *, 'GPU no-field-I/O benchmarks require ASTR_GPU_RK_TIMING'
       call mpi_abort(MPI_COMM_WORLD,1,ignored)
     endif
     configured=.true.
